@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "CommonJS",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "outDir": "./dist",
+    "rootDir": "./",
+    "baseUrl": ".",
+    "paths": {
+      "@/src/*": ["src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/db/schema.prisma", "prisma/index.ts", "src/app/prisma.ts"],
+  "exclude": ["node_modules"]
+}

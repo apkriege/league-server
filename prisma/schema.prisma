@@ -1,0 +1,381 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model session {
+  sid    String   @id
+  sess   Json
+  expire DateTime
+
+  @@index([expire])
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model user {
+  id        Int       @id @default(autoincrement())
+  firstName String    @map("first_name")
+  lastName  String    @map("last_name")
+  email     String    @unique
+  username  String?   @unique
+  googleId  String?   @unique @map("google_id")
+  password  String
+  role      String    @default("USER") // USER, ADMIN, SUPER
+  phone     String?
+  metadata  Json?
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  manager league[]
+  players player[]
+
+  @@index([email])
+  @@index([deletedAt])
+}
+
+model club {
+  id          Int       @id @default(autoincrement())
+  name        String
+  description String?
+  logo        String?
+  location    String?
+  phone       String?
+  link        String?
+  accessType  String    @default("public") @map("type")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @default(now()) @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  courses course[]
+
+  @@index([deletedAt])
+}
+
+model course {
+  id          Int       @id @default(autoincrement())
+  clubId      Int       @map("club_id")
+  name        String
+  description String?
+  location    String?
+  phone       String?
+  accessType  String    @default("public") @map("type")
+  numHoles    Int?      @map("num_holes")
+  par         Int
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @default(now()) @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  club   club    @relation(fields: [clubId], references: [id])
+  tees   tee[]
+  events event[]
+  scores score[]
+  rounds round[]
+
+  @@index([clubId])
+  @@index([deletedAt])
+}
+
+model tee {
+  id               Int       @id @default(autoincrement())
+  courseId         Int       @map("course_id")
+  name             String
+  color            String
+  distance         Int
+  par              Int
+  frontPar         Int       @map("front_par")
+  backPar          Int       @map("back_par")
+  slopeMen         Int       @map("slope_men") // USGA slope for men, full course
+  slopeFrontMen    Int       @map("slope_front_men") // USGA slope for men, front 9
+  slopeBackMen     Int       @map("slope_back_men") // USGA slope for men, back 9
+  slopeWomen       Int?      @map("slope_women") // USGA slope for women, full course
+  slopeFrontWomen  Int?      @map("slope_front_women") // USGA slope for women, front 9
+  slopeBackWomen   Int?      @map("slope_back_women") // USGA slope for women, back 9
+  ratingMen        Float     @map("rating_men") // USGA rating for men, full course
+  ratingFrontMen   Float     @map("rating_front_men") // USGA rating for men, front 9
+  ratingBackMen    Float     @map("rating_back_men") // USGA rating for men, back 9
+  ratingWomen      Float?    @map("rating_women") // USGA rating for women, full course
+  ratingFrontWomen Float?    @map("rating_front_women") // USGA rating for women, front 9
+  ratingBackWomen  Float?    @map("rating_back_women") // USGA rating for women, back 9
+  holes            Json[]
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  course course? @relation(fields: [courseId], references: [id])
+  events event[]
+  scores score[]
+  rounds round[]
+
+  @@index([courseId])
+  @@index([deletedAt])
+}
+
+model league {
+  id               Int       @id @default(autoincrement())
+  name             String
+  description      String?
+  access           String    @default("public") @map("type") // public, private
+  numPlayers       Int       @map("num_players")
+  adminId          Int       @map("admin_id")
+  startDate        DateTime  @map("start_date")
+  endDate          DateTime  @map("end_date")
+  contactFirstName String    @map("contact_first")
+  contactLastName  String    @map("contact_last")
+  contactEmail     String    @map("contact_email")
+  contactPhone     String?   @map("contact_phone")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  admin   user     @relation(fields: [adminId], references: [id])
+  events  event[]
+  players player[]
+  teams   team[]
+
+  @@index([adminId])
+  @@index([startDate])
+  @@index([deletedAt])
+}
+
+model player {
+  id           Int       @id @default(autoincrement())
+  userId       Int?      @map("user_id")
+  firstName    String    @map("first_name")
+  lastName     String    @map("last_name")
+  email        String
+  phone        String?
+  handicap     Float
+  seasonPoints Int       @map("season_points")
+  seasonRank   Int?      @map("season_rank")
+  type         String    @default("player") @map("type") // player, substitute, captain
+  leagueId     Int       @map("league_id")
+  teamId       Int?      @map("team_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  league        league?         @relation(fields: [leagueId], references: [id])
+  team          team?           @relation(fields: [teamId], references: [id])
+  flightPlayers flight_player[]
+  rounds        round[]         @relation("round_playerId")
+  opponentOf    round[]         @relation("round_opponentId")
+  events        event[]
+  user          user?           @relation(fields: [userId], references: [id])
+
+  @@index([leagueId])
+  @@index([teamId])
+  @@index([email])
+  @@index([deletedAt])
+}
+
+model team {
+  id           Int       @id @default(autoincrement())
+  name         String
+  leagueId     Int       @map("league_id")
+  seasonPoints Int       @map("season_points")
+  seasonRank   Int?      @map("season_rank")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  league      league?       @relation(fields: [leagueId], references: [id])
+  players     player[]
+  flightTeams flight_team[]
+  events      event[]
+
+  @@index([leagueId])
+  @@index([deletedAt])
+}
+
+model event {
+  id            Int       @id @default(autoincrement())
+  leagueId      Int       @map("league_id")
+  courseId      Int       @map("course_id")
+  teeId         Int       @map("tee_id")
+  name          String
+  format        String    @map("format") // e.g. "individual", "team"
+  eventType     String    @map("event_type") // e.g. "regular", "playoff", "tournament"
+  holes         Int       @map("holes")
+  startSide     String    @map("start_side")
+  date          DateTime
+  startTime     String    @map("start_time")
+  interval      Int
+  scoringFormat String    @map("scoring_format")
+  ptsPerHole    Int?      @map("pts_per_hole")
+  ptsPerMatch   Int?      @map("pts_per_match")
+  ptsPerTeamWin Int?      @map("pts_per_team_win")
+  strokePoints  Json?     @map("stroke_points")
+  status        String
+  completed     Boolean   @default(false)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @default(now()) @map("updated_at")
+  deletedAt     DateTime? @map("deleted_at")
+
+  league  league   @relation(fields: [leagueId], references: [id])
+  course  course   @relation(fields: [courseId], references: [id])
+  tee     tee      @relation(fields: [teeId], references: [id])
+  flights flight[]
+  rounds  round[]
+  players player[]
+  teams   team[]
+
+  @@index([leagueId])
+  @@index([courseId])
+  @@index([teeId])
+  @@index([date])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+model flight {
+  id        Int       @id @default(autoincrement())
+  eventId   Int       @map("event_id")
+  startTime String    @map("start_time")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  event   event           @relation(fields: [eventId], references: [id])
+  players flight_player[]
+  teams   flight_team[]
+
+  @@index([eventId])
+  @@index([deletedAt])
+}
+
+model flight_player {
+  id         Int       @id @default(autoincrement())
+  flightId   Int       @map("flight_id")
+  playerId   Int       @map("player_id")
+  opponentId Int?      @map("opponent_id")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @default(now()) @map("updated_at")
+  deletedAt  DateTime? @map("deleted_at")
+
+  flight flight @relation(fields: [flightId], references: [id])
+  player player @relation(fields: [playerId], references: [id])
+
+  @@index([flightId])
+  @@index([playerId])
+  @@index([opponentId])
+  @@index([deletedAt])
+}
+
+model flight_team {
+  id         Int       @id @default(autoincrement())
+  flightId   Int       @map("flight_id")
+  teamId     Int       @map("team_id")
+  opponentId Int?      @map("opponent_id")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @default(now()) @map("updated_at")
+  deletedAt  DateTime? @map("deleted_at")
+
+  flight flight @relation(fields: [flightId], references: [id])
+  team   team?  @relation(fields: [teamId], references: [id])
+
+  @@index([flightId])
+  @@index([teamId])
+  @@index([opponentId])
+  @@index([deletedAt])
+}
+
+model round {
+  id              Int       @id @default(autoincrement())
+  eventId         Int       @map("event_id")
+  playerId        Int       @map("player_id")
+  opponentId      Int?      @map("opponent_id")
+  courseId        Int       @map("course_id")
+  teeId           Int       @map("tee_id")
+  scoringFormat   String    @map("scoring_format") // stroke play, match play
+  holesPlayed     Int       @map("holes_played")
+  gross           Int
+  net             Int
+  adjusted        Int
+  putts           Int
+  courseRating    Float     @map("course_rating")
+  courseSlope     Int       @map("course_slope")
+  differential    Float
+  preHandicap     Float     @map("pre_handicap")
+  postHandicap    Float     @map("post_handicap")
+  pointsEarned    Int       @map("points_earned")
+  eagles          Int
+  birdies         Int
+  pars            Int
+  bogeys          Int
+  doubleBogeys    Int       @map("double_bogeys")
+  tripleBogeys    Int       @map("triple_bogeys")
+  netEagles       Int?      @map("net_eagles")
+  netBirdies      Int?      @map("net_birdies")
+  netPars         Int?      @map("net_pars")
+  netBogeys       Int?      @map("net_bogeys")
+  netDoubleBogeys Int?      @map("net_double_bogeys")
+  netTripleBogeys Int?      @map("net_triple_bogeys")
+  date            DateTime  @map("played_date")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
+
+  event    event   @relation(fields: [eventId], references: [id])
+  player   player  @relation("round_playerId", fields: [playerId], references: [id])
+  opponent player? @relation("round_opponentId", fields: [opponentId], references: [id])
+  course   course  @relation(fields: [courseId], references: [id])
+  tee      tee     @relation(fields: [teeId], references: [id])
+  scores   score[]
+
+  @@unique([eventId, playerId])
+  @@index([eventId])
+  @@index([playerId])
+  @@index([opponentId])
+  @@index([courseId])
+  @@index([teeId])
+  @@index([deletedAt])
+}
+
+model score {
+  id             Int      @id @default(autoincrement())
+  eventId        Int      @map("event_id")
+  roundId        Int      @map("score_id")
+  playerId       Int      @map("player_id")
+  courseId       Int      @map("course_id")
+  teeId          Int      @map("tee_id")
+  hole           Int
+  par            Int
+  gross          Int
+  net            Int
+  adjusted       Int
+  putts          Int?
+  fairwayHit     Boolean? @map("fairway_hit")
+  gir            Boolean?
+  sandSave       Boolean? @map("sand_save")
+  penaltyStrokes Int?     @map("penalty_strokes")
+  popsReceived   Int?     @map("pops_received")
+  points         Float    @default(0) @map("points")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  round  round  @relation(fields: [roundId], references: [id])
+  course course @relation(fields: [courseId], references: [id])
+  tee    tee    @relation(fields: [teeId], references: [id])
+
+  @@unique([roundId, hole])
+  @@index([eventId])
+  @@index([roundId])
+  @@index([playerId])
+  @@index([courseId])
+  @@index([teeId])
+  @@index([hole])
+}
