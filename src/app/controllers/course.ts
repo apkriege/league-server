@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { ParsedQs } from 'qs';
-import CourseService from '../services/course';
+import CourseService from '../models/course';
 import { relationBuilder } from '../utils/relation-builder';
 
 class CourseController {

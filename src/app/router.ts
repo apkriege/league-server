@@ -28,6 +28,7 @@ const adminRoutes = express.Router();
 router.get('/admin/leagues', League.getAdminLeagues);
 router.get('/admin/leagues/:id', League.getAdminLeague);
 router.get('/admin/events/:eventId', Event.getAdminEvent);
+router.post('/admin/events/:eventId/scores', Event.runEventScoring);
 
 // router.use('/admin', admin, adminRoutes); // Uncomment to enable admin routes
 

@@ -1,5 +1,4 @@
 import { PrismaClient } from '@prisma/client';
-import { start } from 'repl';
 export const prisma = new PrismaClient();
 
 export class Round {
@@ -8,7 +7,6 @@ export class Round {
   private event: any;
   private tee: any;
   private players: any;
-  private teams: any;
 
   constructor(eventId: number, playerRounds: any[]) {
     this.eventId = eventId;
@@ -281,11 +279,8 @@ export class Round {
     console.log('Modeled Tee:', this.tee);
     const players =
       event?.flights.flatMap((flight: any) => flight.players.map((p: any) => p.player)) || [];
-    const teams =
-      event?.flights.flatMap((flight: any) => flight.teams.map((t: any) => t.team)) || [];
 
     this.players = players;
-    this.teams = teams;
   }
 
   private modelTee(tee: any, numHoles: number, startSide: string) {
@@ -322,8 +317,6 @@ export class Round {
   private async calculateHandicapIndex(
     playerId: number,
     adjustedScore: number,
-    // rating: number,
-    // slope: number,
   ): Promise<{ handicap: number; differential: number }> {
     // last number of rounds to use
     const roundsToUse = 5;

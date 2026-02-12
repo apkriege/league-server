@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import LeagueService from '../services/league';
+import LeagueService from '../models/league';
 import { prisma } from '../../prisma';
 
 const calculateLowNet = (scores: any[]) => {
@@ -65,7 +65,7 @@ class LeagueController {
       const league = await LeagueService.findById(id);
 
       const lastEvent = await prisma.event.findFirst({
-        where: { leagueId: id, status: 'completed' },
+        where: { leagueId: id, isComplete: true },
         include: {
           rounds: {
             include: {

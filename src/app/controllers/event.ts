@@ -1,11 +1,12 @@
 import { Request, Response } from 'express';
-import EventService from '../services/event';
-import LeagueService from '../services/league';
+import EventService from '../models/event';
+import LeagueService from '../models/league';
 import { PrismaClient } from '@prisma/client';
 export const prisma = new PrismaClient();
 
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
+import { Scoring } from '../services/scoring';
 dayjs.extend(customParseFormat);
 
 class FlightGen {
@@ -428,6 +429,24 @@ class EventController {
       res.status(201).send(createdEvents);
     } catch (error) {
       console.error(error);
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  };
+
+  static runEventScoring = async (req: Request, res: Response) => {
+    try {
+      const eventId = Number(req.params.eventId);
+
+      if (!eventId) {
+        res.status(400).json({ message: 'Invalid event ID' });
+        return;
+      }
+
+      const scoring = new Scoring(eventId);
+      await scoring.run();
+      res.status(200).json({ message: 'Scoring process completed', scoring });
+    } catch (error) {
+      console.error('Error running scoring process:', error);
       res.status(500).json({ message: 'Internal server error' });
     }
   };

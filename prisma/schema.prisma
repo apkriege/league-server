@@ -160,7 +160,7 @@ model player {
   email        String
   phone        String?
   handicap     Float
-  seasonPoints Int       @map("season_points")
+  seasonPoints Float     @map("season_points")
   seasonRank   Int?      @map("season_rank")
   type         String    @default("player") @map("type") // player, substitute, captain
   leagueId     Int       @map("league_id")
@@ -187,7 +187,7 @@ model team {
   id           Int       @id @default(autoincrement())
   name         String
   leagueId     Int       @map("league_id")
-  seasonPoints Int       @map("season_points")
+  seasonPoints Float     @map("season_points")
   seasonRank   Int?      @map("season_rank")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @default(now()) @map("updated_at")
@@ -221,7 +221,7 @@ model event {
   ptsPerTeamWin Int?      @map("pts_per_team_win")
   strokePoints  Json?     @map("stroke_points")
   status        String
-  completed     Boolean   @default(false)
+  isComplete    Boolean   @default(false)
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @default(now()) @map("updated_at")
   deletedAt     DateTime? @map("deleted_at")
@@ -308,11 +308,11 @@ model round {
   adjusted        Int
   putts           Int
   courseRating    Float     @map("course_rating")
-  courseSlope     Int       @map("course_slope")
+  courseSlope     Float     @map("course_slope")
   differential    Float
   preHandicap     Float     @map("pre_handicap")
   postHandicap    Float     @map("post_handicap")
-  pointsEarned    Int       @map("points_earned")
+  pointsEarned    Float     @map("points_earned")
   eagles          Int
   birdies         Int
   pars            Int

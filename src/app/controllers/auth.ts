@@ -2,7 +2,7 @@ import 'express-session';
 import { Request, Response } from 'express';
 import { prisma } from '../../prisma';
 
-import User from '../services/user';
+import User from '../models/user';
 
 declare module 'express-session' {
   interface SessionData {

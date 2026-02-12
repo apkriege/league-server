@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import ClubService from '../services/club';
+import ClubService from '../models/club';
 import { relationBuilder } from '../utils/relation-builder';
 
 class ClubController {

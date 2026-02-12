@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import PlayerService from '../services/player';
+import PlayerService from '../models/player';
 
 export default class PlayerController {
   static getLeaguePlayers = async (req: Request, res: Response): Promise<any> => {
