@@ -10,7 +10,7 @@ export default class PlayerService {
     return await prisma.player.findMany();
   }
 
-  static async findByPlayerId(playerId: number) {
+  static async findById(playerId: number) {
     return await prisma.player.findUnique({ where: { id: playerId } });
   }
 
@@ -23,7 +23,7 @@ export default class PlayerService {
   }
 
   static async update(playerId: number, player: any) {
-    const existingPlayer = await this.findByPlayerId(playerId);
+    const existingPlayer = await this.findById(playerId);
 
     if (!existingPlayer) {
       throw new Error('Player not found');
@@ -33,7 +33,7 @@ export default class PlayerService {
   }
 
   static async delete(playerId: number) {
-    const existingPlayer = await this.findByPlayerId(playerId);
+    const existingPlayer = await this.findById(playerId);
 
     if (!existingPlayer) {
       throw new Error('Player not found');

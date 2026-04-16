@@ -15,7 +15,7 @@ class UserController {
 
   static getUserById = async (req: Request, res: Response) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = Number(req.params.id);
       const user = await UserService.findById(id);
 
       if (!user) {
@@ -61,7 +61,7 @@ class UserController {
 
   static updateUser = async (req: Request, res: Response) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = Number(req.params.id);
       const updatedUser = req.body;
       const user = await UserService.update(id, updatedUser);
 
@@ -79,7 +79,7 @@ class UserController {
 
   static deleteUser = async (req: Request, res: Response) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = Number(req.params.id);
       const user = await UserService.delete(id);
       res.status(200).json(user);
     } catch (error) {
@@ -90,14 +90,14 @@ class UserController {
 
   static getUserLeagues = async (req: Request, res: Response) => {
     try {
-      const userId = parseInt(req.params.id);
+      const userId = Number(req.params.id);
       const leagueIds = await prisma.player.findMany({
         where: { userId },
         select: { leagueId: true },
       });
 
       const leagues = await prisma.league.findMany({
-        where: { id: { in: leagueIds.map((l) => l.leagueId) } },
+        where: { id: { in: leagueIds.map((l: any) => l.leagueId) } },
       });
 
       if (!leagues) {

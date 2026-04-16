@@ -56,6 +56,7 @@ export class Round {
           preHandicap: player.handicap,
           postHandicap: handicapData.handicap,
           pointsEarned: 0,
+          ...({ matchPoints: 0 } as any),
           eagles: stats.eagles,
           birdies: stats.birdies,
           pars: stats.pars,
@@ -105,7 +106,28 @@ export class Round {
 
     // Add logic to calculate scores, handicaps, etc.
     const grossScores = playerRound.scores;
-    const netScores = this.calculateNet(player.handicap, grossScores);
+    const netScores = this.calculateNet(Math.round(player.handicap), grossScores);
+    console.log('-------------------------------');
+    console.log('Calculating scores for player:', player.firstName, player.lastName);
+
+    console.log(
+      'Gross Scores:',
+      Object.values(grossScores).reduce(
+        (a: number, b: any) => a + (typeof b === 'number' ? b : 0),
+        0,
+      ),
+    );
+    console.log('Player Handicap:', Math.round(player.handicap));
+    console.log(
+      'Net Scores:',
+      Object.values(netScores).reduce(
+        (a: number, b: any) => a + (typeof b === 'number' ? b : 0),
+        0,
+      ),
+    );
+
+    console.log('-------------------------------');
+
     const ecsScores = this.calulateEquitableStrokeControl(player.handicap, grossScores);
 
     const modeledScores = Object.entries(grossScores).map(([holeNum, score]) => {

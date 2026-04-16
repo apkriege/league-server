@@ -22,8 +22,8 @@ model session {
 }
 
 enum Role {
-  USER
-  ADMIN
+  user
+  admin
 }
 
 model user {
@@ -129,7 +129,9 @@ model league {
   id               Int       @id @default(autoincrement())
   name             String
   description      String?
-  access           String    @default("public") @map("type") // public, private
+  type             String
+  access           String    @default("public")
+  format           String? // e.g. "individual", "team"
   numPlayers       Int       @map("num_players")
   adminId          Int       @map("admin_id")
   startDate        DateTime  @map("start_date")
@@ -142,10 +144,11 @@ model league {
   updatedAt        DateTime  @default(now()) @map("updated_at")
   deletedAt        DateTime? @map("deleted_at")
 
-  admin   user     @relation(fields: [adminId], references: [id])
-  events  event[]
-  players player[]
-  teams   team[]
+  admin           user                @relation(fields: [adminId], references: [id])
+  events          event[]
+  players         player[]
+  teams           team[]
+  teamEventPoints team_event_points[]
 
   @@index([adminId])
   @@index([startDate])
@@ -163,21 +166,23 @@ model player {
   seasonPoints Float     @map("season_points")
   seasonRank   Int?      @map("season_rank")
   type         String    @default("player") @map("type") // player, substitute, captain
-  leagueId     Int       @map("league_id")
+  leagueId     Int?      @map("league_id")
+  eventId      Int?      @map("event_id")
   teamId       Int?      @map("team_id")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @default(now()) @map("updated_at")
   deletedAt    DateTime? @map("deleted_at")
 
   league        league?         @relation(fields: [leagueId], references: [id])
+  event         event?          @relation("event_players", fields: [eventId], references: [id])
   team          team?           @relation(fields: [teamId], references: [id])
   flightPlayers flight_player[]
   rounds        round[]         @relation("round_playerId")
   opponentOf    round[]         @relation("round_opponentId")
-  events        event[]
   user          user?           @relation(fields: [userId], references: [id])
 
   @@index([leagueId])
+  @@index([eventId])
   @@index([teamId])
   @@index([email])
   @@index([deletedAt])
@@ -186,19 +191,22 @@ model player {
 model team {
   id           Int       @id @default(autoincrement())
   name         String
-  leagueId     Int       @map("league_id")
+  leagueId     Int?      @map("league_id")
+  eventId      Int?      @map("event_id")
   seasonPoints Float     @map("season_points")
   seasonRank   Int?      @map("season_rank")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @default(now()) @map("updated_at")
   deletedAt    DateTime? @map("deleted_at")
 
-  league      league?       @relation(fields: [leagueId], references: [id])
-  players     player[]
-  flightTeams flight_team[]
-  events      event[]
+  league          league?             @relation(fields: [leagueId], references: [id])
+  event           event?              @relation("event_teams", fields: [eventId], references: [id])
+  players         player[]
+  flightTeams     flight_team[]
+  teamEventPoints team_event_points[]
 
   @@index([leagueId])
+  @@index([eventId])
   @@index([deletedAt])
 }
 
@@ -209,7 +217,7 @@ model event {
   teeId         Int       @map("tee_id")
   name          String
   format        String    @map("format") // e.g. "individual", "team"
-  eventType     String    @map("event_type") // e.g. "regular", "playoff", "tournament"
+  type          String    @map("type") // e.g. "regular", "playoff", "tournament"
   holes         Int       @map("holes")
   startSide     String    @map("start_side")
   date          DateTime
@@ -222,17 +230,19 @@ model event {
   strokePoints  Json?     @map("stroke_points")
   status        String
   isComplete    Boolean   @default(false)
+  isDeleted     Boolean   @default(false) @map("is_deleted")
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @default(now()) @map("updated_at")
   deletedAt     DateTime? @map("deleted_at")
 
-  league  league   @relation(fields: [leagueId], references: [id])
-  course  course   @relation(fields: [courseId], references: [id])
-  tee     tee      @relation(fields: [teeId], references: [id])
-  flights flight[]
-  rounds  round[]
-  players player[]
-  teams   team[]
+  league          league              @relation(fields: [leagueId], references: [id])
+  course          course              @relation(fields: [courseId], references: [id])
+  tee             tee                 @relation(fields: [teeId], references: [id])
+  flights         flight[]
+  rounds          round[]
+  players         player[]            @relation("event_players")
+  teams           team[]              @relation("event_teams")
+  teamEventPoints team_event_points[]
 
   @@index([leagueId])
   @@index([courseId])
@@ -240,6 +250,24 @@ model event {
   @@index([date])
   @@index([status])
   @@index([deletedAt])
+}
+
+model team_event_points {
+  id        Int      @id @default(autoincrement())
+  leagueId  Int      @map("league_id")
+  teamId    Int      @map("team_id")
+  eventId   Int      @map("event_id")
+  points    Float
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  league league @relation(fields: [leagueId], references: [id])
+  team   team   @relation(fields: [teamId], references: [id])
+  event  event  @relation(fields: [eventId], references: [id])
+
+  @@unique([teamId, eventId])
+  @@index([leagueId, eventId])
+  @@index([teamId])
 }
 
 model flight {
@@ -262,6 +290,7 @@ model flight_player {
   id         Int       @id @default(autoincrement())
   flightId   Int       @map("flight_id")
   playerId   Int       @map("player_id")
+  teamId     Int?      @map("team_id")
   opponentId Int?      @map("opponent_id")
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @default(now()) @map("updated_at")
@@ -313,6 +342,7 @@ model round {
   preHandicap     Float     @map("pre_handicap")
   postHandicap    Float     @map("post_handicap")
   pointsEarned    Float     @map("points_earned")
+  matchPoints     Float     @default(0) @map("match_points")
   eagles          Int
   birdies         Int
   pars            Int

@@ -4,13 +4,13 @@ import { prisma } from '../../prisma';
 export default class Dashboard {
   static async getPlayerEvents(req: Request, res: Response) {
     try {
-      const playerId = parseInt(req.params.playerId);
+      const playerId = Number(req.params.playerId);
       const leagueId = await prisma.player
         .findUnique({
           where: { id: playerId },
           select: { leagueId: true },
         })
-        .then((player) => player?.leagueId);
+        .then((player: { leagueId: number | null } | null) => player?.leagueId);
 
       if (!leagueId) {
         return res.status(404).json({ message: 'Player or league not found' });
@@ -23,7 +23,7 @@ export default class Dashboard {
       });
 
       const flights = await prisma.flight.findMany({
-        where: { id: { in: flightIds.map((fp) => fp.flightId) } },
+        where: { id: { in: flightIds.map((fp: { flightId: number }) => fp.flightId) } },
         include: {
           event: {
             select: {
@@ -31,7 +31,7 @@ export default class Dashboard {
               date: true,
               name: true,
               startSide: true,
-              eventType: true,
+              type: true,
               course: {
                 select: { name: true },
               },
@@ -65,7 +65,7 @@ export default class Dashboard {
 
   static async getPlayerStats(req: Request, res: Response) {
     try {
-      const playerId = parseInt(req.params.playerId);
+      const playerId = Number(req.params.playerId);
 
       const player = await prisma.player.findUnique({
         where: { id: playerId },
@@ -76,12 +76,13 @@ export default class Dashboard {
       });
 
       const totalEvents = rounds.length;
-      const averageScore = rounds.reduce((acc, round) => acc + round.gross, 0) / (totalEvents || 1);
+      const averageScore =
+        rounds.reduce((acc: number, round: any) => acc + round.gross, 0) / (totalEvents || 1);
       const averageNetScore =
-        rounds.reduce((acc, round) => acc + round.net, 0) / (totalEvents || 1);
+        rounds.reduce((acc: number, round: any) => acc + round.net, 0) / (totalEvents || 1);
 
       const totals = rounds.reduce(
-        (acc, round) => {
+        (acc: any, round: any) => {
           acc.eagles += round.eagles || 0;
           acc.birdies += round.birdies || 0;
           acc.pars += round.pars || 0;
@@ -108,15 +109,15 @@ export default class Dashboard {
   }
 
   static async getLeagueStats(req: Request, res: Response) {
-    const leagueId = parseInt(req.params.leagueId);
-    const playerId = parseInt(req.query.playerId as string);
+    const leagueId = Number(req.params.leagueId);
+    const playerId = Number(req.query.playerId as string);
 
     const eventIds = await prisma.event
       .findMany({
         where: { leagueId },
         select: { id: true },
       })
-      .then((events) => events.map((event) => event.id));
+      .then((events: Array<{ id: number }>) => events.map((event: { id: number }) => event.id));
 
     // get all scores except for the specified player if provided
     const rounds = await prisma.round.findMany({
@@ -132,12 +133,13 @@ export default class Dashboard {
       where: { leagueId },
     });
 
-    const averageScore = rounds.reduce((acc, round) => acc + round.gross, 0) / (rounds.length || 1);
+    const averageScore =
+      rounds.reduce((acc: number, round: any) => acc + round.gross, 0) / (rounds.length || 1);
     const averageNetScore =
-      rounds.reduce((acc, round) => acc + round.net, 0) / (rounds.length || 1);
+      rounds.reduce((acc: number, round: any) => acc + round.net, 0) / (rounds.length || 1);
 
     let totals = rounds.reduce(
-      (acc, round) => {
+      (acc: any, round: any) => {
         acc.eagles += round.eagles || 0;
         acc.birdies += round.birdies || 0;
         acc.pars += round.pars || 0;
@@ -166,7 +168,7 @@ export default class Dashboard {
 
   static async getLeagueLeaderboards(req: Request, res: Response) {
     try {
-      const leagueId = parseInt(req.params.leagueId);
+      const leagueId = Number(req.params.leagueId);
 
       const players = await prisma.player.findMany({
         where: { leagueId },
@@ -177,8 +179,8 @@ export default class Dashboard {
       });
 
       const topPlayers = players
-        .sort((a, b) => b.seasonPoints - a.seasonPoints)
-        .map((player) => ({
+        .sort((a: any, b: any) => b.seasonPoints - a.seasonPoints)
+        .map((player: any) => ({
           id: player.id,
           name: `${player.firstName} ${player.lastName}`,
           points: player.seasonPoints,
@@ -186,8 +188,8 @@ export default class Dashboard {
         .slice(0, 5);
 
       const topTeams = teams
-        .sort((a, b) => b.seasonPoints - a.seasonPoints)
-        .map((team) => ({
+        .sort((a: any, b: any) => b.seasonPoints - a.seasonPoints)
+        .map((team: any) => ({
           id: team.id,
           name: team.name,
           points: team.seasonPoints,
@@ -195,9 +197,9 @@ export default class Dashboard {
         .slice(0, 5);
 
       const topHandicaps = players
-        .filter((player) => player.handicap !== null)
-        .sort((a, b) => a.handicap! - b.handicap!)
-        .map((player) => ({
+        .filter((player: any) => player.handicap !== null)
+        .sort((a: any, b: any) => a.handicap! - b.handicap!)
+        .map((player: any) => ({
           id: player.id,
           name: `${player.firstName} ${player.lastName}`,
           handicap: player.handicap,

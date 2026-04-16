@@ -8,7 +8,7 @@ class CourseController {
     try {
       const query = req.query;
 
-      const id = parseInt(req.params.id);
+      const id = Number(req.params.id);
 
       const course = await CourseService.findById(id);
 
@@ -65,7 +65,7 @@ class CourseController {
 
   static updateCourse = async (req: Request, res: Response) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = Number(req.params.id);
       const course = req.body;
 
       const courseData = {
@@ -95,7 +95,7 @@ class CourseController {
 
   static deleteCourse = async (req: Request, res: Response) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = Number(req.params.id);
       const deletedCourse = await CourseService.delete(id);
       res.status(200).json(deletedCourse);
     } catch (error) {

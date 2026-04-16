@@ -22,9 +22,25 @@ class TeamController {
       }
 
       const teams = await prisma.team.findMany({
-        where: { leagueId: parseInt(leagueId) },
+        where: { leagueId: Number(leagueId) },
         include: {
           players: true,
+          teamEventPoints: {
+            include: {
+              event: {
+                select: {
+                  id: true,
+                  name: true,
+                  date: true,
+                },
+              },
+            },
+            orderBy: {
+              event: {
+                date: 'asc',
+              },
+            },
+          },
         },
       });
 
@@ -64,7 +80,7 @@ class TeamController {
 
   static updateTeam = async (req: Request, res: Response) => {
     try {
-      const id = parseInt(req.params.id);
+      const id = Number(req.params.id);
       const updatedTeam = req.body;
       const team = await TeamService.update(id, updatedTeam);
 

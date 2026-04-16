@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import PgSession from 'connect-pg-simple';
 import pg from 'pg';
 dotenv.config();
+import Payment from './app/controllers/payment';
 
 const app: Express = express();
 
@@ -15,10 +16,14 @@ app.use(
     origin: process.env.CLIENT_URL || 'http://localhost:5173',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type'],
     optionsSuccessStatus: 200,
-  })
+  }),
 );
+
+// Stripe webhook must use the raw request body, so it is mounted before JSON parsing middleware.
+app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), Payment.handleWebhook);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -40,24 +45,10 @@ app.use(
     cookie: {
       secure: process.env.NODE_ENV === 'production',
       httpOnly: true,
+      sameSite: 'lax',
       maxAge: 1000 * 60 * 60 * 24 * 7,
     },
-  })
-);
-
-// Session middleware
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || 'your-secret-key',
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: process.env.NODE_ENV === 'production',
-      httpOnly: true,
-      sameSite: 'lax',
-      maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
-    },
-  })
+  }),
 );
 
 app.get('/', (req: Request, res: Response) => {

@@ -6,7 +6,7 @@ class ClubController {
   static getClub = async (req: Request, res: Response) => {
     try {
       const query = req.query;
-      const id = parseInt(req.params.id);
+      const id = Number(req.params.id);
 
       const club = await ClubService.findById(id);
 
@@ -63,7 +63,7 @@ class ClubController {
 
   // static deleteClub = async (req: Request, res: Response) => {
   //   try {
-  //     const club = await Club.delete(Number(req.params.id));
+  //     const club = await ClubService.delete(Number(req.params.id));
 
   //     if (!club) {
   //       res.status(404).send('Club not found');

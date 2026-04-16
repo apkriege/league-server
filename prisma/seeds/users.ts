@@ -6,7 +6,7 @@ export const usersSeed = [
     username: 'adamkrieger87',
     googleId: '1234567890',
     password: '$2a$10$H.rKIwGOiV.TeE/gNac1Re9/utaHPD3JYCUu9vJBbBgbP4FApPH4i',
-    role: 'ADMIN',
+    role: 'admin',
     metadata: {
       golfer: 'not very good',
     },
@@ -18,6 +18,6 @@ export const usersSeed = [
     username: 'davesmith',
     googleId: '12345',
     password: '$2a$10$H.rKIwGOiV.TeE/gNac1Re9/utaHPD3JYCUu9vJBbBgbP4FApPH4i',
-    role: 'USER',
+    role: 'user',
   },
 ];
