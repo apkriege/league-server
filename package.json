@@ -6,9 +6,13 @@
   "scripts": {
     "test": "vitest",
     "test:file": "npx vitest --testNamePattern $1",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
     "start": "ts-node src/index.ts",
+    "start:prod": "node dist/src/index.js",
     "dev": "nodemon --exec ts-node src/index.ts",
     "seed": "npx ts-node prisma/seed.ts",
+    "seed:export": "node prisma/export-current-db-seed.js",
     "db:generate": "npx prisma generate --schema=./prisma/schema.prisma",
     "db:push": "npx prisma db push --schema=./prisma/schema.prisma",
     "db:full": "npx prisma db push --force-reset && npx ts-node prisma/seed.ts",

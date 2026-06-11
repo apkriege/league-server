@@ -7,13 +7,23 @@ import PgSession from 'connect-pg-simple';
 import pg from 'pg';
 dotenv.config();
 import Payment from './app/controllers/payment';
+import { requireTrustedOrigin } from './app/middleware/security';
 
 const app: Express = express();
+const clientUrl = process.env.CLIENT_URL;
+const sessionSecret = process.env.SESSION_SECRET;
 
-// Middleware
+if (!clientUrl) {
+  throw new Error('Missing CLIENT_URL');
+}
+
+if (!sessionSecret) {
+  throw new Error('Missing SESSION_SECRET');
+}
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin: clientUrl,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type'],
@@ -39,13 +49,13 @@ app.use(
       pool: pool,
       tableName: 'session',
     }),
-    secret: process.env.SESSION_SECRET || 'your-secret-key',
+    secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
     cookie: {
       secure: process.env.NODE_ENV === 'production',
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       maxAge: 1000 * 60 * 60 * 24 * 7,
     },
   }),
@@ -56,7 +66,7 @@ app.get('/', (req: Request, res: Response) => {
 });
 
 // API routes
-app.use('/api', api);
+app.use('/api', requireTrustedOrigin, api);
 
 app.get('/health', (req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', message: 'API is healthy' });
@@ -67,7 +77,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   // const statusCode = err.statusCode || 500;
   const statusCode = 500;
   const name = err.name || 'Error';
-  res.status(statusCode).json({ name, message: err.message });
+  res.status(statusCode).json({ name, message: 'Internal server error' });
 });
 
 export default app;

@@ -156,22 +156,23 @@ model league {
 }
 
 model player {
-  id           Int       @id @default(autoincrement())
-  userId       Int?      @map("user_id")
-  firstName    String    @map("first_name")
-  lastName     String    @map("last_name")
-  email        String
-  phone        String?
-  handicap     Float
-  seasonPoints Float     @map("season_points")
-  seasonRank   Int?      @map("season_rank")
-  type         String    @default("player") @map("type") // player, substitute, captain
-  leagueId     Int?      @map("league_id")
-  eventId      Int?      @map("event_id")
-  teamId       Int?      @map("team_id")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  updatedAt    DateTime  @default(now()) @map("updated_at")
-  deletedAt    DateTime? @map("deleted_at")
+  id               Int       @id @default(autoincrement())
+  userId           Int?      @map("user_id")
+  firstName        String    @map("first_name")
+  lastName         String    @map("last_name")
+  email            String
+  phone            String?
+  handicap         Float
+  startingHandicap Float     @map("starting_handicap")
+  seasonPoints     Float     @map("season_points")
+  seasonRank       Int?      @map("season_rank")
+  type             String    @default("player") @map("type") // player, substitute, captain
+  leagueId         Int?      @map("league_id")
+  eventId          Int?      @map("event_id")
+  teamId           Int?      @map("team_id")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @default(now()) @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
 
   league        league?         @relation(fields: [leagueId], references: [id])
   event         event?          @relation("event_players", fields: [eventId], references: [id])
@@ -273,6 +274,7 @@ model team_event_points {
 model flight {
   id        Int       @id @default(autoincrement())
   eventId   Int       @map("event_id")
+  status    String    @default("not_started")
   startTime String    @map("start_time")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @default(now()) @map("updated_at")
@@ -331,6 +333,7 @@ model round {
   courseId        Int       @map("course_id")
   teeId           Int       @map("tee_id")
   scoringFormat   String    @map("scoring_format") // stroke play, match play
+  status          String    @default("not_started") // not_started, in_progress, completed
   holesPlayed     Int       @map("holes_played")
   gross           Int
   net             Int
@@ -338,9 +341,9 @@ model round {
   putts           Int
   courseRating    Float     @map("course_rating")
   courseSlope     Float     @map("course_slope")
-  differential    Float
-  preHandicap     Float     @map("pre_handicap")
-  postHandicap    Float     @map("post_handicap")
+  differential    Float?
+  preHandicap     Float?    @map("pre_handicap")
+  postHandicap    Float?    @map("post_handicap")
   pointsEarned    Float     @map("points_earned")
   matchPoints     Float     @default(0) @map("match_points")
   eagles          Int
@@ -379,7 +382,7 @@ model round {
 model score {
   id             Int      @id @default(autoincrement())
   eventId        Int      @map("event_id")
-  roundId        Int      @map("score_id")
+  roundId        Int      @map("round_id")
   playerId       Int      @map("player_id")
   courseId       Int      @map("course_id")
   teeId          Int      @map("tee_id")

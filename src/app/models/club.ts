@@ -1,5 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-export const prisma = new PrismaClient();
+import { prisma } from '../../prisma';
 
 export default class CourseService {
   static query(): any {

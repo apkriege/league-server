@@ -1,5 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-export const prisma = new PrismaClient();
+import { prisma } from '../../prisma';
 
 export default class PlayerService {
   static query(): any {
@@ -7,15 +6,18 @@ export default class PlayerService {
   }
 
   static async findAll() {
-    return await prisma.player.findMany();
+    return await prisma.player.findMany({ where: { deletedAt: null } });
   }
 
   static async findById(playerId: number) {
-    return await prisma.player.findUnique({ where: { id: playerId } });
+    return await prisma.player.findFirst({ where: { id: playerId, deletedAt: null } });
   }
 
   static async findByLeagueId(leagueId: number) {
-    return await prisma.player.findMany({ where: { leagueId: leagueId } });
+    return await prisma.player.findMany({
+      where: { leagueId: leagueId, deletedAt: null },
+      orderBy: [{ type: 'asc' }, { firstName: 'asc' }, { lastName: 'asc' }],
+    });
   }
 
   static async create(player: any) {

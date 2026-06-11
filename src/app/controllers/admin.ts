@@ -5,11 +5,15 @@ class AdminController {
   static getLeagues = async (req: Request, res: Response) => {
     try {
       const { user } = req as any; // Assuming you have user info in the request object
+      const role = String(user?.role || '').toUpperCase();
+      const isSuperAdmin = role === 'SUPER';
 
       const leagues = await prisma.league.findMany({
-        where: {
-          adminId: user.id, // Filter leagues by the admin's user ID
-        },
+        where: isSuperAdmin
+          ? undefined
+          : {
+              adminId: user.id, // Filter leagues by the admin's user ID
+            },
         include: {
           _count: {
             select: {
@@ -17,6 +21,9 @@ class AdminController {
               events: true,
             },
           },
+        },
+        orderBy: {
+          id: 'desc',
         },
       });
 
@@ -30,13 +37,14 @@ class AdminController {
   static getLeague = async (req: Request, res: Response) => {
     try {
       const { user } = req as any;
-      console.log('Admin user:', user);
+      const role = String(user?.role || '').toUpperCase();
+      const isSuperAdmin = role === 'SUPER';
       const leagueId = Number(req.params.id);
 
       const league = await prisma.league.findFirst({
         where: {
           id: leagueId,
-          adminId: user.id, // Ensure the league belongs to the admin
+          ...(isSuperAdmin ? {} : { adminId: user.id }), // Ensure the league belongs to the admin
         },
         include: {
           events: true,

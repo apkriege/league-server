@@ -127,8 +127,6 @@ export default class Dashboard {
       },
     });
 
-    console.log('Scores fetched for league stats:', rounds.length);
-
     const totalEvents = await prisma.event.count({
       where: { leagueId },
     });

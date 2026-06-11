@@ -37,21 +37,36 @@ export default class FlightController {
       const flightId = Number(req.params.flightId);
       const { players } = req.body;
 
-      console.log(players);
+      if (!Array.isArray(players)) {
+        return res.status(400).json({ message: 'Invalid players payload' });
+      }
 
-      await prisma.flight_player.deleteMany({
+      const existingFlightPlayers = await prisma.flight_player.findMany({
         where: { flightId },
+        orderBy: { id: 'asc' },
       });
 
-      // add new players to the flight
-      const flightPlayers = players.map((player: any) => ({
-        flightId,
-        ...player,
-      }));
+      if (existingFlightPlayers.length !== players.length) {
+        return res.status(400).json({
+          message: 'Player count mismatch for flight update',
+          expected: existingFlightPlayers.length,
+          received: players.length,
+        });
+      }
 
-      await prisma.flight_player.createMany({
-        data: flightPlayers,
-      });
+      await prisma.$transaction(
+        existingFlightPlayers.map((existingRow, idx) => {
+          const nextPlayer = players[idx] || {};
+          return prisma.flight_player.update({
+            where: { id: existingRow.id },
+            data: {
+              playerId: Number(nextPlayer.playerId),
+              teamId: nextPlayer.teamId != null ? Number(nextPlayer.teamId) : null,
+              opponentId: nextPlayer.opponentId != null ? Number(nextPlayer.opponentId) : null,
+            },
+          });
+        }),
+      );
 
       res.status(200).json({ message: 'Flights updated successfully' });
     } catch (error) {

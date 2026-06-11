@@ -1,5 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-export const prisma = new PrismaClient();
+import { prisma } from '../../prisma';
 
 export default class UserService {
   static query(): any {
@@ -11,22 +10,22 @@ export default class UserService {
   }
 
   static async findById(id: number) {
-    const user = await prisma.user.findUnique({ where: { id } });
+    const user = await prisma.user.findFirst({ where: { id, deletedAt: null } });
     return user;
   }
 
   static async findAll() {
-    const users = await prisma.user.findMany();
+    const users = await prisma.user.findMany({ where: { deletedAt: null } });
     return users;
   }
 
   static async findByEmail(email: string) {
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prisma.user.findFirst({ where: { email, deletedAt: null } });
     return user;
   }
 
   static async findByGoogleEmail(email: string) {
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prisma.user.findFirst({ where: { email, deletedAt: null } });
     return user;
   }
 

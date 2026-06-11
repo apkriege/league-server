@@ -45,6 +45,7 @@ export default class LeagueService {
       email: player.email,
       phone: player.phone || null,
       handicap: player.handicap || 0,
+      startingHandicap: player.handicap || 0,
       seasonPoints: 0,
       leagueId,
     }));

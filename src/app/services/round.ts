@@ -1,136 +1,184 @@
-import { PrismaClient } from '@prisma/client';
-export const prisma = new PrismaClient();
+import { prisma } from '../../prisma';
+import { Handicap } from './handicap';
 
 export class Round {
   private eventId: number;
-  private playerRounds: any[];
+  private playerRound: any;
   private event: any;
   private tee: any;
-  private players: any;
+  private player: any;
+  private isEdit = false;
+  private round?: any;
 
-  constructor(eventId: number, playerRounds: any[]) {
+  constructor(eventId: number, playerRound: any, round?: any) {
     this.eventId = eventId;
-    this.playerRounds = playerRounds;
+    this.playerRound = playerRound;
+    this.round = round;
+    this.isEdit = Boolean(round);
   }
 
   async process() {
-    // Placeholder for round processing logic
     try {
-      console.log('Processing rounds for event ID:', this.eventId);
-
+      await this.setPlayer();
       await this.setEventData();
-      await this.processRounds();
+
+      if (this.isEdit && this.round.id) {
+        const round = await this.updateRound(this.round.id, this.playerRound);
+        await this.processHandicap(round);
+      } else {
+        const round = await this.createRound();
+        await this.processHandicap(round);
+      }
     } catch (error) {
       console.error('Error processing rounds:', error);
+      throw error;
     }
-
-    return;
   }
 
   ////////////////////////////////////////////
   // ROUND PROCESSING
   // Calculate scores, handicaps,
   ////////////////////////////////////////////
-  private async processRounds() {
-    for (const pr of this.playerRounds) {
-      // const pr = this.playerRounds[0]; // TEMPORARY - PROCESS ONLY FIRST ROUND
-      const player = this.players.find((p: any) => p.id === pr.playerId);
-      const modeledScores = this.calculateScores(pr);
-      const stats = this.calculateStats(modeledScores);
-      const handicapData = await this.calculateHandicapIndex(pr.playerId, stats.totalAdjusted);
+  private async createRound() {
+    const existingRound = await this.checkForExistingRound(this.playerRound.playerId, this.eventId);
+    if (existingRound) {
+      throw new Error('Round already exists for this player and event');
+    }
 
-      // save the round to db
-      const round = await prisma.round.create({
+    const pr = this.playerRound;
+    const modeledScores = this.calculateScores(pr);
+    const stats = this.calculateStats(modeledScores);
+
+    // save the round to db
+    const round = await prisma.round.create({
+      data: {
+        eventId: this.eventId,
+        playerId: pr.playerId,
+        opponentId: pr.opponentId,
+        courseId: this.event.courseId,
+        teeId: this.event.teeId,
+        status: 'completed',
+        gross: stats.totalGross,
+        net: stats.totalNet,
+        adjusted: stats.totalAdjusted,
+        putts: 0,
+        courseRating: this.tee.rating,
+        courseSlope: this.tee.slope,
+        pointsEarned: this.playerRound.points || 0,
+        matchPoints: this.playerRound.matchPoints || 0,
+        eagles: stats.eagles,
+        birdies: stats.birdies,
+        pars: stats.pars,
+        bogeys: stats.bogeys,
+        doubleBogeys: stats.doubleBogeys,
+        tripleBogeys: stats.tripleBogeys,
+        netEagles: stats.netEagles,
+        netBirdies: stats.netBirdies,
+        netPars: stats.netPars,
+        netBogeys: stats.netBogeys,
+        netDoubleBogeys: stats.netDoubleBogeys,
+        netTripleBogeys: stats.netTripleBogeys,
+        date: this.event.date,
+        scoringFormat: this.event.scoringFormat,
+        holesPlayed: this.event.holes,
+      },
+    });
+
+    // save the scores to db
+    await prisma.score.createMany({
+      data: modeledScores.map((s: any) => ({
+        eventId: this.eventId,
+        playerId: pr.playerId,
+        roundId: round.id,
+        courseId: this.event.courseId,
+        teeId: this.event.teeId,
+        hole: s.hole,
+        par: s.par,
+        gross: s.gross,
+        adjusted: s.adjusted,
+        net: s.net,
+        points: 0,
+        putts: 0,
+      })),
+    });
+
+    return round;
+  }
+
+  private async updateRound(roundId: number, newRound: any) {
+    const round = await prisma.round.findUnique({
+      where: { id: roundId },
+    });
+
+    if (!round) {
+      throw new Error('Round not found for update');
+    }
+
+    // For now, we will only allow updating scores and recalculating stats/handicap.
+    const modeledScores = this.calculateScores(newRound);
+    const stats = this.calculateStats(modeledScores);
+
+    const r = await prisma.round.update({
+      where: { id: roundId },
+      data: {
+        gross: stats.totalGross,
+        net: stats.totalNet,
+        adjusted: stats.totalAdjusted,
+        pointsEarned: this.playerRound.points || 0,
+        matchPoints: this.playerRound.matchPoints || 0,
+        eagles: stats.eagles,
+        birdies: stats.birdies,
+        pars: stats.pars,
+        bogeys: stats.bogeys,
+        doubleBogeys: stats.doubleBogeys,
+        tripleBogeys: stats.tripleBogeys,
+        netEagles: stats.netEagles,
+        netBirdies: stats.netBirdies,
+        netPars: stats.netPars,
+        netBogeys: stats.netBogeys,
+        netDoubleBogeys: stats.netDoubleBogeys,
+        netTripleBogeys: stats.netTripleBogeys,
+      },
+    });
+
+    // Update scores
+    for (const score of modeledScores) {
+      await prisma.score.update({
+        where: {
+          roundId_hole: {
+            roundId,
+            hole: score.hole,
+          },
+        },
         data: {
-          eventId: this.eventId,
-          playerId: pr.playerId,
-          courseId: this.event.courseId,
-          teeId: this.event.teeId,
-          gross: stats.totalGross,
-          net: stats.totalNet,
-          adjusted: stats.totalAdjusted,
-          putts: 0,
-          courseRating: this.tee.rating,
-          courseSlope: this.tee.slope,
-          differential: handicapData.differential,
-          preHandicap: player.handicap,
-          postHandicap: handicapData.handicap,
-          pointsEarned: 0,
-          ...({ matchPoints: 0 } as any),
-          eagles: stats.eagles,
-          birdies: stats.birdies,
-          pars: stats.pars,
-          bogeys: stats.bogeys,
-          doubleBogeys: stats.doubleBogeys,
-          tripleBogeys: stats.tripleBogeys,
-          netEagles: stats.netEagles,
-          netBirdies: stats.netBirdies,
-          netPars: stats.netPars,
-          netBogeys: stats.netBogeys,
-          netDoubleBogeys: stats.netDoubleBogeys,
-          netTripleBogeys: stats.netTripleBogeys,
-          date: this.event.date,
-          scoringFormat: this.event.scoringFormat,
-          holesPlayed: this.event.holes,
+          gross: score.gross as number,
+          adjusted: score.adjusted,
+          net: score.net,
         },
       });
-
-      // save the scores to db
-      await prisma.score.createMany({
-        data: modeledScores.map((s: any) => ({
-          eventId: this.eventId,
-          playerId: pr.playerId,
-          roundId: round.id,
-          courseId: this.event.courseId,
-          teeId: this.event.teeId,
-          hole: s.hole,
-          par: s.par,
-          gross: s.gross,
-          adjusted: s.adjusted,
-          net: s.net,
-          points: 0,
-          putts: 0,
-        })),
-      });
-
-      // update player's handicap
-      await prisma.player.update({
-        where: { id: player.id },
-        data: { handicap: handicapData.handicap },
-      });
     }
+
+    return r;
+  }
+
+  private checkForExistingRound(playerId: number, eventId: number) {
+    return prisma.round.findUnique({
+      where: {
+        eventId_playerId: {
+          eventId,
+          playerId,
+        },
+      },
+    });
   }
 
   private calculateScores(playerRound: any) {
-    const player = this.players.find((p: any) => p.id === playerRound.playerId);
-
-    // Add logic to calculate scores, handicaps, etc.
+    const hcp = this.isEdit ? Math.round(this.round.preHandicap) : Math.round(this.player.handicap);
     const grossScores = playerRound.scores;
-    const netScores = this.calculateNet(Math.round(player.handicap), grossScores);
-    console.log('-------------------------------');
-    console.log('Calculating scores for player:', player.firstName, player.lastName);
+    const netScores = this.getNetScores(hcp, grossScores);
+    const ecsScores = this.calulateEquitableStrokeControl(hcp, grossScores);
 
-    console.log(
-      'Gross Scores:',
-      Object.values(grossScores).reduce(
-        (a: number, b: any) => a + (typeof b === 'number' ? b : 0),
-        0,
-      ),
-    );
-    console.log('Player Handicap:', Math.round(player.handicap));
-    console.log(
-      'Net Scores:',
-      Object.values(netScores).reduce(
-        (a: number, b: any) => a + (typeof b === 'number' ? b : 0),
-        0,
-      ),
-    );
-
-    console.log('-------------------------------');
-
-    const ecsScores = this.calulateEquitableStrokeControl(player.handicap, grossScores);
-
-    const modeledScores = Object.entries(grossScores).map(([holeNum, score]) => {
+    return Object.entries(grossScores).map(([holeNum, score]) => {
       const h = this.tee.holes.find((h: any) => h.num === Number(holeNum));
 
       if (!h) {
@@ -146,8 +194,18 @@ export class Round {
         net: netScores[Number(holeNum)],
       };
     });
+  }
 
-    return modeledScores;
+  private getNetScores(playerHcp: number, scores: any) {
+    const netScores: Record<number, number> = {};
+    const pops = this.getPops(playerHcp);
+
+    for (const [hole, score] of Object.entries(scores)) {
+      const popAllowance = pops.get(Number(hole)) || 0;
+      netScores[Number(hole)] = Math.max(0, (score as number) - popAllowance); // Ensure no negative scores
+    }
+
+    return netScores;
   }
 
   // TODO: ADJUST LATER IF NEEDED
@@ -197,18 +255,6 @@ export class Round {
     }
 
     return maxAllowed;
-  }
-
-  private calculateNet(playerHcp: number, scores: any) {
-    const netScores: Record<number, number> = {};
-    const pops = this.getPops(playerHcp);
-
-    for (const [hole, score] of Object.entries(scores)) {
-      const popAllowance = pops.get(Number(hole)) || 0;
-      netScores[Number(hole)] = Math.max(0, (score as number) - popAllowance); // Ensure no negative scores
-    }
-
-    return netScores;
   }
 
   private getPops(playerHcp: number): Map<number, number> {
@@ -273,22 +319,26 @@ export class Round {
     return stats;
   }
 
-  ////////////////////////////////////////////
-  // EVENT DATA
-  // Set event, tee, players, and teams
-  ////////////////////////////////////////////
+  // SET PLAYER
+  private async setPlayer() {
+    const player = await prisma.player.findUnique({
+      where: { id: this.playerRound.playerId },
+    });
+
+    if (!player) {
+      throw new Error(`Player with ID ${this.playerRound.playerId} not found`);
+    }
+
+    this.player = player;
+  }
+
+  // SET EVENT DATA
   private async setEventData() {
     const event = await prisma.event.findFirst({
       where: { id: this.eventId },
       include: {
         course: true,
         tee: true,
-        flights: {
-          include: {
-            players: { include: { player: true } },
-            teams: { include: { team: { include: { players: true } } } },
-          },
-        },
       },
     });
 
@@ -298,11 +348,6 @@ export class Round {
 
     this.event = event;
     this.tee = this.modelTee(event?.tee, event.holes, event.startSide);
-    console.log('Modeled Tee:', this.tee);
-    const players =
-      event?.flights.flatMap((flight: any) => flight.players.map((p: any) => p.player)) || [];
-
-    this.players = players;
   }
 
   private modelTee(tee: any, numHoles: number, startSide: string) {
@@ -333,9 +378,28 @@ export class Round {
     };
   }
 
-  /////////////////////////////////////////
+  private async processHandicap(round: any) {
+    const handicapData = await this.calculateHandicapIndex(
+      this.playerRound.playerId,
+      round.adjusted,
+    );
+
+    await prisma.round.update({
+      where: { id: round.id },
+      data: {
+        preHandicap: this.isEdit ? round.preHandicap : this.player.handicap,
+        postHandicap: handicapData.handicap,
+        differential: handicapData.differential,
+      },
+    });
+
+    await prisma.player.update({
+      where: { id: this.player.id },
+      data: { handicap: handicapData.handicap },
+    });
+  }
+
   // HANDICAP CALCULATIONS
-  /////////////////////////////////////////
   private async calculateHandicapIndex(
     playerId: number,
     adjustedScore: number,
@@ -343,10 +407,16 @@ export class Round {
     // last number of rounds to use
     const roundsToUse = 5;
 
+    const roundsWhere =
+      this.isEdit && this.round?.id
+        ? { id: { not: this.round.id } } // Exclude current round if editing
+        : undefined;
+
     const player = await prisma.player.findUnique({
       where: { id: playerId },
       include: {
         rounds: {
+          where: roundsWhere,
           select: { gross: true, differential: true },
           take: 5,
           orderBy: { createdAt: 'desc' },
@@ -359,7 +429,9 @@ export class Round {
     }
 
     // Get past differentials
-    const differentials = player.rounds.map((r) => r.differential);
+    const differentials = player.rounds
+      .map((r) => r.differential)
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
 
     // Add current differential
     const differential = Number(
@@ -368,9 +440,10 @@ export class Round {
     differentials.push(differential);
 
     // Sort to find lowest scores
-    const sorted = differentials.sort((a, b) => a - b);
+    const sorted = [...differentials].sort((a, b) => a - b);
 
     let newHandicap: number;
+    const hcpTpUse = this.isEdit ? this.round.preHandicap : player.handicap;
 
     // First time player
     if (!player.handicap) {
@@ -378,7 +451,7 @@ export class Round {
     }
     // Blend in player handicap when less than roundsToUse
     else if (sorted.length < roundsToUse) {
-      const sum = sorted.reduce((a, b) => a + b, 0) + player.handicap;
+      const sum = sorted.reduce((a, b) => a + b, 0) + hcpTpUse;
       const avg = sum / (sorted.length + 1); // Include handicap in count
       newHandicap = Number((avg * 0.96).toFixed(2));
     }
