@@ -9,33 +9,24 @@ dotenv.config();
 import Payment from './app/controllers/payment';
 import HealthController from './app/controllers/health';
 import { requireTrustedOrigin } from './app/middleware/security';
-import { getConfiguredClientOrigins, isTrustedClientOrigin } from './app/utils/origins';
 
 const app: Express = express();
-const clientOrigins = getConfiguredClientOrigins();
 const sessionSecret = process.env.SESSION_SECRET;
-
-if (clientOrigins.length === 0) {
-  throw new Error('Missing CLIENT_URL or CLIENT_URLS');
-}
 
 if (!sessionSecret) {
   throw new Error('Missing SESSION_SECRET');
 }
 
 const corsOptions = {
-  // origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-  //   if (!origin || isTrustedClientOrigin(origin)) {
-  //     return callback(null, true);
-  //   }
-
-  //   return callback(null, false);
-  // },
-  origin: ['*'],
+  origin: true,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  // allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  allowHeaders: ['*'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Access-Control-Allow-Origin',
+  ],
   optionsSuccessStatus: 200,
 };
 
