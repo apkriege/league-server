@@ -3,6 +3,7 @@
 ## Required environment variables
 
 Copy `.env.example` to `.env` and set:
+x
 
 - `PORT`
 - `NODE_ENV`
