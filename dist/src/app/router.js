@@ -18,6 +18,7 @@ const flight_1 = __importDefault(require("./controllers/flight"));
 const admin_1 = __importDefault(require("./controllers/admin"));
 const payment_1 = __importDefault(require("./controllers/payment"));
 const test_1 = __importDefault(require("./controllers/test"));
+const health_1 = __importDefault(require("./controllers/health"));
 const security_1 = require("./middleware/security");
 const router = express_1.default.Router();
 const authRateLimiter = (0, security_1.createRateLimiter)({ keyPrefix: 'auth', windowMs: 15 * 60 * 1000, max: 20 });
@@ -27,6 +28,7 @@ const paymentRateLimiter = (0, security_1.createRateLimiter)({
     max: 10,
 });
 router.get('/test-handicap', auth_guard_1.adminGuard, test_1.default.fullHandicapTest);
+router.get('/health', health_1.default.getHealth);
 // =====================
 // AUTH ROUTES
 // =====================

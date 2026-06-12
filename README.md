@@ -31,10 +31,35 @@ Optional:
 
 ## Production
 
-1. Run `npm run build`.
-2. Apply reviewed Prisma migrations.
-3. Run `npm run start:prod`.
-4. Configure the Stripe webhook to `POST /api/payments/webhook`.
+1. Commit Prisma migrations from `prisma/migrations`.
+2. Run `npm run build`.
+3. Run `npm run db:migrate:deploy`.
+4. Run `npm run start:prod`.
+5. Configure the Stripe webhook to `POST /api/payments/webhook`.
+
+## Railway deployment
+
+Use the server as its own Railway service.
+
+If this repo is deployed as a monorepo:
+
+1. Set the Railway service root directory to `server`.
+2. Attach a PostgreSQL database service.
+3. Ensure `DATABASE_URL` is available to the server service.
+
+The checked-in Railway flow is:
+
+- Build: `npm run build`
+- Start: `npm run start:railway`
+- Startup behavior: applies `prisma migrate deploy`, then starts `node dist/src/index.js`
+
+Important:
+
+- Do not use `prisma db push` in production.
+- Create migrations locally with `npx prisma migrate dev --name your_change_name`.
+- Commit the generated `prisma/migrations/*` files to GitHub before deploying.
+- `prisma migrate deploy` is safe to run on every deploy and will only apply pending migrations.
+- `prisma` is kept in `dependencies` so the CLI is present in the Railway runtime when migrations run.
 
 ## Notes
 

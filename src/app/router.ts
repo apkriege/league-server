@@ -26,6 +26,7 @@ import Flight from './controllers/flight';
 import Admin from './controllers/admin';
 import Payment from './controllers/payment';
 import TestController from './controllers/test';
+import HealthController from './controllers/health';
 import { createRateLimiter } from './middleware/security';
 
 const router: Router = express.Router();
@@ -37,6 +38,7 @@ const paymentRateLimiter = createRateLimiter({
 });
 
 router.get('/test-handicap', admin, TestController.fullHandicapTest);
+router.get('/health', HealthController.getHealth);
 
 // =====================
 // AUTH ROUTES

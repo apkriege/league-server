@@ -7,6 +7,7 @@ import PgSession from 'connect-pg-simple';
 import pg from 'pg';
 dotenv.config();
 import Payment from './app/controllers/payment';
+import HealthController from './app/controllers/health';
 import { requireTrustedOrigin } from './app/middleware/security';
 
 const app: Express = express();
@@ -68,9 +69,7 @@ app.get('/', (req: Request, res: Response) => {
 // API routes
 app.use('/api', requireTrustedOrigin, api);
 
-app.get('/health', (req: Request, res: Response) => {
-  res.status(200).json({ status: 'ok', message: 'API is healthy' });
-});
+app.get('/health', HealthController.getHealth);
 
 // High-level error handling
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {

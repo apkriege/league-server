@@ -12,6 +12,7 @@ const connect_pg_simple_1 = __importDefault(require("connect-pg-simple"));
 const pg_1 = __importDefault(require("pg"));
 dotenv_1.default.config();
 const payment_1 = __importDefault(require("./app/controllers/payment"));
+const health_1 = __importDefault(require("./app/controllers/health"));
 const security_1 = require("./app/middleware/security");
 const app = (0, express_1.default)();
 const clientUrl = process.env.CLIENT_URL;
@@ -57,9 +58,7 @@ app.get('/', (req, res) => {
 });
 // API routes
 app.use('/api', security_1.requireTrustedOrigin, router_1.default);
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'ok', message: 'API is healthy' });
-});
+app.get('/health', health_1.default.getHealth);
 // High-level error handling
 app.use((err, req, res, next) => {
     // const statusCode = err.statusCode || 500;
