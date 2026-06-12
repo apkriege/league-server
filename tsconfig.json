@@ -15,5 +15,11 @@
     }
   },
   "include": ["src/**/*.ts", "src/db/schema.prisma", "prisma/index.ts", "src/app/prisma.ts"],
-  "exclude": ["node_modules"]
+  "exclude": [
+    "node_modules",
+    "src/app/__tests__/**/*",
+    "src/app/__tests/**/*",
+    "src/app/__template/**/*",
+    "src/app/utils/scoring-old.ts"
+  ]
 }

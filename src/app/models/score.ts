@@ -34,6 +34,6 @@ export default class ScoreService {
       throw new Error('Event score not found');
     }
 
-    await prisma.score.update({ where: { id }, data: { deletedAt: new Date() } });
+    await prisma.score.delete({ where: { id } });
   }
 }

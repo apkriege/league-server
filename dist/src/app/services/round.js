@@ -1,0 +1,424 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Round = void 0;
+const prisma_1 = require("../../prisma");
+class Round {
+    eventId;
+    playerRound;
+    event;
+    tee;
+    player;
+    isEdit = false;
+    round;
+    constructor(eventId, playerRound, round) {
+        this.eventId = eventId;
+        this.playerRound = playerRound;
+        this.round = round;
+        this.isEdit = Boolean(round);
+    }
+    async process() {
+        try {
+            await this.setPlayer();
+            await this.setEventData();
+            if (this.isEdit && this.round.id) {
+                const round = await this.updateRound(this.round.id, this.playerRound);
+                await this.processHandicap(round);
+            }
+            else {
+                const round = await this.createRound();
+                await this.processHandicap(round);
+            }
+        }
+        catch (error) {
+            console.error('Error processing rounds:', error);
+            throw error;
+        }
+    }
+    ////////////////////////////////////////////
+    // ROUND PROCESSING
+    // Calculate scores, handicaps,
+    ////////////////////////////////////////////
+    async createRound() {
+        const existingRound = await this.checkForExistingRound(this.playerRound.playerId, this.eventId);
+        if (existingRound) {
+            throw new Error('Round already exists for this player and event');
+        }
+        const pr = this.playerRound;
+        const modeledScores = this.calculateScores(pr);
+        const stats = this.calculateStats(modeledScores);
+        // save the round to db
+        const round = await prisma_1.prisma.round.create({
+            data: {
+                eventId: this.eventId,
+                playerId: pr.playerId,
+                opponentId: pr.opponentId,
+                courseId: this.event.courseId,
+                teeId: this.event.teeId,
+                status: 'completed',
+                gross: stats.totalGross,
+                net: stats.totalNet,
+                adjusted: stats.totalAdjusted,
+                putts: 0,
+                courseRating: this.tee.rating,
+                courseSlope: this.tee.slope,
+                pointsEarned: this.playerRound.points || 0,
+                matchPoints: this.playerRound.matchPoints || 0,
+                eagles: stats.eagles,
+                birdies: stats.birdies,
+                pars: stats.pars,
+                bogeys: stats.bogeys,
+                doubleBogeys: stats.doubleBogeys,
+                tripleBogeys: stats.tripleBogeys,
+                netEagles: stats.netEagles,
+                netBirdies: stats.netBirdies,
+                netPars: stats.netPars,
+                netBogeys: stats.netBogeys,
+                netDoubleBogeys: stats.netDoubleBogeys,
+                netTripleBogeys: stats.netTripleBogeys,
+                date: this.event.date,
+                scoringFormat: this.event.scoringFormat,
+                holesPlayed: this.event.holes,
+            },
+        });
+        // save the scores to db
+        await prisma_1.prisma.score.createMany({
+            data: modeledScores.map((s) => ({
+                eventId: this.eventId,
+                playerId: pr.playerId,
+                roundId: round.id,
+                courseId: this.event.courseId,
+                teeId: this.event.teeId,
+                hole: s.hole,
+                par: s.par,
+                gross: s.gross,
+                adjusted: s.adjusted,
+                net: s.net,
+                points: 0,
+                putts: 0,
+            })),
+        });
+        return round;
+    }
+    async updateRound(roundId, newRound) {
+        const round = await prisma_1.prisma.round.findUnique({
+            where: { id: roundId },
+        });
+        if (!round) {
+            throw new Error('Round not found for update');
+        }
+        // For now, we will only allow updating scores and recalculating stats/handicap.
+        const modeledScores = this.calculateScores(newRound);
+        const stats = this.calculateStats(modeledScores);
+        const r = await prisma_1.prisma.round.update({
+            where: { id: roundId },
+            data: {
+                gross: stats.totalGross,
+                net: stats.totalNet,
+                adjusted: stats.totalAdjusted,
+                pointsEarned: this.playerRound.points || 0,
+                matchPoints: this.playerRound.matchPoints || 0,
+                eagles: stats.eagles,
+                birdies: stats.birdies,
+                pars: stats.pars,
+                bogeys: stats.bogeys,
+                doubleBogeys: stats.doubleBogeys,
+                tripleBogeys: stats.tripleBogeys,
+                netEagles: stats.netEagles,
+                netBirdies: stats.netBirdies,
+                netPars: stats.netPars,
+                netBogeys: stats.netBogeys,
+                netDoubleBogeys: stats.netDoubleBogeys,
+                netTripleBogeys: stats.netTripleBogeys,
+            },
+        });
+        // Update scores
+        for (const score of modeledScores) {
+            await prisma_1.prisma.score.update({
+                where: {
+                    roundId_hole: {
+                        roundId,
+                        hole: score.hole,
+                    },
+                },
+                data: {
+                    gross: score.gross,
+                    adjusted: score.adjusted,
+                    net: score.net,
+                },
+            });
+        }
+        return r;
+    }
+    checkForExistingRound(playerId, eventId) {
+        return prisma_1.prisma.round.findUnique({
+            where: {
+                eventId_playerId: {
+                    eventId,
+                    playerId,
+                },
+            },
+        });
+    }
+    calculateScores(playerRound) {
+        const hcp = this.isEdit ? Math.round(this.round.preHandicap) : Math.round(this.player.handicap);
+        const grossScores = playerRound.scores;
+        const netScores = this.getNetScores(hcp, grossScores);
+        const ecsScores = this.calulateEquitableStrokeControl(hcp, grossScores);
+        return Object.entries(grossScores).map(([holeNum, score]) => {
+            const h = this.tee.holes.find((h) => h.num === Number(holeNum));
+            if (!h) {
+                throw new Error(`Hole ${holeNum} not found in tee data.`);
+            }
+            return {
+                playerId: playerRound.playerId,
+                hole: Number(holeNum),
+                par: h.par,
+                gross: score,
+                adjusted: ecsScores[Number(holeNum)],
+                net: netScores[Number(holeNum)],
+            };
+        });
+    }
+    getNetScores(playerHcp, scores) {
+        const netScores = {};
+        const pops = this.getPops(playerHcp);
+        for (const [hole, score] of Object.entries(scores)) {
+            const popAllowance = pops.get(Number(hole)) || 0;
+            netScores[Number(hole)] = Math.max(0, score - popAllowance); // Ensure no negative scores
+        }
+        return netScores;
+    }
+    // TODO: ADJUST LATER IF NEEDED
+    calulateEquitableStrokeControl(playerHcp, scores) {
+        const adjustedHoles = {};
+        for (const [hole, score] of Object.entries(scores)) {
+            const par = this.tee.holes.find((h) => Number(h.num) === Number(hole))?.par || 0;
+            const maxAllowed = this.event.holes === 9 ? this.get9Ecs(playerHcp, par) : this.get18Ecs(playerHcp, par);
+            adjustedHoles[Number(hole)] = Math.min(score, maxAllowed);
+        }
+        return adjustedHoles;
+    }
+    get9Ecs(hcp, par) {
+        hcp = Math.round(hcp);
+        let maxAllowed = par + 2; // Default to Double Bogey
+        if (hcp >= 5 && hcp <= 9) {
+            maxAllowed = 7;
+        }
+        else if (hcp >= 10 && hcp <= 14) {
+            maxAllowed = 8;
+        }
+        else if (hcp >= 15 && hcp <= 19) {
+            maxAllowed = 9;
+        }
+        else if (hcp >= 20) {
+            maxAllowed = 10;
+        }
+        return maxAllowed;
+    }
+    get18Ecs(hcp, par) {
+        hcp = Math.round(hcp);
+        let maxAllowed = par + 2; // Default to Double Bogey
+        if (hcp >= 10 && hcp <= 19) {
+            maxAllowed = 7;
+        }
+        else if (hcp >= 20 && hcp <= 29) {
+            maxAllowed = 8;
+        }
+        else if (hcp >= 30 && hcp <= 39) {
+            maxAllowed = 9;
+        }
+        else if (hcp >= 40) {
+            maxAllowed = 10;
+        }
+        return maxAllowed;
+    }
+    getPops(playerHcp) {
+        const sortedHoles = [...this.tee.holes].sort((a, b) => a.hcp - b.hcp);
+        const popsMap = new Map();
+        while (playerHcp > 0) {
+            for (const hole of sortedHoles) {
+                if (playerHcp <= 0)
+                    break;
+                popsMap.set(hole.num, (popsMap.get(hole.num) || 0) + 1);
+                playerHcp--;
+            }
+        }
+        return popsMap;
+    }
+    calculateStats(scores) {
+        let stats = {
+            totalGross: 0,
+            totalNet: 0,
+            totalAdjusted: 0,
+            eagles: 0,
+            birdies: 0,
+            pars: 0,
+            bogeys: 0,
+            doubleBogeys: 0,
+            tripleBogeys: 0,
+            netEagles: 0,
+            netBirdies: 0,
+            netPars: 0,
+            netBogeys: 0,
+            netDoubleBogeys: 0,
+            netTripleBogeys: 0,
+        };
+        for (const score of scores) {
+            stats.totalGross += score.gross;
+            stats.totalNet += score.net;
+            stats.totalAdjusted += score.adjusted;
+            // Gross stats
+            const grossDiff = score.gross - score.par;
+            if (grossDiff <= -2)
+                stats.eagles++;
+            else if (grossDiff === -1)
+                stats.birdies++;
+            else if (grossDiff === 0)
+                stats.pars++;
+            else if (grossDiff === 1)
+                stats.bogeys++;
+            else if (grossDiff === 2)
+                stats.doubleBogeys++;
+            else if (grossDiff >= 3)
+                stats.tripleBogeys++;
+            // Net stats
+            const netDiff = score.net - score.par;
+            if (netDiff <= -2)
+                stats.netEagles++;
+            else if (netDiff === -1)
+                stats.netBirdies++;
+            else if (netDiff === 0)
+                stats.netPars++;
+            else if (netDiff === 1)
+                stats.netBogeys++;
+            else if (netDiff === 2)
+                stats.netDoubleBogeys++;
+            else if (netDiff >= 3)
+                stats.netTripleBogeys++;
+        }
+        return stats;
+    }
+    // SET PLAYER
+    async setPlayer() {
+        const player = await prisma_1.prisma.player.findUnique({
+            where: { id: this.playerRound.playerId },
+        });
+        if (!player) {
+            throw new Error(`Player with ID ${this.playerRound.playerId} not found`);
+        }
+        this.player = player;
+    }
+    // SET EVENT DATA
+    async setEventData() {
+        const event = await prisma_1.prisma.event.findFirst({
+            where: { id: this.eventId },
+            include: {
+                course: true,
+                tee: true,
+            },
+        });
+        if (!event) {
+            throw new Error('Event not found');
+        }
+        this.event = event;
+        this.tee = this.modelTee(event?.tee, event.holes, event.startSide);
+    }
+    modelTee(tee, numHoles, startSide) {
+        const slope = numHoles === 9
+            ? startSide === 'front'
+                ? tee.slopeFrontMen
+                : tee.slopeBackMen
+            : tee.slopeMen;
+        const rating = numHoles === 9
+            ? startSide === 'front'
+                ? tee.ratingFrontMen
+                : tee.ratingBackMen
+            : tee.ratingMen;
+        const holes = numHoles === 9
+            ? startSide === 'front'
+                ? tee.holes.slice(0, 9)
+                : tee.holes.slice(9, 18)
+            : tee.holes;
+        return {
+            slope,
+            rating,
+            holes,
+        };
+    }
+    async processHandicap(round) {
+        const handicapData = await this.calculateHandicapIndex(this.playerRound.playerId, round.adjusted);
+        await prisma_1.prisma.round.update({
+            where: { id: round.id },
+            data: {
+                preHandicap: this.isEdit ? round.preHandicap : this.player.handicap,
+                postHandicap: handicapData.handicap,
+                differential: handicapData.differential,
+            },
+        });
+        await prisma_1.prisma.player.update({
+            where: { id: this.player.id },
+            data: { handicap: handicapData.handicap },
+        });
+    }
+    // HANDICAP CALCULATIONS
+    async calculateHandicapIndex(playerId, adjustedScore) {
+        // last number of rounds to use
+        const roundsToUse = 5;
+        const roundsWhere = this.isEdit && this.round?.id
+            ? { id: { not: this.round.id } } // Exclude current round if editing
+            : undefined;
+        const player = await prisma_1.prisma.player.findUnique({
+            where: { id: playerId },
+            include: {
+                rounds: {
+                    where: roundsWhere,
+                    select: { gross: true, differential: true },
+                    take: 5,
+                    orderBy: { createdAt: 'desc' },
+                },
+            },
+        });
+        if (!player) {
+            throw new Error('Player not found');
+        }
+        // Get past differentials
+        const differentials = player.rounds
+            .map((r) => r.differential)
+            .filter((value) => typeof value === 'number' && Number.isFinite(value));
+        // Add current differential
+        const differential = Number((((adjustedScore - this.tee.rating) * 113) / this.tee.slope).toFixed(2));
+        differentials.push(differential);
+        // Sort to find lowest scores
+        const sorted = [...differentials].sort((a, b) => a - b);
+        let newHandicap;
+        const hcpTpUse = this.isEdit ? this.round.preHandicap : player.handicap;
+        // First time player
+        if (!player.handicap) {
+            newHandicap = Number((differential * 0.96).toFixed(2));
+        }
+        // Blend in player handicap when less than roundsToUse
+        else if (sorted.length < roundsToUse) {
+            const sum = sorted.reduce((a, b) => a + b, 0) + hcpTpUse;
+            const avg = sum / (sorted.length + 1); // Include handicap in count
+            newHandicap = Number((avg * 0.96).toFixed(2));
+        }
+        // 5+ rounds: use average of lowest 5
+        else {
+            const lowest5 = sorted.slice(0, roundsToUse);
+            const avg = lowest5.reduce((a, b) => a + b, 0) / roundsToUse;
+            newHandicap = Number((avg * 0.96).toFixed(2));
+        }
+        const par = this.event.holes === 9
+            ? this.event.startSide === 'front'
+                ? this.tee.frontPar
+                : this.tee.backPar
+            : this.tee.par;
+        const teeAdjustment = this.tee.rating - par || 0;
+        newHandicap = Number((newHandicap + teeAdjustment).toFixed(2));
+        return {
+            handicap: newHandicap,
+            differential,
+        };
+    }
+}
+exports.Round = Round;
