@@ -24,7 +24,7 @@ if (!sessionSecret) {
 
 app.use(
   cors({
-    origin: clientUrl,
+    origin: [clientUrl, 'https://league-client-production.up.railway.app'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type'],

@@ -24,7 +24,7 @@ if (!sessionSecret) {
     throw new Error('Missing SESSION_SECRET');
 }
 app.use((0, cors_1.default)({
-    origin: clientUrl,
+    origin: [clientUrl, 'https://league-client-production.up.railway.app'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type'],
