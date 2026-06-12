@@ -1,33 +1,25 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createRateLimiter = exports.requireTrustedOrigin = void 0;
+const origins_1 = require("../utils/origins");
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-const normalizeOrigin = (value) => {
-    try {
-        return new URL(value).origin;
-    }
-    catch {
-        return null;
-    }
-};
-const configuredClientOrigin = normalizeOrigin(process.env.CLIENT_URL || '');
 const requireTrustedOrigin = (req, res, next) => {
     if (SAFE_METHODS.has(req.method.toUpperCase())) {
         return next();
     }
-    if (!configuredClientOrigin) {
+    if ((0, origins_1.getConfiguredClientOrigins)().length === 0) {
         return res.status(500).json({ message: 'Server origin configuration is invalid' });
     }
     const originHeader = typeof req.headers.origin === 'string' ? req.headers.origin : '';
     const refererHeader = typeof req.headers.referer === 'string' ? req.headers.referer : '';
-    const requestOrigin = normalizeOrigin(originHeader) || normalizeOrigin(refererHeader);
+    const requestOrigin = (0, origins_1.normalizeOrigin)(originHeader) || (0, origins_1.normalizeOrigin)(refererHeader);
     if (!requestOrigin) {
         if (process.env.NODE_ENV !== 'production') {
             return next();
         }
         return res.status(403).json({ message: 'Untrusted request origin' });
     }
-    if (requestOrigin !== configuredClientOrigin) {
+    if (!(0, origins_1.isTrustedClientOrigin)(requestOrigin)) {
         return res.status(403).json({ message: 'Untrusted request origin' });
     }
     return next();

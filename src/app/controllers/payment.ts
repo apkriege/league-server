@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import Stripe from 'stripe';
 import { prisma } from '../../prisma';
+import { getPrimaryClientOrigin } from '../utils/origins';
 import {
   BILLING_CURRENCY,
   BILLING_MIN_GOLFERS,
@@ -12,12 +13,14 @@ import {
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
+const defaultClientOrigin = getPrimaryClientOrigin() || 'http://localhost:5173';
+
 const DEFAULT_SUCCESS_URL =
   process.env.STRIPE_CHECKOUT_SUCCESS_URL ||
-  `${process.env.CLIENT_URL || 'http://localhost:5173'}/leagues?checkout=registration_success`;
+  `${defaultClientOrigin}/leagues?checkout=registration_success`;
 const DEFAULT_CANCEL_URL =
   process.env.STRIPE_CHECKOUT_CANCEL_URL ||
-  `${process.env.CLIENT_URL || 'http://localhost:5173'}/?checkout=registration_cancel#register`;
+  `${defaultClientOrigin}/?checkout=registration_cancel#register`;
 const DEFAULT_PRICE_ID = process.env.STRIPE_PRICE_ID || '';
 
 type CheckoutPurpose = 'registration' | 'seat_upgrade';

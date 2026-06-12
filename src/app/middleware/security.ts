@@ -1,23 +1,18 @@
 import { Request, Response, NextFunction } from 'express';
+import {
+  getConfiguredClientOrigins,
+  isTrustedClientOrigin,
+  normalizeOrigin,
+} from '../utils/origins';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-
-const normalizeOrigin = (value: string) => {
-  try {
-    return new URL(value).origin;
-  } catch {
-    return null;
-  }
-};
-
-const configuredClientOrigin = normalizeOrigin(process.env.CLIENT_URL || '');
 
 export const requireTrustedOrigin = (req: Request, res: Response, next: NextFunction) => {
   if (SAFE_METHODS.has(req.method.toUpperCase())) {
     return next();
   }
 
-  if (!configuredClientOrigin) {
+  if (getConfiguredClientOrigins().length === 0) {
     return res.status(500).json({ message: 'Server origin configuration is invalid' });
   }
 
@@ -32,7 +27,7 @@ export const requireTrustedOrigin = (req: Request, res: Response, next: NextFunc
     return res.status(403).json({ message: 'Untrusted request origin' });
   }
 
-  if (requestOrigin !== configuredClientOrigin) {
+  if (!isTrustedClientOrigin(requestOrigin)) {
     return res.status(403).json({ message: 'Untrusted request origin' });
   }
 

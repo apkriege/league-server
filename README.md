@@ -15,6 +15,7 @@ x
 
 Optional:
 
+- `CLIENT_URLS`
 - `STRIPE_PRODUCT_NAME`
 - `STRIPE_UNIT_AMOUNT`
 - `STRIPE_CURRENCY`
@@ -65,5 +66,6 @@ Important:
 ## Notes
 
 - Session auth requires a shared `SESSION_SECRET`.
-- `CLIENT_URL` must match the frontend origin for CORS and checkout redirects.
+- `CLIENT_URL` should be the primary frontend origin used for checkout redirects.
+- `CLIENT_URLS` can be a comma-separated list of additional allowed frontend origins for CORS.
 - Google sign-in is not enabled unless the OAuth env vars and routes are configured.

@@ -5,12 +5,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const stripe_1 = __importDefault(require("stripe"));
 const prisma_1 = require("../../prisma");
+const origins_1 = require("../utils/origins");
 const billing_1 = require("../utils/billing");
 const stripe = new stripe_1.default(process.env.STRIPE_SECRET_KEY || '');
+const defaultClientOrigin = (0, origins_1.getPrimaryClientOrigin)() || 'http://localhost:5173';
 const DEFAULT_SUCCESS_URL = process.env.STRIPE_CHECKOUT_SUCCESS_URL ||
-    `${process.env.CLIENT_URL || 'http://localhost:5173'}/leagues?checkout=registration_success`;
+    `${defaultClientOrigin}/leagues?checkout=registration_success`;
 const DEFAULT_CANCEL_URL = process.env.STRIPE_CHECKOUT_CANCEL_URL ||
-    `${process.env.CLIENT_URL || 'http://localhost:5173'}/?checkout=registration_cancel#register`;
+    `${defaultClientOrigin}/?checkout=registration_cancel#register`;
 const DEFAULT_PRICE_ID = process.env.STRIPE_PRICE_ID || '';
 const getProductName = (purpose, quantity) => {
     if (purpose === 'registration') {

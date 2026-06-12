@@ -9,28 +9,36 @@ dotenv.config();
 import Payment from './app/controllers/payment';
 import HealthController from './app/controllers/health';
 import { requireTrustedOrigin } from './app/middleware/security';
+import { getConfiguredClientOrigins, isTrustedClientOrigin } from './app/utils/origins';
 
 const app: Express = express();
-const clientUrl = process.env.CLIENT_URL;
+const clientOrigins = getConfiguredClientOrigins();
 const sessionSecret = process.env.SESSION_SECRET;
 
-if (!clientUrl) {
-  throw new Error('Missing CLIENT_URL');
+if (clientOrigins.length === 0) {
+  throw new Error('Missing CLIENT_URL or CLIENT_URLS');
 }
 
 if (!sessionSecret) {
   throw new Error('Missing SESSION_SECRET');
 }
 
-app.use(
-  cors({
-    origin: [clientUrl, 'https://league-client-production.up.railway.app'],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type'],
-    optionsSuccessStatus: 200,
-  }),
-);
+const corsOptions = {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    if (!origin || isTrustedClientOrigin(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 200,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // Stripe webhook must use the raw request body, so it is mounted before JSON parsing middleware.
 app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), Payment.handleWebhook);
