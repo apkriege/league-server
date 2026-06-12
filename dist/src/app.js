@@ -25,15 +25,17 @@ if (!sessionSecret) {
     throw new Error('Missing SESSION_SECRET');
 }
 const corsOptions = {
-    origin: (origin, callback) => {
-        if (!origin || (0, origins_1.isTrustedClientOrigin)(origin)) {
-            return callback(null, true);
-        }
-        return callback(null, false);
-    },
+    // origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    //   if (!origin || isTrustedClientOrigin(origin)) {
+    //     return callback(null, true);
+    //   }
+    //   return callback(null, false);
+    // },
+    origin: ['*'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    // allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    allowHeaders: ['*'],
     optionsSuccessStatus: 200,
 };
 app.use((0, cors_1.default)(corsOptions));

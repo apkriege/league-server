@@ -24,16 +24,18 @@ if (!sessionSecret) {
 }
 
 const corsOptions = {
-  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin || isTrustedClientOrigin(origin)) {
-      return callback(null, true);
-    }
+  // origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+  //   if (!origin || isTrustedClientOrigin(origin)) {
+  //     return callback(null, true);
+  //   }
 
-    return callback(null, false);
-  },
+  //   return callback(null, false);
+  // },
+  origin: ['*'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  // allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  allowHeaders: ['*'],
   optionsSuccessStatus: 200,
 };
 
