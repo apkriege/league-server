@@ -7,6 +7,7 @@ import {
   BILLING_MIN_GOLFERS,
   BILLING_PRICE_PER_GOLFER_CENTS,
   getBillingMetadata,
+  getAllocatedGolfersForAdmin,
   getBillingState,
   mergeBillingMetadata,
 } from '../utils/billing';
@@ -285,7 +286,8 @@ class PaymentController {
 
       const metadata = user?.metadata && typeof user.metadata === 'object' ? user.metadata : {};
       const stripeState = (metadata as any)?.stripe || null;
-      const billingState = getBillingState(metadata);
+      const allocatedGolfers = user?.id ? await getAllocatedGolfersForAdmin(user.id) : 0;
+      const billingState = getBillingState(metadata, allocatedGolfers);
 
       return res.status(200).json({ stripe: stripeState, billing: billingState });
     } catch (error: any) {

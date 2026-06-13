@@ -222,7 +222,8 @@ class PaymentController {
             }
             const metadata = user?.metadata && typeof user.metadata === 'object' ? user.metadata : {};
             const stripeState = metadata?.stripe || null;
-            const billingState = (0, billing_1.getBillingState)(metadata);
+            const allocatedGolfers = user?.id ? await (0, billing_1.getAllocatedGolfersForAdmin)(user.id) : 0;
+            const billingState = (0, billing_1.getBillingState)(metadata, allocatedGolfers);
             return res.status(200).json({ stripe: stripeState, billing: billingState });
         }
         catch (error) {
