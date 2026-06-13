@@ -16,6 +16,10 @@ x
 Optional:
 
 - `CLIENT_URLS`
+- `SUPER_ADMIN_EMAIL`
+- `SUPER_ADMIN_PASSWORD`
+- `SUPER_ADMIN_FIRST_NAME`
+- `SUPER_ADMIN_LAST_NAME`
 - `STRIPE_PRODUCT_NAME`
 - `STRIPE_UNIT_AMOUNT`
 - `STRIPE_CURRENCY`
@@ -51,15 +55,19 @@ If this repo is deployed as a monorepo:
 
 The checked-in Railway flow is:
 
-- Build: `npm run build`
+- Build: `npm run build:railway`
 - Start: `npm run start:railway`
-- Startup behavior: applies `prisma migrate deploy`, then starts `node dist/src/index.js`
+- Build behavior: generates Prisma Client, applies pending migrations, ensures the super admin user, then compiles TypeScript
+- Startup behavior: applies `prisma migrate deploy` again as an idempotent safety check, then starts `node dist/src/index.js`
 
 Important:
 
 - Do not use `prisma db push` in production.
 - Create migrations locally with `npx prisma migrate dev --name your_change_name`.
 - Commit the generated `prisma/migrations/*` files to GitHub before deploying.
+- The initial migration creates the tables for a fresh Railway PostgreSQL database.
+- `DATABASE_URL` must be available to the Railway server service during build.
+- The super admin defaults to `adamkrieger87@gmail.com` with password `testing`; set `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` in Railway to override those values.
 - `prisma migrate deploy` is safe to run on every deploy and will only apply pending migrations.
 - `prisma` is kept in `dependencies` so the CLI is present in the Railway runtime when migrations run.
 
