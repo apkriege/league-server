@@ -20,6 +20,10 @@ Optional:
 - `SUPER_ADMIN_PASSWORD`
 - `SUPER_ADMIN_FIRST_NAME`
 - `SUPER_ADMIN_LAST_NAME`
+- `TEST_ADMIN_EMAIL`
+- `TEST_ADMIN_PASSWORD`
+- `TEST_ADMIN_FIRST_NAME`
+- `TEST_ADMIN_LAST_NAME`
 - `STRIPE_PRODUCT_NAME`
 - `STRIPE_UNIT_AMOUNT`
 - `STRIPE_CURRENCY`
@@ -67,7 +71,9 @@ Important:
 - Commit the generated `prisma/migrations/*` files to GitHub before deploying.
 - The initial migration creates the tables for a fresh Railway PostgreSQL database.
 - `DATABASE_URL` must be available to the Railway server service during build.
+- `npm run db:seed:users` creates or updates the default super admin and test admin accounts.
 - The super admin defaults to `adamkrieger87@gmail.com` with password `testing`; set `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` in Railway to override those values.
+- The test admin defaults to `admin@test.com` with password `testing`; set `TEST_ADMIN_EMAIL` and `TEST_ADMIN_PASSWORD` in Railway to override those values.
 - `prisma migrate deploy` is safe to run on every deploy and will only apply pending migrations.
 - `prisma` is kept in `dependencies` so the CLI is present in the Railway runtime when migrations run.
 
