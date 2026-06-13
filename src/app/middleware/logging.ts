@@ -4,27 +4,11 @@ import crypto from 'crypto';
 const shouldLogDebug = () =>
   process.env.LOG_LEVEL === 'debug' || process.env.SESSION_DEBUG === 'true';
 
-const getCookieNames = (cookieHeader?: string) => {
-  if (!cookieHeader) return [];
-  return cookieHeader
-    .split(';')
-    .map((cookie) => cookie.trim().split('=')[0])
-    .filter(Boolean);
-};
-
 const baseLog = (req: Request) => ({
   requestId: (req as any).requestId,
   method: req.method,
   path: req.originalUrl,
-  origin: req.headers.origin || null,
-  referer: req.headers.referer || null,
-  userAgent: req.headers['user-agent'] || null,
-  ip: req.ip,
-  forwardedProto: req.headers['x-forwarded-proto'] || null,
-  forwardedHost: req.headers['x-forwarded-host'] || null,
   hasCookieHeader: Boolean(req.headers.cookie),
-  cookieNames: getCookieNames(req.headers.cookie),
-  sessionId: req.sessionID || null,
   sessionUserId: req.session?.userId || null,
 });
 
@@ -56,7 +40,11 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
   const start = Date.now();
 
   if (shouldLogDebug()) {
-    logInfo('request:start', baseLog(req));
+    logInfo('request:start', {
+      ...baseLog(req),
+      origin: req.headers.origin || null,
+      forwardedProto: req.headers['x-forwarded-proto'] || null,
+    });
   }
 
   res.on('finish', () => {
@@ -67,7 +55,6 @@ export const requestLogger = (req: Request, res: Response, next: NextFunction) =
       ...baseLog(req),
       statusCode,
       durationMs: Date.now() - start,
-      setCookie: Boolean(res.getHeader('set-cookie')),
     };
 
     if (isError) {

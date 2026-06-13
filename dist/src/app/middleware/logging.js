@@ -6,27 +6,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.logAuthFailure = exports.logAuth = exports.requestLogger = exports.requestId = exports.logError = exports.logWarn = exports.logInfo = void 0;
 const crypto_1 = __importDefault(require("crypto"));
 const shouldLogDebug = () => process.env.LOG_LEVEL === 'debug' || process.env.SESSION_DEBUG === 'true';
-const getCookieNames = (cookieHeader) => {
-    if (!cookieHeader)
-        return [];
-    return cookieHeader
-        .split(';')
-        .map((cookie) => cookie.trim().split('=')[0])
-        .filter(Boolean);
-};
 const baseLog = (req) => ({
     requestId: req.requestId,
     method: req.method,
     path: req.originalUrl,
-    origin: req.headers.origin || null,
-    referer: req.headers.referer || null,
-    userAgent: req.headers['user-agent'] || null,
-    ip: req.ip,
-    forwardedProto: req.headers['x-forwarded-proto'] || null,
-    forwardedHost: req.headers['x-forwarded-host'] || null,
     hasCookieHeader: Boolean(req.headers.cookie),
-    cookieNames: getCookieNames(req.headers.cookie),
-    sessionId: req.sessionID || null,
     sessionUserId: req.session?.userId || null,
 });
 const logInfo = (event, payload) => {
@@ -54,7 +38,11 @@ exports.requestId = requestId;
 const requestLogger = (req, res, next) => {
     const start = Date.now();
     if (shouldLogDebug()) {
-        (0, exports.logInfo)('request:start', baseLog(req));
+        (0, exports.logInfo)('request:start', {
+            ...baseLog(req),
+            origin: req.headers.origin || null,
+            forwardedProto: req.headers['x-forwarded-proto'] || null,
+        });
     }
     res.on('finish', () => {
         const statusCode = res.statusCode;
@@ -63,7 +51,6 @@ const requestLogger = (req, res, next) => {
             ...baseLog(req),
             statusCode,
             durationMs: Date.now() - start,
-            setCookie: Boolean(res.getHeader('set-cookie')),
         };
         if (isError) {
             (0, exports.logWarn)('request:finish', payload);
