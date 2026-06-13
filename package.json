@@ -16,7 +16,6 @@
     "db:generate": "npx prisma generate --schema=./prisma/schema.prisma",
     "db:migrate:deploy": "npx prisma migrate deploy --schema=./prisma/schema.prisma",
     "db:seed:users": "node scripts/createUsers.js",
-    "db:seed:super": "node scripts/createUsers.js",
     "db:push": "npx prisma db push --schema=./prisma/schema.prisma",
     "db:full": "npx prisma db push --force-reset && npx ts-node prisma/seed.ts",
     "docker:up": "docker compose up -d --build",
