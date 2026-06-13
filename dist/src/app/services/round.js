@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Round = void 0;
 const prisma_1 = require("../../prisma");
+const tee_rating_1 = require("../utils/tee-rating");
 class Round {
     eventId;
     playerRound;
@@ -324,26 +325,7 @@ class Round {
         this.tee = this.modelTee(event?.tee, event.holes, event.startSide);
     }
     modelTee(tee, numHoles, startSide) {
-        const slope = numHoles === 9
-            ? startSide === 'front'
-                ? tee.slopeFrontMen
-                : tee.slopeBackMen
-            : tee.slopeMen;
-        const rating = numHoles === 9
-            ? startSide === 'front'
-                ? tee.ratingFrontMen
-                : tee.ratingBackMen
-            : tee.ratingMen;
-        const holes = numHoles === 9
-            ? startSide === 'front'
-                ? tee.holes.slice(0, 9)
-                : tee.holes.slice(9, 18)
-            : tee.holes;
-        return {
-            slope,
-            rating,
-            holes,
-        };
+        return (0, tee_rating_1.modelTeeForRound)(tee, numHoles, startSide);
     }
     async processHandicap(round) {
         const handicapData = await this.calculateHandicapIndex(this.playerRound.playerId, round.adjusted);
@@ -408,12 +390,7 @@ class Round {
             const avg = lowest5.reduce((a, b) => a + b, 0) / roundsToUse;
             newHandicap = Number((avg * 0.96).toFixed(2));
         }
-        const par = this.event.holes === 9
-            ? this.event.startSide === 'front'
-                ? this.tee.frontPar
-                : this.tee.backPar
-            : this.tee.par;
-        const teeAdjustment = this.tee.rating - par || 0;
+        const teeAdjustment = this.tee.rating - this.tee.par || 0;
         newHandicap = Number((newHandicap + teeAdjustment).toFixed(2));
         return {
             handicap: newHandicap,

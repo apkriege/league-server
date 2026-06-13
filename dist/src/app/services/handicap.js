@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Handicap = void 0;
 const prisma_1 = require("../../prisma");
+const tee_rating_1 = require("../utils/tee-rating");
 class Handicap {
     playerId;
     player;
@@ -64,12 +65,7 @@ class Handicap {
             const avg = lowest5.reduce((a, b) => a + b, 0) / this.minRounds;
             newHandicap = Number((avg * 0.96).toFixed(2));
         }
-        const par = event.holes === 9
-            ? event.startSide === 'front'
-                ? event.tee.frontPar
-                : event.tee.backPar
-            : event.tee.par;
-        const teeAdjustment = event.tee.rating - par || 0;
+        const teeAdjustment = tee.rating - tee.par || 0;
         newHandicap = Number((newHandicap + teeAdjustment).toFixed(2));
         this.processedRounds.push({
             roundId: round.id,
@@ -98,26 +94,7 @@ class Handicap {
         this.player = player;
     }
     modelTee(tee, numHoles, startSide) {
-        const slope = numHoles === 9
-            ? startSide === 'front'
-                ? tee.slopeFrontMen
-                : tee.slopeBackMen
-            : tee.slopeMen;
-        const rating = numHoles === 9
-            ? startSide === 'front'
-                ? tee.ratingFrontMen
-                : tee.ratingBackMen
-            : tee.ratingMen;
-        const holes = numHoles === 9
-            ? startSide === 'front'
-                ? tee.holes.slice(0, 9)
-                : tee.holes.slice(9, 18)
-            : tee.holes;
-        return {
-            slope,
-            rating,
-            holes,
-        };
+        return (0, tee_rating_1.modelTeeForRound)(tee, numHoles, startSide);
     }
 }
 exports.Handicap = Handicap;

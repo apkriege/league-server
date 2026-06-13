@@ -1,4 +1,5 @@
 import { prisma } from '../../prisma';
+import { modelTeeForRound } from '../utils/tee-rating';
 
 interface ProcessedRound {
   roundId: number;
@@ -85,13 +86,7 @@ export class Handicap {
       newHandicap = Number((avg * 0.96).toFixed(2));
     }
 
-    const par =
-      event.holes === 9
-        ? event.startSide === 'front'
-          ? event.tee.frontPar
-          : event.tee.backPar
-        : event.tee.par;
-    const teeAdjustment = event.tee.rating - par || 0;
+    const teeAdjustment = tee.rating - tee.par || 0;
     newHandicap = Number((newHandicap + teeAdjustment).toFixed(2));
 
     this.processedRounds.push({
@@ -125,30 +120,6 @@ export class Handicap {
   }
 
   private modelTee(tee: any, numHoles: number, startSide: string) {
-    const slope =
-      numHoles === 9
-        ? startSide === 'front'
-          ? tee.slopeFrontMen
-          : tee.slopeBackMen
-        : tee.slopeMen;
-    const rating =
-      numHoles === 9
-        ? startSide === 'front'
-          ? tee.ratingFrontMen
-          : tee.ratingBackMen
-        : tee.ratingMen;
-
-    const holes =
-      numHoles === 9
-        ? startSide === 'front'
-          ? tee.holes.slice(0, 9)
-          : tee.holes.slice(9, 18)
-        : tee.holes;
-
-    return {
-      slope,
-      rating,
-      holes,
-    };
+    return modelTeeForRound(tee, numHoles, startSide);
   }
 }
