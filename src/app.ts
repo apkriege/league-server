@@ -13,6 +13,8 @@ import { requireTrustedOrigin } from './app/middleware/security';
 const app: Express = express();
 const sessionSecret = process.env.SESSION_SECRET;
 
+app.set('trust proxy', 1);
+
 if (!sessionSecret) {
   throw new Error('Missing SESSION_SECRET');
 }
@@ -51,6 +53,7 @@ app.use(
       pool: pool,
       tableName: 'session',
     }),
+    proxy: process.env.NODE_ENV === 'production',
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,

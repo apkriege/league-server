@@ -16,6 +16,7 @@ const health_1 = __importDefault(require("./app/controllers/health"));
 const security_1 = require("./app/middleware/security");
 const app = (0, express_1.default)();
 const sessionSecret = process.env.SESSION_SECRET;
+app.set('trust proxy', 1);
 if (!sessionSecret) {
     throw new Error('Missing SESSION_SECRET');
 }
@@ -46,6 +47,7 @@ app.use((0, express_session_1.default)({
         pool: pool,
         tableName: 'session',
     }),
+    proxy: process.env.NODE_ENV === 'production',
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
