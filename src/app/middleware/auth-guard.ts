@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import UserService from '../models/user';
 import { prisma } from '../../prisma';
+import { logAuthFailure } from './logging';
 
 const getSessionUser = async (req: Request) => {
   const userId = req.session.userId;
@@ -8,9 +9,10 @@ const getSessionUser = async (req: Request) => {
   return UserService.findById(userId);
 };
 
-const requireSessionUser = async (req: Request, res: Response) => {
+const requireSessionUser = async (req: Request, res: Response, guardName = 'session') => {
   const user = await getSessionUser(req);
   if (!user) {
+    logAuthFailure(req, 'auth:unauthorized', { guard: guardName, reason: 'missing-session-user' });
     res.sendStatus(401);
     return null;
   }
@@ -23,11 +25,18 @@ export const adminGuard = (req: Request, res: Response, next: NextFunction): any
   getSessionUser(req)
     .then((user) => {
       if (!user) {
+        logAuthFailure(req, 'auth:unauthorized', { guard: 'admin', reason: 'missing-session-user' });
         return res.sendStatus(401);
       }
 
       const role = String(user.role).toUpperCase();
       if (role !== 'ADMIN' && role !== 'SUPER') {
+        logAuthFailure(req, 'auth:forbidden', {
+          guard: 'admin',
+          reason: 'insufficient-role',
+          userId: user.id,
+          role,
+        });
         return res.sendStatus(403);
       }
 
@@ -44,6 +53,7 @@ export const userGuard = (req: Request, res: Response, next: NextFunction): any 
   getSessionUser(req)
     .then((user) => {
       if (!user) {
+        logAuthFailure(req, 'auth:unauthorized', { guard: 'user', reason: 'missing-session-user' });
         return res.sendStatus(401);
       }
 
@@ -60,10 +70,20 @@ export const superAdminGuard = (req: Request, res: Response, next: NextFunction)
   getSessionUser(req)
     .then((user) => {
       if (!user) {
+        logAuthFailure(req, 'auth:unauthorized', {
+          guard: 'super-admin',
+          reason: 'missing-session-user',
+        });
         return res.sendStatus(401);
       }
 
       if (String(user.role).toUpperCase() !== 'SUPER') {
+        logAuthFailure(req, 'auth:forbidden', {
+          guard: 'super-admin',
+          reason: 'insufficient-role',
+          userId: user.id,
+          role: user.role,
+        });
         return res.sendStatus(403);
       }
 
@@ -78,7 +98,7 @@ export const superAdminGuard = (req: Request, res: Response, next: NextFunction)
 
 export const userSelfOrAdminGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await requireSessionUser(req, res);
+    const user = await requireSessionUser(req, res, 'user-self-or-admin');
     if (!user) return;
 
     const requestedUserId = Number(req.params.id);
@@ -87,6 +107,13 @@ export const userSelfOrAdminGuard = async (req: Request, res: Response, next: Ne
       return next();
     }
 
+    logAuthFailure(req, 'auth:forbidden', {
+      guard: 'user-self-or-admin',
+      reason: 'not-self-or-admin',
+      userId: user.id,
+      requestedUserId,
+      role,
+    });
     return res.sendStatus(403);
   } catch (error) {
     console.error('Session auth error:', error);
@@ -96,7 +123,7 @@ export const userSelfOrAdminGuard = async (req: Request, res: Response, next: Ne
 
 export const leagueAdminGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await requireSessionUser(req, res);
+    const user = await requireSessionUser(req, res, 'league-admin');
     if (!user) return;
 
     const role = String(user.role).toUpperCase();
@@ -118,6 +145,14 @@ export const leagueAdminGuard = async (req: Request, res: Response, next: NextFu
       return next();
     }
 
+    logAuthFailure(req, 'auth:forbidden', {
+      guard: 'league-admin',
+      reason: 'not-league-admin',
+      userId: user.id,
+      leagueId,
+      role,
+      leagueAdminId: league.adminId,
+    });
     return res.sendStatus(403);
   } catch (error) {
     console.error('League auth error:', error);
@@ -127,7 +162,7 @@ export const leagueAdminGuard = async (req: Request, res: Response, next: NextFu
 
 export const leagueMemberGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await requireSessionUser(req, res);
+    const user = await requireSessionUser(req, res, 'league-member');
     if (!user) return;
 
     const role = String(user.role).toUpperCase();
@@ -156,6 +191,13 @@ export const leagueMemberGuard = async (req: Request, res: Response, next: NextF
     });
 
     if (!membership) {
+      logAuthFailure(req, 'auth:forbidden', {
+        guard: 'league-member',
+        reason: 'not-league-member',
+        userId: user.id,
+        leagueId,
+        role,
+      });
       return res.sendStatus(403);
     }
 
@@ -169,7 +211,7 @@ export const leagueMemberGuard = async (req: Request, res: Response, next: NextF
 
 export const eventAdminGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await requireSessionUser(req, res);
+    const user = await requireSessionUser(req, res, 'event-admin');
     if (!user) return;
 
     const role = String(user.role).toUpperCase();
@@ -191,6 +233,14 @@ export const eventAdminGuard = async (req: Request, res: Response, next: NextFun
       return next();
     }
 
+    logAuthFailure(req, 'auth:forbidden', {
+      guard: 'event-admin',
+      reason: 'not-event-admin',
+      userId: user.id,
+      eventId,
+      role,
+      leagueAdminId: event.league.adminId,
+    });
     return res.sendStatus(403);
   } catch (error) {
     console.error('Event auth error:', error);
@@ -200,7 +250,7 @@ export const eventAdminGuard = async (req: Request, res: Response, next: NextFun
 
 export const teamMemberGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await requireSessionUser(req, res);
+    const user = await requireSessionUser(req, res, 'team-member');
     if (!user) return;
 
     const role = String(user.role).toUpperCase();
@@ -229,6 +279,14 @@ export const teamMemberGuard = async (req: Request, res: Response, next: NextFun
     });
 
     if (!membership) {
+      logAuthFailure(req, 'auth:forbidden', {
+        guard: 'team-member',
+        reason: 'not-team-member',
+        userId: user.id,
+        teamId,
+        leagueId: team.leagueId,
+        role,
+      });
       return res.sendStatus(403);
     }
 
@@ -242,7 +300,7 @@ export const teamMemberGuard = async (req: Request, res: Response, next: NextFun
 
 export const playerMemberGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await requireSessionUser(req, res);
+    const user = await requireSessionUser(req, res, 'player-member');
     if (!user) return;
 
     const role = String(user.role).toUpperCase();
@@ -275,6 +333,14 @@ export const playerMemberGuard = async (req: Request, res: Response, next: NextF
     });
 
     if (!membership) {
+      logAuthFailure(req, 'auth:forbidden', {
+        guard: 'player-member',
+        reason: 'not-player-member',
+        userId: user.id,
+        playerId,
+        leagueId: player.leagueId,
+        role,
+      });
       return res.sendStatus(403);
     }
 
@@ -288,7 +354,7 @@ export const playerMemberGuard = async (req: Request, res: Response, next: NextF
 
 export const playerAdminGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await requireSessionUser(req, res);
+    const user = await requireSessionUser(req, res, 'player-admin');
     if (!user) return;
 
     const role = String(user.role).toUpperCase();
@@ -310,6 +376,14 @@ export const playerAdminGuard = async (req: Request, res: Response, next: NextFu
       return next();
     }
 
+    logAuthFailure(req, 'auth:forbidden', {
+      guard: 'player-admin',
+      reason: 'not-player-admin',
+      userId: user.id,
+      playerId,
+      role,
+      leagueAdminId: player.league?.adminId,
+    });
     return res.sendStatus(403);
   } catch (error) {
     console.error('Player auth error:', error);
@@ -319,7 +393,7 @@ export const playerAdminGuard = async (req: Request, res: Response, next: NextFu
 
 export const teamAdminGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await requireSessionUser(req, res);
+    const user = await requireSessionUser(req, res, 'team-admin');
     if (!user) return;
 
     const role = String(user.role).toUpperCase();
@@ -341,6 +415,14 @@ export const teamAdminGuard = async (req: Request, res: Response, next: NextFunc
       return next();
     }
 
+    logAuthFailure(req, 'auth:forbidden', {
+      guard: 'team-admin',
+      reason: 'not-team-admin',
+      userId: user.id,
+      teamId,
+      role,
+      leagueAdminId: team.league?.adminId,
+    });
     return res.sendStatus(403);
   } catch (error) {
     console.error('Team auth error:', error);
@@ -350,7 +432,7 @@ export const teamAdminGuard = async (req: Request, res: Response, next: NextFunc
 
 export const flightAdminGuard = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await requireSessionUser(req, res);
+    const user = await requireSessionUser(req, res, 'flight-admin');
     if (!user) return;
 
     const role = String(user.role).toUpperCase();
@@ -372,6 +454,14 @@ export const flightAdminGuard = async (req: Request, res: Response, next: NextFu
       return next();
     }
 
+    logAuthFailure(req, 'auth:forbidden', {
+      guard: 'flight-admin',
+      reason: 'not-flight-admin',
+      userId: user.id,
+      flightId,
+      role,
+      leagueAdminId: flight.event.league.adminId,
+    });
     return res.sendStatus(403);
   } catch (error) {
     console.error('Flight auth error:', error);

@@ -9,6 +9,7 @@ dotenv.config();
 import Payment from './app/controllers/payment';
 import HealthController from './app/controllers/health';
 import { requireTrustedOrigin } from './app/middleware/security';
+import { logError, logInfo, requestId, requestLogger } from './app/middleware/logging';
 
 const app: Express = express();
 const sessionSecret = process.env.SESSION_SECRET;
@@ -26,6 +27,15 @@ if (!sessionSecret) {
   throw new Error('Missing SESSION_SECRET');
 }
 
+logInfo('server:config', {
+  nodeEnv: process.env.NODE_ENV ?? null,
+  railwayEnvironment: process.env.RAILWAY_ENVIRONMENT ?? null,
+  useSecureCookies,
+  sessionCookieName,
+  sessionSameSite: useSecureCookies ? 'none' : 'lax',
+  trustProxy: true,
+});
+
 const corsOptions = {
   origin: true,
   credentials: true,
@@ -39,6 +49,8 @@ const corsOptions = {
   optionsSuccessStatus: 200,
 };
 
+app.use(requestId);
+app.use(requestLogger);
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
@@ -88,6 +100,14 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   // const statusCode = err.statusCode || 500;
   const statusCode = 500;
   const name = err.name || 'Error';
+  logError('request:error', {
+    requestId: (req as any).requestId,
+    method: req.method,
+    path: req.originalUrl,
+    name,
+    message: err.message,
+    stack: process.env.LOG_LEVEL === 'debug' ? err.stack : undefined,
+  });
   res.status(statusCode).json({ name, message: 'Internal server error' });
 });
 

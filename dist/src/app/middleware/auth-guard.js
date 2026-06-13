@@ -6,15 +6,17 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.flightAdminGuard = exports.teamAdminGuard = exports.playerAdminGuard = exports.playerMemberGuard = exports.teamMemberGuard = exports.eventAdminGuard = exports.leagueMemberGuard = exports.leagueAdminGuard = exports.userSelfOrAdminGuard = exports.superAdminGuard = exports.userGuard = exports.adminGuard = void 0;
 const user_1 = __importDefault(require("../models/user"));
 const prisma_1 = require("../../prisma");
+const logging_1 = require("./logging");
 const getSessionUser = async (req) => {
     const userId = req.session.userId;
     if (!userId)
         return null;
     return user_1.default.findById(userId);
 };
-const requireSessionUser = async (req, res) => {
+const requireSessionUser = async (req, res, guardName = 'session') => {
     const user = await getSessionUser(req);
     if (!user) {
+        (0, logging_1.logAuthFailure)(req, 'auth:unauthorized', { guard: guardName, reason: 'missing-session-user' });
         res.sendStatus(401);
         return null;
     }
@@ -25,10 +27,17 @@ const adminGuard = (req, res, next) => {
     getSessionUser(req)
         .then((user) => {
         if (!user) {
+            (0, logging_1.logAuthFailure)(req, 'auth:unauthorized', { guard: 'admin', reason: 'missing-session-user' });
             return res.sendStatus(401);
         }
         const role = String(user.role).toUpperCase();
         if (role !== 'ADMIN' && role !== 'SUPER') {
+            (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+                guard: 'admin',
+                reason: 'insufficient-role',
+                userId: user.id,
+                role,
+            });
             return res.sendStatus(403);
         }
         req.user = user;
@@ -44,6 +53,7 @@ const userGuard = (req, res, next) => {
     getSessionUser(req)
         .then((user) => {
         if (!user) {
+            (0, logging_1.logAuthFailure)(req, 'auth:unauthorized', { guard: 'user', reason: 'missing-session-user' });
             return res.sendStatus(401);
         }
         req.user = user;
@@ -59,9 +69,19 @@ const superAdminGuard = (req, res, next) => {
     getSessionUser(req)
         .then((user) => {
         if (!user) {
+            (0, logging_1.logAuthFailure)(req, 'auth:unauthorized', {
+                guard: 'super-admin',
+                reason: 'missing-session-user',
+            });
             return res.sendStatus(401);
         }
         if (String(user.role).toUpperCase() !== 'SUPER') {
+            (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+                guard: 'super-admin',
+                reason: 'insufficient-role',
+                userId: user.id,
+                role: user.role,
+            });
             return res.sendStatus(403);
         }
         req.user = user;
@@ -75,7 +95,7 @@ const superAdminGuard = (req, res, next) => {
 exports.superAdminGuard = superAdminGuard;
 const userSelfOrAdminGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res);
+        const user = await requireSessionUser(req, res, 'user-self-or-admin');
         if (!user)
             return;
         const requestedUserId = Number(req.params.id);
@@ -83,6 +103,13 @@ const userSelfOrAdminGuard = async (req, res, next) => {
         if (role === 'ADMIN' || role === 'SUPER' || user.id === requestedUserId) {
             return next();
         }
+        (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+            guard: 'user-self-or-admin',
+            reason: 'not-self-or-admin',
+            userId: user.id,
+            requestedUserId,
+            role,
+        });
         return res.sendStatus(403);
     }
     catch (error) {
@@ -93,7 +120,7 @@ const userSelfOrAdminGuard = async (req, res, next) => {
 exports.userSelfOrAdminGuard = userSelfOrAdminGuard;
 const leagueAdminGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res);
+        const user = await requireSessionUser(req, res, 'league-admin');
         if (!user)
             return;
         const role = String(user.role).toUpperCase();
@@ -111,6 +138,14 @@ const leagueAdminGuard = async (req, res, next) => {
         if (role === 'SUPER' || league.adminId === user.id) {
             return next();
         }
+        (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+            guard: 'league-admin',
+            reason: 'not-league-admin',
+            userId: user.id,
+            leagueId,
+            role,
+            leagueAdminId: league.adminId,
+        });
         return res.sendStatus(403);
     }
     catch (error) {
@@ -121,7 +156,7 @@ const leagueAdminGuard = async (req, res, next) => {
 exports.leagueAdminGuard = leagueAdminGuard;
 const leagueMemberGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res);
+        const user = await requireSessionUser(req, res, 'league-member');
         if (!user)
             return;
         const role = String(user.role).toUpperCase();
@@ -145,6 +180,13 @@ const leagueMemberGuard = async (req, res, next) => {
             select: { id: true },
         });
         if (!membership) {
+            (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+                guard: 'league-member',
+                reason: 'not-league-member',
+                userId: user.id,
+                leagueId,
+                role,
+            });
             return res.sendStatus(403);
         }
         req.user = user;
@@ -158,7 +200,7 @@ const leagueMemberGuard = async (req, res, next) => {
 exports.leagueMemberGuard = leagueMemberGuard;
 const eventAdminGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res);
+        const user = await requireSessionUser(req, res, 'event-admin');
         if (!user)
             return;
         const role = String(user.role).toUpperCase();
@@ -176,6 +218,14 @@ const eventAdminGuard = async (req, res, next) => {
         if (role === 'SUPER' || event.league.adminId === user.id) {
             return next();
         }
+        (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+            guard: 'event-admin',
+            reason: 'not-event-admin',
+            userId: user.id,
+            eventId,
+            role,
+            leagueAdminId: event.league.adminId,
+        });
         return res.sendStatus(403);
     }
     catch (error) {
@@ -186,7 +236,7 @@ const eventAdminGuard = async (req, res, next) => {
 exports.eventAdminGuard = eventAdminGuard;
 const teamMemberGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res);
+        const user = await requireSessionUser(req, res, 'team-member');
         if (!user)
             return;
         const role = String(user.role).toUpperCase();
@@ -210,6 +260,14 @@ const teamMemberGuard = async (req, res, next) => {
             select: { id: true },
         });
         if (!membership) {
+            (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+                guard: 'team-member',
+                reason: 'not-team-member',
+                userId: user.id,
+                teamId,
+                leagueId: team.leagueId,
+                role,
+            });
             return res.sendStatus(403);
         }
         req.user = user;
@@ -223,7 +281,7 @@ const teamMemberGuard = async (req, res, next) => {
 exports.teamMemberGuard = teamMemberGuard;
 const playerMemberGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res);
+        const user = await requireSessionUser(req, res, 'player-member');
         if (!user)
             return;
         const role = String(user.role).toUpperCase();
@@ -249,6 +307,14 @@ const playerMemberGuard = async (req, res, next) => {
             select: { id: true },
         });
         if (!membership) {
+            (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+                guard: 'player-member',
+                reason: 'not-player-member',
+                userId: user.id,
+                playerId,
+                leagueId: player.leagueId,
+                role,
+            });
             return res.sendStatus(403);
         }
         req.user = user;
@@ -262,7 +328,7 @@ const playerMemberGuard = async (req, res, next) => {
 exports.playerMemberGuard = playerMemberGuard;
 const playerAdminGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res);
+        const user = await requireSessionUser(req, res, 'player-admin');
         if (!user)
             return;
         const role = String(user.role).toUpperCase();
@@ -280,6 +346,14 @@ const playerAdminGuard = async (req, res, next) => {
         if (role === 'SUPER' || player.league?.adminId === user.id) {
             return next();
         }
+        (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+            guard: 'player-admin',
+            reason: 'not-player-admin',
+            userId: user.id,
+            playerId,
+            role,
+            leagueAdminId: player.league?.adminId,
+        });
         return res.sendStatus(403);
     }
     catch (error) {
@@ -290,7 +364,7 @@ const playerAdminGuard = async (req, res, next) => {
 exports.playerAdminGuard = playerAdminGuard;
 const teamAdminGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res);
+        const user = await requireSessionUser(req, res, 'team-admin');
         if (!user)
             return;
         const role = String(user.role).toUpperCase();
@@ -308,6 +382,14 @@ const teamAdminGuard = async (req, res, next) => {
         if (role === 'SUPER' || team.league?.adminId === user.id) {
             return next();
         }
+        (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+            guard: 'team-admin',
+            reason: 'not-team-admin',
+            userId: user.id,
+            teamId,
+            role,
+            leagueAdminId: team.league?.adminId,
+        });
         return res.sendStatus(403);
     }
     catch (error) {
@@ -318,7 +400,7 @@ const teamAdminGuard = async (req, res, next) => {
 exports.teamAdminGuard = teamAdminGuard;
 const flightAdminGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res);
+        const user = await requireSessionUser(req, res, 'flight-admin');
         if (!user)
             return;
         const role = String(user.role).toUpperCase();
@@ -336,6 +418,14 @@ const flightAdminGuard = async (req, res, next) => {
         if (role === 'SUPER' || flight.event.league.adminId === user.id) {
             return next();
         }
+        (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
+            guard: 'flight-admin',
+            reason: 'not-flight-admin',
+            userId: user.id,
+            flightId,
+            role,
+            leagueAdminId: flight.event.league.adminId,
+        });
         return res.sendStatus(403);
     }
     catch (error) {

@@ -14,6 +14,7 @@ dotenv_1.default.config();
 const payment_1 = __importDefault(require("./app/controllers/payment"));
 const health_1 = __importDefault(require("./app/controllers/health"));
 const security_1 = require("./app/middleware/security");
+const logging_1 = require("./app/middleware/logging");
 const app = (0, express_1.default)();
 const sessionSecret = process.env.SESSION_SECRET;
 const isRailway = Boolean(process.env.RAILWAY_ENVIRONMENT) ||
@@ -25,6 +26,14 @@ app.set('trust proxy', true);
 if (!sessionSecret) {
     throw new Error('Missing SESSION_SECRET');
 }
+(0, logging_1.logInfo)('server:config', {
+    nodeEnv: process.env.NODE_ENV ?? null,
+    railwayEnvironment: process.env.RAILWAY_ENVIRONMENT ?? null,
+    useSecureCookies,
+    sessionCookieName,
+    sessionSameSite: useSecureCookies ? 'none' : 'lax',
+    trustProxy: true,
+});
 const corsOptions = {
     origin: true,
     credentials: true,
@@ -37,6 +46,8 @@ const corsOptions = {
     ],
     optionsSuccessStatus: 200,
 };
+app.use(logging_1.requestId);
+app.use(logging_1.requestLogger);
 app.use((0, cors_1.default)(corsOptions));
 app.options('*', (0, cors_1.default)(corsOptions));
 // Stripe webhook must use the raw request body, so it is mounted before JSON parsing middleware.
@@ -75,6 +86,14 @@ app.use((err, req, res, next) => {
     // const statusCode = err.statusCode || 500;
     const statusCode = 500;
     const name = err.name || 'Error';
+    (0, logging_1.logError)('request:error', {
+        requestId: req.requestId,
+        method: req.method,
+        path: req.originalUrl,
+        name,
+        message: err.message,
+        stack: process.env.LOG_LEVEL === 'debug' ? err.stack : undefined,
+    });
     res.status(statusCode).json({ name, message: 'Internal server error' });
 });
 exports.default = app;
