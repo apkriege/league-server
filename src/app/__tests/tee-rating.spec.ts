@@ -15,14 +15,10 @@ const tee = {
 };
 
 describe('modelTeeForRound', () => {
-  it('falls back to full-course slope and half full-course rating for 9-hole rounds', () => {
-    const modeledTee = modelTeeForRound(tee, 9, 'front');
-
-    expect(modeledTee.slope).toBe(128);
-    expect(modeledTee.rating).toBe(36.2);
-    expect(modeledTee.par).toBe(0);
-    expect(modeledTee.holes).toHaveLength(9);
-    expect(modeledTee.holes[0].num).toBe(1);
+  it('requires side-specific rating and slope for 9-hole rounds', () => {
+    expect(() => modelTeeForRound(tee, 9, 'front')).toThrow(
+      'Missing tee rating or slope for handicap calculation',
+    );
   });
 
   it('uses side-specific rating and slope when available', () => {

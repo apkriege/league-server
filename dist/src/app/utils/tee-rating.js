@@ -12,9 +12,8 @@ const modelTeeForRound = (tee, numHoles, startSide) => {
     const fullRating = positiveNumber(tee?.ratingMen);
     const sideSlope = positiveNumber(isFront ? tee?.slopeFrontMen : tee?.slopeBackMen);
     const sideRating = positiveNumber(isFront ? tee?.ratingFrontMen : tee?.ratingBackMen);
-    const slope = isNineHoleRound ? sideSlope ?? fullSlope : fullSlope;
-    // 9-hole rating fallback uses half of the full 18-hole course rating. Slope stays full-course.
-    const rating = isNineHoleRound ? sideRating ?? (fullRating != null ? fullRating / 2 : null) : fullRating;
+    const slope = isNineHoleRound ? sideSlope : fullSlope;
+    const rating = isNineHoleRound ? sideRating : fullRating;
     const par = isNineHoleRound
         ? positiveNumber(isFront ? tee?.frontPar : tee?.backPar)
         : positiveNumber(tee?.par);
