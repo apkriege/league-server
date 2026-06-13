@@ -22,7 +22,8 @@
     "db:full": "npx prisma db push --force-reset && npx ts-node prisma/seed.ts",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down -v",
-    "deploy": "npm run build && git add . && git commit -m 'Deploy' && git push"
+    "deploy": "npm run build && git add . && git commit -m 'Deploy' && git push",
+    "migrate:deploy": "prisma migrate deploy"
   },
   "keywords": [],
   "author": "",
