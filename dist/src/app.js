@@ -16,7 +16,12 @@ const health_1 = __importDefault(require("./app/controllers/health"));
 const security_1 = require("./app/middleware/security");
 const app = (0, express_1.default)();
 const sessionSecret = process.env.SESSION_SECRET;
-app.set('trust proxy', 1);
+const isRailway = Boolean(process.env.RAILWAY_ENVIRONMENT) ||
+    Boolean(process.env.RAILWAY_PROJECT_ID) ||
+    Boolean(process.env.RAILWAY_SERVICE_ID);
+const useSecureCookies = process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production' || isRailway;
+const sessionCookieName = process.env.SESSION_COOKIE_NAME || 'connect.sid';
+app.set('trust proxy', true);
 if (!sessionSecret) {
     throw new Error('Missing SESSION_SECRET');
 }
@@ -43,18 +48,19 @@ const pool = new pg_1.default.Pool({
     connectionString: process.env.DATABASE_URL,
 });
 app.use((0, express_session_1.default)({
+    name: sessionCookieName,
     store: new pgSession({
         pool: pool,
         tableName: 'session',
     }),
-    proxy: process.env.NODE_ENV === 'production',
+    proxy: useSecureCookies,
     secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: process.env.NODE_ENV === 'production',
+        secure: useSecureCookies,
         httpOnly: true,
-        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        sameSite: useSecureCookies ? 'none' : 'lax',
         maxAge: 1000 * 60 * 60 * 24 * 7,
     },
 }));

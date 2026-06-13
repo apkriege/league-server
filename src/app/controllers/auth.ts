@@ -24,6 +24,17 @@ const serializeUser = (user: any, extra: Record<string, unknown> = {}) => ({
 });
 
 class AuthController {
+  static async debugSession(req: Request, res: Response) {
+    res.json({
+      authenticated: Boolean(req.session.userId),
+      hasCookieHeader: Boolean(req.headers.cookie),
+      sessionId: req.sessionID,
+      userId: req.session.userId ?? null,
+      nodeEnv: process.env.NODE_ENV ?? null,
+      railwayEnvironment: process.env.RAILWAY_ENVIRONMENT ?? null,
+    });
+  }
+
   static async register(req: Request, res: Response) {
     try {
       const { firstName, lastName, email, password } = req.body || {};
@@ -143,7 +154,7 @@ class AuthController {
           console.error('Session destroy error:', err);
           return res.status(500).json({ message: 'Server error' });
         }
-        res.clearCookie('connect.sid'); // Default session cookie name
+        res.clearCookie('connect.sid');
         res.json({ message: 'Logout successful' });
       });
     } catch (error) {

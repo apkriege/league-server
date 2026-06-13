@@ -34,6 +34,7 @@ router.get('/health', health_1.default.getHealth);
 // =====================
 router.post('/auth/login', authRateLimiter, auth_1.default.login);
 router.post('/auth/register', authRateLimiter, auth_1.default.register);
+router.get('/auth/debug-session', auth_1.default.debugSession);
 router.post('/auth/logout', auth_guard_1.userGuard, auth_1.default.logout);
 router.get('/auth/me', auth_guard_1.userGuard, auth_1.default.getProfile);
 // =====================

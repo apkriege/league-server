@@ -45,6 +45,7 @@ router.get('/health', HealthController.getHealth);
 // =====================
 router.post('/auth/login', authRateLimiter, Auth.login);
 router.post('/auth/register', authRateLimiter, Auth.register);
+router.get('/auth/debug-session', Auth.debugSession);
 router.post('/auth/logout', user, Auth.logout);
 router.get('/auth/me', user, Auth.getProfile);
 
