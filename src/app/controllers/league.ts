@@ -7,6 +7,7 @@ import {
   getAllocatedGolfersForAdmin,
   getBillingState,
 } from '../utils/billing';
+import { writeAuditLog } from '../utils/audit';
 
 class LeagueController {
   static normalizeLeaguePayload = (payload: any) => {
@@ -284,6 +285,12 @@ class LeagueController {
         },
       });
 
+      await prisma.league_onboarding.upsert({
+        where: { leagueId: newLeague.id },
+        create: { leagueId: newLeague.id },
+        update: {},
+      });
+
       if (players && players.length > 0) {
         const playerIdMap = new Map<number, number>();
 
@@ -335,6 +342,15 @@ class LeagueController {
           }
         }
       }
+
+      await writeAuditLog({
+        userId: adminId,
+        leagueId: newLeague.id,
+        entity: 'league',
+        entityId: newLeague.id,
+        action: 'create',
+        summary: `Created league ${newLeague.name}.`,
+      });
 
       res.status(201).send(newLeague);
     } catch (error) {

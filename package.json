@@ -21,7 +21,8 @@
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down -v",
     "deploy": "npm run build && git add . && git commit -m 'Deploy' && git push",
-    "migrate:deploy": "prisma migrate deploy"
+    "migrate:deploy": "prisma migrate deploy",
+    "x": "prisma migrate reset --force && npm run seed"
   },
   "keywords": [],
   "author": "",

@@ -9,6 +9,7 @@ const league_1 = __importDefault(require("../models/league"));
 const flightGen_1 = require("../services/flightGen");
 const event_mode_1 = require("../utils/event-mode");
 const score_order_1 = require("../utils/score-order");
+const audit_1 = require("../utils/audit");
 const dayjs_1 = __importDefault(require("dayjs"));
 const customParseFormat_1 = __importDefault(require("dayjs/plugin/customParseFormat"));
 const eventMetrics_1 = require("../services/eventMetrics");
@@ -288,6 +289,19 @@ class EventController {
                 await flightGen.saveFlights();
                 return created;
             });
+            await prisma_1.prisma.league_onboarding.upsert({
+                where: { leagueId },
+                create: { leagueId, firstEventCreatedAt: new Date() },
+                update: { firstEventCreatedAt: new Date() },
+            });
+            await (0, audit_1.writeAuditLog)({
+                userId: req.session.userId ?? null,
+                leagueId,
+                entity: 'event',
+                entityId: newEvent.id,
+                action: 'create',
+                summary: `Created event ${newEvent.name}.`,
+            });
             res.status(201).send(newEvent);
         }
         catch (error) {
@@ -359,6 +373,19 @@ class EventController {
                 });
                 createdEvents.push(newEvent);
             }
+            await prisma_1.prisma.league_onboarding.upsert({
+                where: { leagueId },
+                create: { leagueId, firstEventCreatedAt: new Date() },
+                update: { firstEventCreatedAt: new Date() },
+            });
+            await (0, audit_1.writeAuditLog)({
+                userId: req.session.userId ?? null,
+                leagueId,
+                entity: 'event',
+                action: 'create_many',
+                summary: `Created ${createdEvents.length} events.`,
+                metadata: { eventIds: createdEvents.map((event) => event.id) },
+            });
             res.status(201).send(createdEvents);
         }
         catch (error) {
@@ -449,6 +476,14 @@ class EventController {
                 await flightGen.saveFlights();
             });
             const updatedEvent = await prisma_1.prisma.event.findUnique({ where: { id: eventId } });
+            await (0, audit_1.writeAuditLog)({
+                userId: req.session.userId ?? null,
+                leagueId,
+                entity: 'event',
+                entityId: eventId,
+                action: 'update',
+                summary: `Updated event ${updatedEvent?.name || eventId}.`,
+            });
             res.status(200).send(updatedEvent);
         }
         catch (error) {

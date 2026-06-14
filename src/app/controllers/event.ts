@@ -9,6 +9,7 @@ import {
   validateEventMode,
 } from '../utils/event-mode';
 import { buildEventScoreAccess, getLeagueScoreOrder } from '../utils/score-order';
+import { writeAuditLog } from '../utils/audit';
 
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
@@ -329,6 +330,21 @@ class EventController {
         return created;
       });
 
+      await prisma.league_onboarding.upsert({
+        where: { leagueId },
+        create: { leagueId, firstEventCreatedAt: new Date() },
+        update: { firstEventCreatedAt: new Date() },
+      });
+
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'event',
+        entityId: newEvent.id,
+        action: 'create',
+        summary: `Created event ${newEvent.name}.`,
+      });
+
       res.status(201).send(newEvent);
     } catch (error) {
       console.error(error);
@@ -421,6 +437,21 @@ class EventController {
 
         createdEvents.push(newEvent);
       }
+
+      await prisma.league_onboarding.upsert({
+        where: { leagueId },
+        create: { leagueId, firstEventCreatedAt: new Date() },
+        update: { firstEventCreatedAt: new Date() },
+      });
+
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'event',
+        action: 'create_many',
+        summary: `Created ${createdEvents.length} events.`,
+        metadata: { eventIds: createdEvents.map((event) => event.id) },
+      });
 
       res.status(201).send(createdEvents);
     } catch (error) {
@@ -532,6 +563,14 @@ class EventController {
       });
 
       const updatedEvent = await prisma.event.findUnique({ where: { id: eventId } });
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'event',
+        entityId: eventId,
+        action: 'update',
+        summary: `Updated event ${updatedEvent?.name || eventId}.`,
+      });
       res.status(200).send(updatedEvent);
     } catch (error) {
       console.error(error);

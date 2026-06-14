@@ -4,6 +4,8 @@ const prisma_1 = require("../../prisma");
 const round_1 = require("../services/round");
 const event_mode_1 = require("../utils/event-mode");
 const score_order_1 = require("../utils/score-order");
+const audit_1 = require("../utils/audit");
+const notifications_1 = require("../utils/notifications");
 const toStrokePointsArray = (raw) => {
     if (Array.isArray(raw)) {
         return raw.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v >= 0);
@@ -394,6 +396,25 @@ class ScoreController {
                     data: { status: 'completed', isComplete: true },
                 });
             }
+            await prisma_1.prisma.league_onboarding.upsert({
+                where: { leagueId },
+                create: { leagueId, firstScoresEnteredAt: new Date() },
+                update: { firstScoresEnteredAt: new Date() },
+            });
+            await (0, audit_1.writeAuditLog)({
+                userId: req.session.userId ?? null,
+                leagueId,
+                entity: 'event',
+                entityId: numericEventId,
+                action: 'create_scores',
+                summary: `Entered scores for event ${event.name}.`,
+            });
+            await (0, notifications_1.notifyLeagueAdmins)(leagueId, {
+                type: 'scores_entered',
+                title: 'Scores entered',
+                body: `Scores were entered for ${event.name}.`,
+                metadata: { eventId: numericEventId, flightId: numericFlightId },
+            });
             return res.status(201).json({ message: 'Scores created successfully' });
         }
         catch (error) {
@@ -460,6 +481,14 @@ class ScoreController {
                     data: { status: 'completed', isComplete: true },
                 });
             }
+            await (0, audit_1.writeAuditLog)({
+                userId: req.session.userId ?? null,
+                leagueId,
+                entity: 'event',
+                entityId: eventId,
+                action: 'update_scores',
+                summary: `Updated scores for event ${event.name}.`,
+            });
             return res.status(200).json({ message: 'Scores updated successfully' });
         }
         catch (error) {

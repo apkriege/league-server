@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const prisma_1 = require("../../prisma");
+const audit_1 = require("../utils/audit");
 class FlightController {
     static getFlight = async (req, res) => {
         try {
@@ -59,6 +60,18 @@ class FlightController {
                     },
                 });
             }));
+            const flight = await prisma_1.prisma.flight.findUnique({
+                where: { id: flightId },
+                include: { event: { select: { leagueId: true } } },
+            });
+            await (0, audit_1.writeAuditLog)({
+                userId: req.session.userId ?? null,
+                leagueId: flight?.event?.leagueId ?? null,
+                entity: 'flight',
+                entityId: flightId,
+                action: 'swap_players',
+                summary: 'Updated flight player assignments.',
+            });
             res.status(200).json({ message: 'Flights updated successfully' });
         }
         catch (error) {

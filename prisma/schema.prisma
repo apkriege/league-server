@@ -43,6 +43,10 @@ model user {
 
   manager league[]
   players player[]
+  sentLeagueInvitations league_invitation[] @relation("league_invitation_invited_by")
+  claimedLeagueInvitations league_invitation[] @relation("league_invitation_claimed_by")
+  notifications notification[]
+  auditLogs audit_log[]
 
   @@index([email])
   @@index([deletedAt])
@@ -149,6 +153,10 @@ model league {
   players         player[]
   teams           team[]
   teamEventPoints team_event_points[]
+  invitations     league_invitation[]
+  notifications   notification[]
+  auditLogs       audit_log[]
+  onboarding      league_onboarding?
 
   @@index([adminId])
   @@index([startDate])
@@ -181,6 +189,7 @@ model player {
   rounds        round[]         @relation("round_playerId")
   opponentOf    round[]         @relation("round_opponentId")
   user          user?           @relation(fields: [userId], references: [id])
+  invitations   league_invitation[]
 
   @@index([leagueId])
   @@index([eventId])
@@ -411,4 +420,87 @@ model score {
   @@index([courseId])
   @@index([teeId])
   @@index([hole])
+}
+
+model league_invitation {
+  id          Int       @id @default(autoincrement())
+  leagueId    Int       @map("league_id")
+  playerId    Int?      @map("player_id")
+  email       String
+  token       String    @unique
+  status      String    @default("pending") // pending, claimed, revoked, expired
+  invitedById Int       @map("invited_by_id")
+  claimedById Int?      @map("claimed_by_id")
+  expiresAt   DateTime? @map("expires_at")
+  claimedAt   DateTime? @map("claimed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  league    league  @relation(fields: [leagueId], references: [id])
+  player    player? @relation(fields: [playerId], references: [id])
+  invitedBy user    @relation("league_invitation_invited_by", fields: [invitedById], references: [id])
+  claimedBy user?   @relation("league_invitation_claimed_by", fields: [claimedById], references: [id])
+
+  @@index([leagueId])
+  @@index([playerId])
+  @@index([email])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+model notification {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  leagueId  Int?      @map("league_id")
+  type      String
+  title     String
+  body      String
+  metadata  Json?
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  user   user    @relation(fields: [userId], references: [id])
+  league league? @relation(fields: [leagueId], references: [id])
+
+  @@index([userId])
+  @@index([leagueId])
+  @@index([readAt])
+  @@index([deletedAt])
+}
+
+model audit_log {
+  id        Int      @id @default(autoincrement())
+  userId    Int?     @map("user_id")
+  leagueId  Int?     @map("league_id")
+  entity    String
+  entityId  Int?     @map("entity_id")
+  action    String
+  summary   String
+  metadata  Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user   user?   @relation(fields: [userId], references: [id])
+  league league? @relation(fields: [leagueId], references: [id])
+
+  @@index([userId])
+  @@index([leagueId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+model league_onboarding {
+  id                    Int      @id @default(autoincrement())
+  leagueId              Int      @unique @map("league_id")
+  dismissed             Boolean  @default(false)
+  playersReviewedAt     DateTime? @map("players_reviewed_at")
+  teamsReviewedAt       DateTime? @map("teams_reviewed_at")
+  firstEventCreatedAt   DateTime? @map("first_event_created_at")
+  scorecardsPrintedAt   DateTime? @map("scorecards_printed_at")
+  firstScoresEnteredAt  DateTime? @map("first_scores_entered_at")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  league league @relation(fields: [leagueId], references: [id])
 }

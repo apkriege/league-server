@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const player_1 = __importDefault(require("../models/player"));
 const prisma_1 = require("../../prisma");
+const audit_1 = require("../utils/audit");
 class PlayerController {
     static getPlayers = async (_req, res) => {
         try {
@@ -112,6 +113,14 @@ class PlayerController {
                 type: String(payload.type || 'player').toLowerCase(),
                 teamId,
             });
+            await (0, audit_1.writeAuditLog)({
+                userId: req.session.userId ?? null,
+                leagueId: Number(leagueId),
+                entity: 'player',
+                entityId: created.id,
+                action: 'create',
+                summary: `Added player ${created.firstName} ${created.lastName}.`,
+            });
             return res.status(201).json(created);
         }
         catch (error) {
@@ -147,6 +156,14 @@ class PlayerController {
                     : {}),
             };
             const updated = await player_1.default.update(Number(id), data);
+            await (0, audit_1.writeAuditLog)({
+                userId: req.session.userId ?? null,
+                leagueId: updated?.leagueId ?? null,
+                entity: 'player',
+                entityId: Number(id),
+                action: 'update',
+                summary: `Updated player ${updated.firstName} ${updated.lastName}.`,
+            });
             return res.status(200).json(updated);
         }
         catch (error) {
@@ -163,7 +180,16 @@ class PlayerController {
             if (!id) {
                 return res.status(400).json({ message: 'Player ID is required' });
             }
+            const player = await prisma_1.prisma.player.findUnique({ where: { id: Number(id) } });
             await player_1.default.delete(Number(id));
+            await (0, audit_1.writeAuditLog)({
+                userId: req.session.userId ?? null,
+                leagueId: player?.leagueId ?? null,
+                entity: 'player',
+                entityId: Number(id),
+                action: 'delete',
+                summary: `Removed player ${player ? `${player.firstName} ${player.lastName}` : id}.`,
+            });
             return res.status(200).json({ message: 'Player removed' });
         }
         catch (error) {

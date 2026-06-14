@@ -7,6 +7,7 @@ const league_1 = __importDefault(require("../models/league"));
 const prisma_1 = require("../../prisma");
 const event_mode_1 = require("../utils/event-mode");
 const billing_1 = require("../utils/billing");
+const audit_1 = require("../utils/audit");
 class LeagueController {
     static normalizeLeaguePayload = (payload) => {
         const normalizedType = String(payload?.type || '').toLowerCase();
@@ -255,6 +256,11 @@ class LeagueController {
                     adminId,
                 },
             });
+            await prisma_1.prisma.league_onboarding.upsert({
+                where: { leagueId: newLeague.id },
+                create: { leagueId: newLeague.id },
+                update: {},
+            });
             if (players && players.length > 0) {
                 const playerIdMap = new Map();
                 for (const player of players) {
@@ -301,6 +307,14 @@ class LeagueController {
                     }
                 }
             }
+            await (0, audit_1.writeAuditLog)({
+                userId: adminId,
+                leagueId: newLeague.id,
+                entity: 'league',
+                entityId: newLeague.id,
+                action: 'create',
+                summary: `Created league ${newLeague.name}.`,
+            });
             res.status(201).send(newLeague);
         }
         catch (error) {

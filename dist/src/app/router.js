@@ -17,6 +17,7 @@ const auth_1 = __importDefault(require("./controllers/auth"));
 const flight_1 = __importDefault(require("./controllers/flight"));
 const admin_1 = __importDefault(require("./controllers/admin"));
 const payment_1 = __importDefault(require("./controllers/payment"));
+const operations_1 = __importDefault(require("./controllers/operations"));
 const test_1 = __importDefault(require("./controllers/test"));
 const health_1 = __importDefault(require("./controllers/health"));
 const security_1 = require("./middleware/security");
@@ -42,6 +43,20 @@ router.get('/auth/me', auth_guard_1.userGuard, auth_1.default.getProfile);
 // =====================
 router.post('/payments/checkout-session', auth_guard_1.userGuard, paymentRateLimiter, payment_1.default.createCheckoutSession);
 router.get('/payments/stripe-state', auth_guard_1.userGuard, paymentRateLimiter, payment_1.default.getStripeState);
+// =====================
+// OPERATIONS ROUTES
+// =====================
+router.get('/notifications', auth_guard_1.userGuard, operations_1.default.getNotifications);
+router.put('/notifications/:id/read', auth_guard_1.userGuard, operations_1.default.markNotificationRead);
+router.get('/invitations/:token', operations_1.default.getInvitationByToken);
+router.post('/invitations/:token/claim', auth_guard_1.userGuard, operations_1.default.claimInvitation);
+router.get('/leagues/:leagueId/invitations', auth_guard_1.leagueAdminGuard, operations_1.default.getLeagueInvitations);
+router.post('/leagues/:leagueId/invitations', auth_guard_1.leagueAdminGuard, operations_1.default.createLeagueInvitations);
+router.delete('/leagues/:leagueId/invitations/:invitationId', auth_guard_1.leagueAdminGuard, operations_1.default.revokeLeagueInvitation);
+router.get('/leagues/:leagueId/onboarding', auth_guard_1.leagueAdminGuard, operations_1.default.getLeagueOnboarding);
+router.put('/leagues/:leagueId/onboarding', auth_guard_1.leagueAdminGuard, operations_1.default.updateLeagueOnboarding);
+router.get('/leagues/:leagueId/audit-logs', auth_guard_1.leagueAdminGuard, operations_1.default.getLeagueAuditLogs);
+router.post('/leagues/:leagueId/notifications', auth_guard_1.leagueAdminGuard, operations_1.default.createLeagueNotification);
 // =====================
 // ADMIN ROUTES
 // =====================

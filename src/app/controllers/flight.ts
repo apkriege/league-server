@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../../prisma';
+import { writeAuditLog } from '../utils/audit';
 
 export default class FlightController {
   static getFlight = async (req: Request, res: Response) => {
@@ -67,6 +68,20 @@ export default class FlightController {
           });
         }),
       );
+
+      const flight = await prisma.flight.findUnique({
+        where: { id: flightId },
+        include: { event: { select: { leagueId: true } } },
+      });
+
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId: flight?.event?.leagueId ?? null,
+        entity: 'flight',
+        entityId: flightId,
+        action: 'swap_players',
+        summary: 'Updated flight player assignments.',
+      });
 
       res.status(200).json({ message: 'Flights updated successfully' });
     } catch (error) {

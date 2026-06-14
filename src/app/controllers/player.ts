@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import PlayerService from '../models/player';
 import { prisma } from '../../prisma';
+import { writeAuditLog } from '../utils/audit';
 
 export default class PlayerController {
   static getPlayers = async (_req: Request, res: Response): Promise<any> => {
@@ -126,6 +127,15 @@ export default class PlayerController {
         teamId,
       });
 
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId: Number(leagueId),
+        entity: 'player',
+        entityId: created.id,
+        action: 'create',
+        summary: `Added player ${created.firstName} ${created.lastName}.`,
+      });
+
       return res.status(201).json(created);
     } catch (error) {
       console.error(error);
@@ -165,6 +175,15 @@ export default class PlayerController {
 
       const updated = await PlayerService.update(Number(id), data);
 
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId: updated?.leagueId ?? null,
+        entity: 'player',
+        entityId: Number(id),
+        action: 'update',
+        summary: `Updated player ${updated.firstName} ${updated.lastName}.`,
+      });
+
       return res.status(200).json(updated);
     } catch (error: any) {
       console.error(error);
@@ -183,7 +202,16 @@ export default class PlayerController {
         return res.status(400).json({ message: 'Player ID is required' });
       }
 
+      const player = await prisma.player.findUnique({ where: { id: Number(id) } });
       await PlayerService.delete(Number(id));
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId: player?.leagueId ?? null,
+        entity: 'player',
+        entityId: Number(id),
+        action: 'delete',
+        summary: `Removed player ${player ? `${player.firstName} ${player.lastName}` : id}.`,
+      });
       return res.status(200).json({ message: 'Player removed' });
     } catch (error: any) {
       console.error(error);

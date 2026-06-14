@@ -3,6 +3,8 @@ import { prisma } from '../../prisma';
 import { Round } from '../services/round';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
 import { getLeagueScoreOrder } from '../utils/score-order';
+import { writeAuditLog } from '../utils/audit';
+import { notifyLeagueAdmins } from '../utils/notifications';
 
 type TeamPointsRow = { teamId: number; points: number };
 
@@ -464,6 +466,28 @@ export default class ScoreController {
         });
       }
 
+      await prisma.league_onboarding.upsert({
+        where: { leagueId },
+        create: { leagueId, firstScoresEnteredAt: new Date() },
+        update: { firstScoresEnteredAt: new Date() },
+      });
+
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'event',
+        entityId: numericEventId,
+        action: 'create_scores',
+        summary: `Entered scores for event ${event.name}.`,
+      });
+
+      await notifyLeagueAdmins(leagueId, {
+        type: 'scores_entered',
+        title: 'Scores entered',
+        body: `Scores were entered for ${event.name}.`,
+        metadata: { eventId: numericEventId, flightId: numericFlightId },
+      });
+
       return res.status(201).json({ message: 'Scores created successfully' });
     } catch (error: any) {
       console.error('Error parsing request data:', error);
@@ -545,6 +569,15 @@ export default class ScoreController {
           data: { status: 'completed', isComplete: true },
         });
       }
+
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'event',
+        entityId: eventId,
+        action: 'update_scores',
+        summary: `Updated scores for event ${event.name}.`,
+      });
 
       return res.status(200).json({ message: 'Scores updated successfully' });
     } catch (error) {

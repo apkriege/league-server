@@ -25,6 +25,7 @@ import Auth from './controllers/auth';
 import Flight from './controllers/flight';
 import Admin from './controllers/admin';
 import Payment from './controllers/payment';
+import Operations from './controllers/operations';
 import TestController from './controllers/test';
 import HealthController from './controllers/health';
 import { createRateLimiter } from './middleware/security';
@@ -54,6 +55,25 @@ router.get('/auth/me', user, Auth.getProfile);
 // =====================
 router.post('/payments/checkout-session', user, paymentRateLimiter, Payment.createCheckoutSession);
 router.get('/payments/stripe-state', user, paymentRateLimiter, Payment.getStripeState);
+
+// =====================
+// OPERATIONS ROUTES
+// =====================
+router.get('/notifications', user, Operations.getNotifications);
+router.put('/notifications/:id/read', user, Operations.markNotificationRead);
+router.get('/invitations/:token', Operations.getInvitationByToken);
+router.post('/invitations/:token/claim', user, Operations.claimInvitation);
+router.get('/leagues/:leagueId/invitations', leagueAdminGuard, Operations.getLeagueInvitations);
+router.post('/leagues/:leagueId/invitations', leagueAdminGuard, Operations.createLeagueInvitations);
+router.delete(
+  '/leagues/:leagueId/invitations/:invitationId',
+  leagueAdminGuard,
+  Operations.revokeLeagueInvitation,
+);
+router.get('/leagues/:leagueId/onboarding', leagueAdminGuard, Operations.getLeagueOnboarding);
+router.put('/leagues/:leagueId/onboarding', leagueAdminGuard, Operations.updateLeagueOnboarding);
+router.get('/leagues/:leagueId/audit-logs', leagueAdminGuard, Operations.getLeagueAuditLogs);
+router.post('/leagues/:leagueId/notifications', leagueAdminGuard, Operations.createLeagueNotification);
 
 // =====================
 // ADMIN ROUTES
