@@ -5,6 +5,7 @@ import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mod
 import { getLeagueScoreOrder } from '../utils/score-order';
 import { writeAuditLog } from '../utils/audit';
 import { notifyLeagueAdmins } from '../utils/notifications';
+import { getPublicErrorResponse } from '../utils/error-response';
 
 type TeamPointsRow = { teamId: number; points: number };
 
@@ -582,7 +583,8 @@ export default class ScoreController {
       return res.status(200).json({ message: 'Scores updated successfully' });
     } catch (error) {
       console.error('Error parsing request data:', error);
-      return res.status(400).json({ message: 'Invalid request data' });
+      const { status, message } = getPublicErrorResponse(error);
+      return res.status(status === 500 ? 400 : status).json({ message });
     }
   };
 }

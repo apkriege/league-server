@@ -6,6 +6,7 @@ const event_mode_1 = require("../utils/event-mode");
 const score_order_1 = require("../utils/score-order");
 const audit_1 = require("../utils/audit");
 const notifications_1 = require("../utils/notifications");
+const error_response_1 = require("../utils/error-response");
 const toStrokePointsArray = (raw) => {
     if (Array.isArray(raw)) {
         return raw.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v >= 0);
@@ -493,7 +494,8 @@ class ScoreController {
         }
         catch (error) {
             console.error('Error parsing request data:', error);
-            return res.status(400).json({ message: 'Invalid request data' });
+            const { status, message } = (0, error_response_1.getPublicErrorResponse)(error);
+            return res.status(status === 500 ? 400 : status).json({ message });
         }
     };
 }

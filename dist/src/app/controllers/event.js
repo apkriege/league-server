@@ -10,6 +10,7 @@ const flightGen_1 = require("../services/flightGen");
 const event_mode_1 = require("../utils/event-mode");
 const score_order_1 = require("../utils/score-order");
 const audit_1 = require("../utils/audit");
+const error_response_1 = require("../utils/error-response");
 const dayjs_1 = __importDefault(require("dayjs"));
 const customParseFormat_1 = __importDefault(require("dayjs/plugin/customParseFormat"));
 const eventMetrics_1 = require("../services/eventMetrics");
@@ -26,7 +27,8 @@ class EventController {
         }
         catch (error) {
             console.error(error);
-            res.status(500).json({ message: 'Internal server error' });
+            const { status, message } = (0, error_response_1.getPublicErrorResponse)(error);
+            res.status(status).json({ message });
         }
     };
     static getEvents = async (req, res) => {
@@ -36,7 +38,8 @@ class EventController {
         }
         catch (error) {
             console.error(error);
-            res.status(500).json({ message: 'Internal server error' });
+            const { status, message } = (0, error_response_1.getPublicErrorResponse)(error);
+            res.status(status).json({ message });
         }
     };
     // GET LEAGUE EVENTS
@@ -83,7 +86,8 @@ class EventController {
         }
         catch (error) {
             console.error(error);
-            res.status(500).json({ message: 'Internal server error' });
+            const { status, message } = (0, error_response_1.getPublicErrorResponse)(error);
+            res.status(status).json({ message });
         }
     };
     // GET LEAGUE EVENT DETAILS (INCLUDING FLIGHTS AND ROUNDS)
@@ -149,7 +153,8 @@ class EventController {
         }
         catch (error) {
             console.error(error);
-            res.status(500).json({ message: 'Internal server error' });
+            const { status, message } = (0, error_response_1.getPublicErrorResponse)(error);
+            res.status(status).json({ message });
         }
     };
     // GET LEAGUE EVENT ROUNDS AND SCORES
@@ -217,7 +222,8 @@ class EventController {
         }
         catch (error) {
             console.error(error);
-            res.status(500).json({ message: 'Internal server error' });
+            const { status, message } = (0, error_response_1.getPublicErrorResponse)(error);
+            res.status(status).json({ message });
         }
     };
     // CREATE EVENT
@@ -306,7 +312,8 @@ class EventController {
         }
         catch (error) {
             console.error(error);
-            res.status(500).json({ message: 'Internal server error' });
+            const { status, message } = (0, error_response_1.getPublicErrorResponse)(error);
+            res.status(status).json({ message });
         }
     };
     // CREATE MULTIPLE EVENTS
@@ -390,7 +397,8 @@ class EventController {
         }
         catch (error) {
             console.error(error);
-            res.status(500).json({ message: 'Internal server error' });
+            const { status, message } = (0, error_response_1.getPublicErrorResponse)(error);
+            res.status(status).json({ message });
         }
     };
     // UPDATE EVENT
@@ -488,7 +496,8 @@ class EventController {
         }
         catch (error) {
             console.error(error);
-            res.status(500).json({ message: 'Internal server error' });
+            const { status, message } = (0, error_response_1.getPublicErrorResponse)(error);
+            res.status(status).json({ message });
         }
     };
     // DELETE (SOFT) EVENT

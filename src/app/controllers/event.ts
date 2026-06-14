@@ -10,6 +10,7 @@ import {
 } from '../utils/event-mode';
 import { buildEventScoreAccess, getLeagueScoreOrder } from '../utils/score-order';
 import { writeAuditLog } from '../utils/audit';
+import { getPublicErrorResponse } from '../utils/error-response';
 
 import dayjs from 'dayjs';
 import customParseFormat from 'dayjs/plugin/customParseFormat';
@@ -27,7 +28,8 @@ class EventController {
       res.status(200).send(event);
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
     }
   };
 
@@ -37,7 +39,8 @@ class EventController {
       res.status(200).send(events);
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
     }
   };
 
@@ -88,7 +91,8 @@ class EventController {
       );
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
     }
   };
 
@@ -160,7 +164,8 @@ class EventController {
       res.status(200).send(eventWithMetrics);
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
     }
   };
 
@@ -235,7 +240,8 @@ class EventController {
       res.status(200).send(ev);
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
     }
   };
 
@@ -348,7 +354,8 @@ class EventController {
       res.status(201).send(newEvent);
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
     }
   };
 
@@ -456,7 +463,8 @@ class EventController {
       res.status(201).send(createdEvents);
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
     }
   };
 
@@ -574,7 +582,8 @@ class EventController {
       res.status(200).send(updatedEvent);
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
     }
   };
 

@@ -15,6 +15,7 @@ const payment_1 = __importDefault(require("./app/controllers/payment"));
 const health_1 = __importDefault(require("./app/controllers/health"));
 const security_1 = require("./app/middleware/security");
 const logging_1 = require("./app/middleware/logging");
+const error_response_1 = require("./app/utils/error-response");
 const app = (0, express_1.default)();
 const sessionSecret = process.env.SESSION_SECRET;
 const isRailway = Boolean(process.env.RAILWAY_ENVIRONMENT) ||
@@ -83,8 +84,7 @@ app.use('/api', security_1.requireTrustedOrigin, router_1.default);
 app.get('/health', health_1.default.getHealth);
 // High-level error handling
 app.use((err, req, res, next) => {
-    // const statusCode = err.statusCode || 500;
-    const statusCode = 500;
+    const errorResponse = (0, error_response_1.getPublicErrorResponse)(err);
     const name = err.name || 'Error';
     (0, logging_1.logError)('request:error', {
         requestId: req.requestId,
@@ -94,6 +94,10 @@ app.use((err, req, res, next) => {
         message: err.message,
         stack: process.env.LOG_LEVEL === 'debug' ? err.stack : undefined,
     });
-    res.status(statusCode).json({ name, message: 'Internal server error' });
+    res.status(errorResponse.status).json({
+        name,
+        message: errorResponse.message,
+        requestId: req.requestId,
+    });
 });
 exports.default = app;

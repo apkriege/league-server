@@ -10,6 +10,7 @@ import Payment from './app/controllers/payment';
 import HealthController from './app/controllers/health';
 import { requireTrustedOrigin } from './app/middleware/security';
 import { logError, logInfo, requestId, requestLogger } from './app/middleware/logging';
+import { getPublicErrorResponse } from './app/utils/error-response';
 
 const app: Express = express();
 const sessionSecret = process.env.SESSION_SECRET;
@@ -97,8 +98,7 @@ app.get('/health', HealthController.getHealth);
 
 // High-level error handling
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-  // const statusCode = err.statusCode || 500;
-  const statusCode = 500;
+  const errorResponse = getPublicErrorResponse(err);
   const name = err.name || 'Error';
   logError('request:error', {
     requestId: (req as any).requestId,
@@ -108,7 +108,11 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     message: err.message,
     stack: process.env.LOG_LEVEL === 'debug' ? err.stack : undefined,
   });
-  res.status(statusCode).json({ name, message: 'Internal server error' });
+  res.status(errorResponse.status).json({
+    name,
+    message: errorResponse.message,
+    requestId: (req as any).requestId,
+  });
 });
 
 export default app;
