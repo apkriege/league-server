@@ -112,9 +112,9 @@ router.delete('/courses/:id', superAdmin, Course.deleteCourse);
 router.get('/leagues', user, League.getLeagues);
 router.get('/leagues/:id', leagueMemberGuard, League.getLeague);
 router.get('/leagues/:id/metrics', leagueMemberGuard, League.getLeagueMetrics);
-router.post('/leagues', user, League.createLeague);
-router.put('/leagues/:id', leagueAdminGuard, League.updateLeague);
-router.delete('/leagues/:id', leagueAdminGuard, League.deleteLeague);
+router.post('/leagues', admin, League.createLeague);
+router.put('/leagues/:id', admin, leagueAdminGuard, League.updateLeague);
+router.delete('/leagues/:id', admin, leagueAdminGuard, League.deleteLeague);
 
 // League Players & Teams
 router.get('/leagues/:leagueId/players', leagueMemberGuard, Player.getLeaguePlayers);

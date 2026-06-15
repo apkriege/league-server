@@ -26,7 +26,7 @@ export const adminGuard = (req: Request, res: Response, next: NextFunction): any
     .then((user) => {
       if (!user) {
         logAuthFailure(req, 'auth:unauthorized', { guard: 'admin', reason: 'missing-session-user' });
-        return res.sendStatus(401);
+        return res.status(401).json({ message: 'Not authenticated' });
       }
 
       const role = String(user.role).toUpperCase();
@@ -37,7 +37,7 @@ export const adminGuard = (req: Request, res: Response, next: NextFunction): any
           userId: user.id,
           role,
         });
-        return res.sendStatus(403);
+        return res.status(403).json({ message: 'Admin access is required' });
       }
 
       req.user = user;

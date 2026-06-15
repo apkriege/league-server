@@ -89,9 +89,9 @@ router.delete('/courses/:id', auth_guard_1.superAdminGuard, course_1.default.del
 router.get('/leagues', auth_guard_1.userGuard, league_1.default.getLeagues);
 router.get('/leagues/:id', auth_guard_1.leagueMemberGuard, league_1.default.getLeague);
 router.get('/leagues/:id/metrics', auth_guard_1.leagueMemberGuard, league_1.default.getLeagueMetrics);
-router.post('/leagues', auth_guard_1.userGuard, league_1.default.createLeague);
-router.put('/leagues/:id', auth_guard_1.leagueAdminGuard, league_1.default.updateLeague);
-router.delete('/leagues/:id', auth_guard_1.leagueAdminGuard, league_1.default.deleteLeague);
+router.post('/leagues', auth_guard_1.adminGuard, league_1.default.createLeague);
+router.put('/leagues/:id', auth_guard_1.adminGuard, auth_guard_1.leagueAdminGuard, league_1.default.updateLeague);
+router.delete('/leagues/:id', auth_guard_1.adminGuard, auth_guard_1.leagueAdminGuard, league_1.default.deleteLeague);
 // League Players & Teams
 router.get('/leagues/:leagueId/players', auth_guard_1.leagueMemberGuard, player_1.default.getLeaguePlayers);
 router.post('/leagues/:leagueId/players', auth_guard_1.leagueAdminGuard, player_1.default.createPlayer);

@@ -176,6 +176,7 @@ class LeagueController {
             });
             const leagues = await prisma_1.prisma.league.findMany({
                 where: {
+                    deletedAt: null,
                     OR: [
                         { players: { some: { id: { in: playerIds.map((p) => p.id) } } } },
                         {
@@ -188,6 +189,17 @@ class LeagueController {
                             },
                         },
                     ],
+                },
+                include: {
+                    _count: {
+                        select: {
+                            players: { where: { deletedAt: null } },
+                            events: { where: { isDeleted: false, deletedAt: null } },
+                        },
+                    },
+                },
+                orderBy: {
+                    updatedAt: 'desc',
                 },
             });
             const upcomingSchedule = await prisma_1.prisma.flight.findMany({
