@@ -5,26 +5,112 @@ const prisma = new PrismaClient();
 
 const password = 'testing';
 
-const holes = [
-  { num: 1, par: 4, distance: 395, hcp: 7 },
-  { num: 2, par: 5, distance: 520, hcp: 3 },
-  { num: 3, par: 3, distance: 168, hcp: 17 },
-  { num: 4, par: 4, distance: 410, hcp: 1 },
-  { num: 5, par: 4, distance: 360, hcp: 11 },
-  { num: 6, par: 5, distance: 505, hcp: 5 },
-  { num: 7, par: 3, distance: 155, hcp: 15 },
-  { num: 8, par: 4, distance: 430, hcp: 9 },
-  { num: 9, par: 4, distance: 385, hcp: 13 },
-  { num: 10, par: 4, distance: 405, hcp: 8 },
-  { num: 11, par: 5, distance: 535, hcp: 4 },
-  { num: 12, par: 3, distance: 180, hcp: 18 },
-  { num: 13, par: 4, distance: 420, hcp: 2 },
-  { num: 14, par: 4, distance: 355, hcp: 12 },
-  { num: 15, par: 5, distance: 515, hcp: 6 },
-  { num: 16, par: 3, distance: 165, hcp: 16 },
-  { num: 17, par: 4, distance: 440, hcp: 10 },
-  { num: 18, par: 4, distance: 390, hcp: 14 },
-];
+const fortressParByHole = [5, 3, 4, 3, 4, 5, 4, 4, 4, 4, 4, 3, 4, 5, 4, 4, 3, 5];
+const fortressHandicapByHole = [6, 12, 2, 14, 18, 16, 8, 10, 4, 17, 15, 11, 1, 9, 13, 5, 7, 3];
+
+const fortressDistancesByTee = {
+  Black: [522, 167, 456, 149, 353, 501, 437, 409, 453, 369, 391, 209, 443, 523, 350, 380, 172, 529],
+  Maroon: [494, 140, 431, 119, 324, 467, 390, 378, 437, 336, 363, 181, 410, 496, 309, 333, 153, 510],
+  Combo: [415, 140, 342, 119, 324, 390, 288, 278, 325, 336, 363, 181, 315, 398, 309, 333, 153, 436],
+  Gold: [415, 82, 342, 83, 275, 390, 288, 278, 325, 272, 254, 109, 315, 398, 239, 247, 89, 436],
+};
+
+const buildFortressHoles = (teeName: keyof typeof fortressDistancesByTee) =>
+  fortressDistancesByTee[teeName].map((dis, index) => ({
+    num: index + 1,
+    par: fortressParByHole[index],
+    dis,
+    hcp: fortressHandicapByHole[index],
+  }));
+
+const fortressTeeSeed = [
+  {
+    name: 'Black',
+    color: 'black',
+    ratingMen: 74.2,
+    slopeMen: 142,
+    ratingFrontMen: 37.2,
+    slopeFrontMen: 139,
+    ratingBackMen: 37.0,
+    slopeBackMen: 144,
+    ratingWomen: 80.3,
+    slopeWomen: 150,
+    ratingFrontWomen: 40.3,
+    slopeFrontWomen: 148,
+    ratingBackWomen: 40.0,
+    slopeBackWomen: 152,
+    holes: buildFortressHoles('Black'),
+  },
+  {
+    name: 'Maroon',
+    color: 'maroon',
+    ratingMen: 71.4,
+    slopeMen: 139,
+    ratingFrontMen: 35.9,
+    slopeFrontMen: 138,
+    ratingBackMen: 35.5,
+    slopeBackMen: 139,
+    ratingWomen: 77.4,
+    slopeWomen: 145,
+    ratingFrontWomen: 38.9,
+    slopeFrontWomen: 144,
+    ratingBackWomen: 38.5,
+    slopeBackWomen: 146,
+    holes: buildFortressHoles('Maroon'),
+  },
+  {
+    name: 'Combo',
+    color: 'combo',
+    ratingMen: 67.1,
+    slopeMen: 127,
+    ratingFrontMen: 33.0,
+    slopeFrontMen: 124,
+    ratingBackMen: 34.1,
+    slopeBackMen: 129,
+    ratingWomen: 72.7,
+    slopeWomen: 137,
+    ratingFrontWomen: 35.7,
+    slopeFrontWomen: 134,
+    ratingBackWomen: 37.0,
+    slopeBackWomen: 139,
+    holes: buildFortressHoles('Combo'),
+  },
+  {
+    name: 'Gold',
+    color: 'gold',
+    ratingMen: 64.3,
+    slopeMen: 115,
+    ratingFrontMen: 32.3,
+    slopeFrontMen: 121,
+    ratingBackMen: 32.0,
+    slopeBackMen: 109,
+    ratingWomen: 69.4,
+    slopeWomen: 129,
+    ratingFrontWomen: 35.0,
+    slopeFrontWomen: 130,
+    ratingBackWomen: 34.4,
+    slopeBackWomen: 128,
+    holes: buildFortressHoles('Gold'),
+  },
+] satisfies {
+  name: string;
+  color: string;
+  ratingMen: number;
+  slopeMen: number;
+  ratingFrontMen: number;
+  slopeFrontMen: number;
+  ratingBackMen: number;
+  slopeBackMen: number;
+  ratingWomen: number;
+  slopeWomen: number;
+  ratingFrontWomen: number;
+  slopeFrontWomen: number;
+  ratingBackWomen: number;
+  slopeBackWomen: number;
+  holes: ReturnType<typeof buildFortressHoles>;
+}[];
+
+const holes = buildFortressHoles('Maroon');
 
 const playerSeeds = [
   ['Adam', 'Admin', 'admin@test.com', 6],
@@ -114,7 +200,7 @@ async function createRound({
   const gross = scoreRows.reduce((sum, score) => sum + score.gross, 0);
   const net = scoreRows.reduce((sum, score) => sum + score.net, 0);
   const adjusted = gross;
-  const differential = Number((((adjusted - 72.1) * 113) / 128).toFixed(2));
+  const differential = Number((((adjusted - 71.4) * 113) / 139).toFixed(2));
 
   return prisma.round.create({
     data: {
@@ -129,8 +215,8 @@ async function createRound({
       net,
       adjusted,
       putts: 36,
-      courseRating: 72.1,
-      courseSlope: 128,
+      courseRating: 71.4,
+      courseSlope: 139,
       differential,
       preHandicap: player.handicap,
       postHandicap: Number((player.handicap + differential / 100).toFixed(2)),
@@ -202,51 +288,61 @@ async function main() {
 
   const club = await prisma.club.create({
     data: {
-      name: 'Test Valley Golf Club',
-      description: 'Seeded club for local app testing.',
-      location: 'Indianapolis, IN',
-      phone: '555-0100',
-      link: 'https://example.com',
+      name: 'The Fortress Golf Course',
+      description: "Zehnder's public golf course in Frankenmuth, Michigan.",
+      location: 'Frankenmuth, MI',
+      phone: '989-652-0460',
+      link: 'https://www.zehnders.com/golf/',
+      accessType: 'public',
     },
   });
 
   const course = await prisma.course.create({
     data: {
       clubId: club.id,
-      name: 'Test Valley Championship Course',
-      description: 'Full seeded course with tees and hole data.',
-      location: 'Indianapolis, IN',
-      phone: '555-0101',
+      name: 'Fortress',
+      description: 'The Fortress 18-hole championship course.',
+      location: 'Frankenmuth, MI',
+      phone: '989-652-0460',
       accessType: 'public',
       numHoles: 18,
       par: 72,
     },
   });
 
-  const tee = await prisma.tee.create({
-    data: {
-      courseId: course.id,
-      name: 'Blue',
-      color: 'Blue',
-      distance: holes.reduce((sum, hole) => sum + hole.distance, 0),
-      par: 72,
-      frontPar: 36,
-      backPar: 36,
-      slopeMen: 128,
-      slopeFrontMen: 126,
-      slopeBackMen: 130,
-      slopeWomen: 124,
-      slopeFrontWomen: 122,
-      slopeBackWomen: 126,
-      ratingMen: 72.1,
-      ratingFrontMen: 36.0,
-      ratingBackMen: 36.1,
-      ratingWomen: 73.8,
-      ratingFrontWomen: 36.8,
-      ratingBackWomen: 37.0,
-      holes,
-    },
-  });
+  const tees = await Promise.all(
+    fortressTeeSeed.map((tee) =>
+      prisma.tee.create({
+        data: {
+          courseId: course.id,
+          name: tee.name,
+          color: tee.color,
+          distance: tee.holes.reduce((sum, hole) => sum + hole.dis, 0),
+          par: 72,
+          frontPar: 36,
+          backPar: 36,
+          slopeMen: tee.slopeMen,
+          slopeFrontMen: tee.slopeFrontMen,
+          slopeBackMen: tee.slopeBackMen,
+          slopeWomen: tee.slopeWomen,
+          slopeFrontWomen: tee.slopeFrontWomen,
+          slopeBackWomen: tee.slopeBackWomen,
+          ratingMen: tee.ratingMen,
+          ratingFrontMen: tee.ratingFrontMen,
+          ratingBackMen: tee.ratingBackMen,
+          ratingWomen: tee.ratingWomen,
+          ratingFrontWomen: tee.ratingFrontWomen,
+          ratingBackWomen: tee.ratingBackWomen,
+          holes: tee.holes,
+        },
+      }),
+    ),
+  );
+
+  const tee = tees.find((seededTee) => seededTee.name === 'Maroon') ?? tees[0];
+  if (!tee) {
+    throw new Error('No Fortress tees were created.');
+  }
 
   const league = await prisma.league.create({
     data: {

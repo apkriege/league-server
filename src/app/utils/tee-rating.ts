@@ -7,7 +7,12 @@ const positiveNumber = (value: unknown) => {
 
 export const modelTeeForRound = (tee: any, numHoles: number, startSide: StartSide) => {
   const isNineHoleRound = Number(numHoles) === 9;
-  const isFront = startSide === 'front';
+  const side = String(startSide || '').toLowerCase();
+  if (isNineHoleRound && side !== 'front' && side !== 'back') {
+    throw new Error('Missing or invalid starting side for 9-hole handicap calculation');
+  }
+
+  const isFront = side === 'front';
 
   const fullSlope = positiveNumber(tee?.slopeMen);
   const fullRating = positiveNumber(tee?.ratingMen);
@@ -24,12 +29,14 @@ export const modelTeeForRound = (tee: any, numHoles: number, startSide: StartSid
     throw new Error('Missing tee rating or slope for handicap calculation');
   }
 
+  const sortedHoles = Array.isArray(tee?.holes)
+    ? [...tee.holes].sort((a: any, b: any) => Number(a?.num ?? 0) - Number(b?.num ?? 0))
+    : tee?.holes;
+
   const holes =
-    isNineHoleRound && Array.isArray(tee?.holes)
-      ? isFront
-        ? tee.holes.slice(0, 9)
-        : tee.holes.slice(9, 18)
-      : tee?.holes;
+    isNineHoleRound && Array.isArray(sortedHoles)
+      ? sortedHoles.filter((hole: any) => (isFront ? Number(hole?.num) <= 9 : Number(hole?.num) > 9))
+      : sortedHoles;
 
   return {
     slope,

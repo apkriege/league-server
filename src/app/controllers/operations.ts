@@ -421,6 +421,17 @@ class OperationsController {
 
     res.status(200).json(notification);
   };
+
+  static clearNotification = async (req: Request, res: Response) => {
+    const userId = Number(req.session.userId);
+    const id = Number(req.params.id);
+    const notification = await prisma.notification.updateMany({
+      where: { id, userId, deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+
+    res.status(200).json(notification);
+  };
 }
 
 export default OperationsController;

@@ -125,6 +125,8 @@ export class Round {
         gross: stats.totalGross,
         net: stats.totalNet,
         adjusted: stats.totalAdjusted,
+        courseRating: this.tee.rating,
+        courseSlope: this.tee.slope,
         pointsEarned: this.playerRound.points || 0,
         matchPoints: this.playerRound.matchPoints || 0,
         eagles: stats.eagles,
@@ -367,6 +369,8 @@ export class Round {
         preHandicap: this.isEdit ? round.preHandicap : this.player.handicap,
         postHandicap: handicapData.handicap,
         differential: handicapData.differential,
+        courseRating: this.tee.rating,
+        courseSlope: this.tee.slope,
       },
     });
 

@@ -48,6 +48,7 @@ router.get('/payments/stripe-state', auth_guard_1.userGuard, paymentRateLimiter,
 // =====================
 router.get('/notifications', auth_guard_1.userGuard, operations_1.default.getNotifications);
 router.put('/notifications/:id/read', auth_guard_1.userGuard, operations_1.default.markNotificationRead);
+router.delete('/notifications/:id', auth_guard_1.userGuard, operations_1.default.clearNotification);
 router.get('/invitations/:token', operations_1.default.getInvitationByToken);
 router.post('/invitations/:token/claim', auth_guard_1.userGuard, operations_1.default.claimInvitation);
 router.get('/leagues/:leagueId/invitations', auth_guard_1.leagueAdminGuard, operations_1.default.getLeagueInvitations);

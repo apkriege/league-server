@@ -61,6 +61,7 @@ router.get('/payments/stripe-state', user, paymentRateLimiter, Payment.getStripe
 // =====================
 router.get('/notifications', user, Operations.getNotifications);
 router.put('/notifications/:id/read', user, Operations.markNotificationRead);
+router.delete('/notifications/:id', user, Operations.clearNotification);
 router.get('/invitations/:token', Operations.getInvitationByToken);
 router.post('/invitations/:token/claim', user, Operations.claimInvitation);
 router.get('/leagues/:leagueId/invitations', leagueAdminGuard, Operations.getLeagueInvitations);

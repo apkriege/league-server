@@ -26,6 +26,8 @@ class Handicap {
                     preHandicap: processed.preHandicap,
                     postHandicap: processed.postHandicap,
                     differential: processed.differential,
+                    courseRating: processed.courseRating,
+                    courseSlope: processed.courseSlope,
                 },
             });
         }
