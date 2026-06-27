@@ -130,6 +130,7 @@ router.get('/leagues/:leagueId/events/:eventId/scores', leagueMemberGuard, Score
 router.post('/leagues/:leagueId/event', leagueAdminGuard, Event.createEvent);
 router.post('/leagues/:leagueId/events', leagueAdminGuard, Event.createMultipleEvents);
 router.put('/leagues/:leagueId/events/:eventId', leagueAdminGuard, Event.updateEvent);
+router.delete('/leagues/:leagueId/events/:eventId', leagueAdminGuard, Event.deleteEvent);
 router.post('/leagues/:leagueId/events/:eventId/scores', eventAdminGuard, Score.createLeagueEventScores);
 router.put('/leagues/:leagueId/events/:eventId/scores', eventAdminGuard, Score.updateLeagueEventScores);
 

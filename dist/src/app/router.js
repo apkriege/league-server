@@ -105,6 +105,7 @@ router.get('/leagues/:leagueId/events/:eventId/scores', auth_guard_1.leagueMembe
 router.post('/leagues/:leagueId/event', auth_guard_1.leagueAdminGuard, event_1.default.createEvent);
 router.post('/leagues/:leagueId/events', auth_guard_1.leagueAdminGuard, event_1.default.createMultipleEvents);
 router.put('/leagues/:leagueId/events/:eventId', auth_guard_1.leagueAdminGuard, event_1.default.updateEvent);
+router.delete('/leagues/:leagueId/events/:eventId', auth_guard_1.leagueAdminGuard, event_1.default.deleteEvent);
 router.post('/leagues/:leagueId/events/:eventId/scores', auth_guard_1.eventAdminGuard, round_1.default.createLeagueEventScores);
 router.put('/leagues/:leagueId/events/:eventId/scores', auth_guard_1.eventAdminGuard, round_1.default.updateLeagueEventScores);
 // Flights

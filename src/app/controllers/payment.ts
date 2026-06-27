@@ -170,7 +170,15 @@ class PaymentController {
       );
 
       if (quantity <= 0) {
-        return res.status(409).json({ message: 'No additional golfer seats are required.' });
+        return res.status(200).json({
+          alreadyCovered: true,
+          sessionId: null,
+          url: null,
+          customerId: currentStripeMetadata.customerId || null,
+          priceId: DEFAULT_PRICE_ID || null,
+          quantity: 0,
+          targetGolfers,
+        });
       }
 
       let customerId: string | undefined = currentStripeMetadata.customerId;

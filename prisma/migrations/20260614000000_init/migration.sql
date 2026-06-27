@@ -177,6 +177,7 @@ CREATE TABLE "event" (
     "pts_per_match" INTEGER,
     "pts_per_team_win" INTEGER,
     "stroke_points" JSONB,
+    "points_enabled" BOOLEAN NOT NULL DEFAULT true,
     "status" TEXT NOT NULL,
     "isComplete" BOOLEAN NOT NULL DEFAULT false,
     "is_deleted" BOOLEAN NOT NULL DEFAULT false,
@@ -693,4 +694,3 @@ ALTER TABLE "audit_log" ADD CONSTRAINT "audit_log_league_id_fkey" FOREIGN KEY ("
 
 -- AddForeignKey
 ALTER TABLE "league_onboarding" ADD CONSTRAINT "league_onboarding_league_id_fkey" FOREIGN KEY ("league_id") REFERENCES "league"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-

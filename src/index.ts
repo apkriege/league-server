@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import './app/utils/suppress-local-logs';
 import app from './app';
 
 app.listen(3000, '0.0.0.0', () => {

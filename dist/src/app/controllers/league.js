@@ -21,6 +21,23 @@ class LeagueController {
             format: normalizedType === 'season' ? normalizedFormat : null,
         };
     };
+    static validateLeagueDates = (payload) => {
+        if (!payload?.startDate || !payload?.endDate)
+            return;
+        const startDate = new Date(payload.startDate);
+        const endDate = new Date(payload.endDate);
+        if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+            throw new Error('League dates are invalid.');
+        }
+        if (endDate < startDate) {
+            throw new Error('End date must be after the start date.');
+        }
+        const maxEndDate = new Date(startDate);
+        maxEndDate.setFullYear(maxEndDate.getFullYear() + 1);
+        if (endDate > maxEndDate) {
+            throw new Error('End date cannot be more than one year after the start date.');
+        }
+    };
     static getLeagueInfo = async (req, res) => {
         try {
             const id = Number(req.params.leagueId);
@@ -241,11 +258,12 @@ class LeagueController {
             if (!adminUser) {
                 return res.status(404).json({ message: 'User not found' });
             }
-            const requestedGolfers = Math.max(billing_1.BILLING_MIN_GOLFERS, Array.isArray(players) ? players.length : 0, Number(leagueData?.numPlayers ?? 0));
+            const requestedGolfers = Math.max(1, Array.isArray(players) ? players.length : 0, Number(leagueData?.numPlayers ?? 0));
             const normalizedLeagueData = LeagueController.normalizeLeaguePayload({
                 ...leagueData,
                 numPlayers: requestedGolfers,
             });
+            LeagueController.validateLeagueDates(normalizedLeagueData);
             const allocatedGolfers = await (0, billing_1.getAllocatedGolfersForAdmin)(adminId);
             const billingState = (0, billing_1.getBillingState)(adminUser.metadata, allocatedGolfers);
             if (!billingState.hasCompletedRegistration) {
@@ -332,7 +350,11 @@ class LeagueController {
         catch (error) {
             console.error(error);
             const message = error instanceof Error ? error.message : 'Internal server error';
-            const status = message.includes('Season leagues require format') ? 400 : 500;
+            const status = message.includes('Season leagues require format') ||
+                message.includes('League dates are invalid') ||
+                message.includes('End date')
+                ? 400
+                : 500;
             res.status(status).json({ message });
         }
     };
@@ -347,11 +369,12 @@ class LeagueController {
                 res.status(404).send('League not found');
                 return;
             }
-            const nextNumPlayers = Math.max(billing_1.BILLING_MIN_GOLFERS, Number(req.body?.numPlayers ?? existingLeague.numPlayers ?? 0));
+            const nextNumPlayers = Math.max(1, Number(req.body?.numPlayers ?? existingLeague.numPlayers ?? 0));
             const league = LeagueController.normalizeLeaguePayload({
                 ...req.body,
                 numPlayers: nextNumPlayers,
             });
+            LeagueController.validateLeagueDates(league);
             const adminUser = await prisma_1.prisma.user.findUnique({
                 where: { id: existingLeague.adminId },
                 select: { metadata: true },
@@ -376,7 +399,11 @@ class LeagueController {
         catch (error) {
             console.error(error);
             const message = error instanceof Error ? error.message : 'Internal server error';
-            const status = message.includes('Season leagues require format') ? 400 : 500;
+            const status = message.includes('Season leagues require format') ||
+                message.includes('League dates are invalid') ||
+                message.includes('End date')
+                ? 400
+                : 500;
             res.status(status).json({ message });
         }
     };

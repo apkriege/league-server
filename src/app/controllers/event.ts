@@ -271,13 +271,17 @@ class EventController {
         return;
       }
 
+      validateEventDateWithinLeague(eventData?.date, league);
+
       const newEvent = await prisma.$transaction(async (tx: any) => {
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
         const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
+        const pointsEnabled = eventData?.pointsEnabled !== false;
         const normalizedStrokePoints = normalizeStrokePoints(
           eventData?.strokePoints,
           forcedFormat,
           normalizedScoringFormat,
+          pointsEnabled,
         );
         validateEventMode(forcedFormat, normalizedScoringFormat);
         const { normalizedEventData, createdLeagueTeams } = await createEventTeamsAndRemapFlights(
@@ -287,6 +291,7 @@ class EventController {
             ...eventData,
             format: forcedFormat,
             scoringFormat: normalizedScoringFormat,
+            pointsEnabled,
             strokePoints: normalizedStrokePoints,
           },
           league,
@@ -307,6 +312,7 @@ class EventController {
             interval: e.interval,
             format: forcedFormat,
             scoringFormat: normalizedScoringFormat,
+            pointsEnabled,
             ptsPerHole: Number(e.ptsPerHole),
             ptsPerMatch: Number(e.ptsPerMatch),
             ptsPerTeamWin: Number(e.ptsPerTeamWin),
@@ -314,6 +320,7 @@ class EventController {
               e.strokePoints,
               forcedFormat,
               normalizedScoringFormat,
+              pointsEnabled,
             ),
             type: e.type,
             holes: e.holes,
@@ -366,41 +373,47 @@ class EventController {
       const eventsData = req.body.events;
 
       const createdEvents = [];
-
-      for (const eventData of eventsData) {
-        const league = await LeagueService.query().findFirst({
-          where: { id: leagueId },
-          include: {
-            players: true,
-            teams: {
-              include: {
-                players: {
-                  select: {
-                    id: true,
-                  },
+      const league = await LeagueService.query().findFirst({
+        where: { id: leagueId },
+        include: {
+          players: true,
+          teams: {
+            include: {
+              players: {
+                select: {
+                  id: true,
                 },
               },
             },
           },
-        });
+        },
+      });
 
-        if (!league) {
-          res.status(404).send('League not found');
-          return;
-        }
+      if (!league) {
+        res.status(404).send('League not found');
+        return;
+      }
 
+      for (const eventData of eventsData) {
+        validateEventDateWithinLeague(eventData?.date, league);
+      }
+
+      for (const eventData of eventsData) {
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
         const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
+        const pointsEnabled = eventData?.pointsEnabled !== false;
         const normalizedStrokePoints = normalizeStrokePoints(
           eventData?.strokePoints,
           forcedFormat,
           normalizedScoringFormat,
+          pointsEnabled,
         );
         validateEventMode(forcedFormat, normalizedScoringFormat);
         const { flights, ...e } = {
           ...eventData,
           format: forcedFormat,
           scoringFormat: normalizedScoringFormat,
+          pointsEnabled,
           strokePoints: normalizedStrokePoints,
         };
 
@@ -418,6 +431,7 @@ class EventController {
               interval: e.interval,
               format: forcedFormat,
               scoringFormat: normalizedScoringFormat,
+              pointsEnabled,
               ptsPerHole: Number(e.ptsPerHole),
               ptsPerMatch: Number(e.ptsPerMatch),
               ptsPerTeamWin: Number(e.ptsPerTeamWin),
@@ -425,6 +439,7 @@ class EventController {
                 e.strokePoints,
                 forcedFormat,
                 normalizedScoringFormat,
+                pointsEnabled,
               ),
               type: e.type,
               holes: e.holes,
@@ -531,14 +546,17 @@ class EventController {
 
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
         const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
+        const pointsEnabled = eventData?.pointsEnabled !== false;
         const normalizedStrokePoints = normalizeStrokePoints(
           eventData?.strokePoints,
           forcedFormat,
           normalizedScoringFormat,
+          pointsEnabled,
         );
         validateEventMode(forcedFormat, normalizedScoringFormat);
         eventData.format = forcedFormat;
         eventData.scoringFormat = normalizedScoringFormat;
+        eventData.pointsEnabled = pointsEnabled;
         eventData.strokePoints = normalizedStrokePoints;
 
         await tx.event.update({
@@ -555,6 +573,7 @@ class EventController {
             interval: eventData.interval,
             format: forcedFormat,
             scoringFormat: normalizedScoringFormat,
+            pointsEnabled,
             ptsPerHole: Number(eventData.ptsPerHole),
             ptsPerMatch: Number(eventData.ptsPerMatch),
             ptsPerTeamWin: Number(eventData.ptsPerTeamWin),
@@ -562,6 +581,7 @@ class EventController {
               eventData.strokePoints,
               forcedFormat,
               normalizedScoringFormat,
+              pointsEnabled,
             ),
           },
         });
@@ -590,18 +610,40 @@ class EventController {
   // DELETE (SOFT) EVENT
   static deleteEvent = async (req: Request, res: Response) => {
     try {
+      const leagueId = Number(req.params.leagueId);
       const eventId = Number(req.params.eventId);
 
-      await prisma.event.update({
+      const event = await prisma.event.findFirst({
+        where: { id: eventId, leagueId, isDeleted: false },
+        select: { id: true, name: true, leagueId: true },
+      });
+
+      if (!event) {
+        return res.status(404).json({ message: 'Event not found' });
+      }
+
+      const deletedEvent = await prisma.event.update({
         where: { id: eventId },
         data: {
           isDeleted: true,
           deletedAt: new Date(),
         },
       });
+
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'event',
+        entityId: eventId,
+        action: 'delete',
+        summary: `Deleted event ${event.name || eventId}.`,
+      });
+
+      res.status(200).send(deletedEvent);
     } catch (error) {
       console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
     }
   };
 }
@@ -616,8 +658,8 @@ const toEventDateTime = (input: unknown): Date => {
 
     const dateOnly = dayjs(trimmed, 'YYYY-MM-DD', true);
     if (dateOnly.isValid()) {
-      // Store as midnight UTC for date-only payloads.
-      return new Date(`${trimmed}T00:00:00.000Z`);
+      // Store date-only payloads at noon UTC so US local rendering does not shift to the prior day.
+      return new Date(`${trimmed}T12:00:00.000Z`);
     }
 
     const dt = new Date(trimmed);
@@ -629,8 +671,45 @@ const toEventDateTime = (input: unknown): Date => {
   throw new Error('Invalid event date. Expected YYYY-MM-DD or ISO-8601 DateTime.');
 };
 
-const normalizeStrokePoints = (raw: unknown, format: string, scoringFormat: string) => {
+const toDateOnlyKey = (input: unknown): string => {
+  if (input instanceof Date && !Number.isNaN(input.getTime())) {
+    return input.toISOString().slice(0, 10);
+  }
+
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    const dateOnly = trimmed.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (dateOnly) return dateOnly[1];
+
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString().slice(0, 10);
+    }
+  }
+
+  throw new Error('Invalid event date. Expected YYYY-MM-DD or ISO-8601 DateTime.');
+};
+
+const validateEventDateWithinLeague = (eventDate: unknown, league: any) => {
+  const eventDateKey = toDateOnlyKey(eventDate);
+  const leagueStartKey = toDateOnlyKey(league.startDate);
+  const leagueEndKey = toDateOnlyKey(league.endDate);
+
+  if (eventDateKey < leagueStartKey || eventDateKey > leagueEndKey) {
+    throw new Error(
+      `Event date must be within the league date range (${leagueStartKey} to ${leagueEndKey}).`,
+    );
+  }
+};
+
+const normalizeStrokePoints = (
+  raw: unknown,
+  format: string,
+  scoringFormat: string,
+  pointsEnabled = true,
+) => {
   const normalizedFormat = String(format || '').toLowerCase();
+  if (!pointsEnabled) return null;
   if (!['individual', 'team'].includes(normalizedFormat)) return null;
   if (String(scoringFormat || '').toLowerCase() !== 'stroke') return null;
 

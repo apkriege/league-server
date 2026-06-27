@@ -3,7 +3,6 @@ import LeagueService from '../models/league';
 import { prisma } from '../../prisma';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
 import {
-  BILLING_MIN_GOLFERS,
   getAllocatedGolfersForAdmin,
   getBillingState,
 } from '../utils/billing';
@@ -23,6 +22,25 @@ class LeagueController {
       type: normalizedType,
       format: normalizedType === 'season' ? normalizedFormat : null,
     };
+  };
+
+  static validateLeagueDates = (payload: any) => {
+    if (!payload?.startDate || !payload?.endDate) return;
+
+    const startDate = new Date(payload.startDate);
+    const endDate = new Date(payload.endDate);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      throw new Error('League dates are invalid.');
+    }
+    if (endDate < startDate) {
+      throw new Error('End date must be after the start date.');
+    }
+
+    const maxEndDate = new Date(startDate);
+    maxEndDate.setFullYear(maxEndDate.getFullYear() + 1);
+    if (endDate > maxEndDate) {
+      throw new Error('End date cannot be more than one year after the start date.');
+    }
   };
 
   static getLeagueInfo = async (req: Request, res: Response) => {
@@ -262,7 +280,7 @@ class LeagueController {
       }
 
       const requestedGolfers = Math.max(
-        BILLING_MIN_GOLFERS,
+        1,
         Array.isArray(players) ? players.length : 0,
         Number(leagueData?.numPlayers ?? 0)
       );
@@ -270,6 +288,7 @@ class LeagueController {
         ...leagueData,
         numPlayers: requestedGolfers,
       });
+      LeagueController.validateLeagueDates(normalizedLeagueData);
       const allocatedGolfers = await getAllocatedGolfersForAdmin(adminId);
       const billingState = getBillingState(adminUser.metadata, allocatedGolfers);
 
@@ -368,7 +387,12 @@ class LeagueController {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : 'Internal server error';
-      const status = message.includes('Season leagues require format') ? 400 : 500;
+      const status =
+        message.includes('Season leagues require format') ||
+        message.includes('League dates are invalid') ||
+        message.includes('End date')
+          ? 400
+          : 500;
       res.status(status).json({ message });
     }
   };
@@ -387,13 +411,14 @@ class LeagueController {
       }
 
       const nextNumPlayers = Math.max(
-        BILLING_MIN_GOLFERS,
+        1,
         Number(req.body?.numPlayers ?? existingLeague.numPlayers ?? 0)
       );
       const league = LeagueController.normalizeLeaguePayload({
         ...req.body,
         numPlayers: nextNumPlayers,
       });
+      LeagueController.validateLeagueDates(league);
 
       const adminUser = await prisma.user.findUnique({
         where: { id: existingLeague.adminId },
@@ -423,7 +448,12 @@ class LeagueController {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : 'Internal server error';
-      const status = message.includes('Season leagues require format') ? 400 : 500;
+      const status =
+        message.includes('Season leagues require format') ||
+        message.includes('League dates are invalid') ||
+        message.includes('End date')
+          ? 400
+          : 500;
       res.status(status).json({ message });
     }
   };

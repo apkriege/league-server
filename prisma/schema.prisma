@@ -238,6 +238,7 @@ model event {
   ptsPerMatch   Int?      @map("pts_per_match")
   ptsPerTeamWin Int?      @map("pts_per_team_win")
   strokePoints  Json?     @map("stroke_points")
+  pointsEnabled Boolean   @default(true) @map("points_enabled")
   status        String
   isComplete    Boolean   @default(false)
   isDeleted     Boolean   @default(false) @map("is_deleted")
