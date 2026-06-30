@@ -89,7 +89,75 @@ class TeamController {
         return res.status(404).json({ message: 'Team not found' });
       }
 
-      res.status(200).json(team);
+      const leagueId = Number(team.leagueId);
+      const playerIds = team.players.map((player) => Number(player.id));
+      const now = new Date();
+
+      const [recentRounds, upcomingEvents] = await Promise.all([
+        playerIds.length > 0
+          ? prisma.round.findMany({
+              where: {
+                playerId: { in: playerIds },
+                deletedAt: null,
+                status: 'completed',
+                event: {
+                  leagueId,
+                  isDeleted: false,
+                  deletedAt: null,
+                },
+              },
+              include: {
+                player: {
+                  select: {
+                    id: true,
+                    firstName: true,
+                    lastName: true,
+                  },
+                },
+                event: {
+                  select: {
+                    id: true,
+                    name: true,
+                    date: true,
+                    scoringFormat: true,
+                    format: true,
+                  },
+                },
+              },
+              orderBy: [{ date: 'desc' }, { id: 'desc' }],
+              take: 12,
+            })
+          : [],
+        leagueId
+          ? prisma.event.findMany({
+              where: {
+                leagueId,
+                isDeleted: false,
+                deletedAt: null,
+                status: { not: 'canceled' },
+                date: { gte: now },
+              },
+              select: {
+                id: true,
+                name: true,
+                date: true,
+                startTime: true,
+                format: true,
+                scoringFormat: true,
+                holes: true,
+                status: true,
+              },
+              orderBy: [{ date: 'asc' }, { id: 'asc' }],
+              take: 6,
+            })
+          : [],
+      ]);
+
+      res.status(200).json({
+        ...team,
+        recentRounds,
+        upcomingEvents,
+      });
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });

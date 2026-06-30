@@ -3,9 +3,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.generateLeagueAccessCode = void 0;
 require("express-session");
 const prisma_1 = require("../../prisma");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
+const crypto_1 = __importDefault(require("crypto"));
 const user_1 = __importDefault(require("../models/user"));
 const billing_1 = require("../utils/billing");
 const logging_1 = require("../middleware/logging");
@@ -19,13 +21,30 @@ const serializeUser = (user, extra = {}) => ({
     metadata: user.metadata ?? null,
     ...extra,
 });
+const serializeLeagueViewer = (league) => ({
+    id: `league-viewer-${league.id}`,
+    firstName: 'League',
+    lastName: 'Viewer',
+    email: '',
+    role: 'VIEWER',
+    phone: null,
+    metadata: { accessType: 'league-code' },
+    leagues: [{ id: league.id, playerId: null, access: 'viewer' }],
+    leagueAccess: { leagueId: league.id, leagueName: league.name },
+});
+const normalizeAccessCode = (code) => String(code || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
 class AuthController {
     static async debugSession(req, res) {
         res.json({
             authenticated: Boolean(req.session.userId),
+            hasLeagueAccess: Boolean(req.session.leagueAccess?.leagueIds?.length),
             hasCookieHeader: Boolean(req.headers.cookie),
             sessionId: req.sessionID,
             userId: req.session.userId ?? null,
+            leagueAccess: req.session.leagueAccess ?? null,
             nodeEnv: process.env.NODE_ENV ?? null,
             railwayEnvironment: process.env.RAILWAY_ENVIRONMENT ?? null,
         });
@@ -159,6 +178,64 @@ class AuthController {
             res.status(500).json({ message: 'Server error' });
         }
     }
+    static async loginWithLeagueCode(req, res) {
+        try {
+            const accessCode = normalizeAccessCode(req.body?.code);
+            (0, logging_1.logAuth)(req, 'auth:league-code-login:start', { codeProvided: Boolean(accessCode) });
+            if (!accessCode) {
+                (0, logging_1.logAuthFailure)(req, 'auth:league-code-login:invalid', { reason: 'missing-code' });
+                return res.status(400).json({ message: 'League access code is required' });
+            }
+            const league = await prisma_1.prisma.league.findFirst({
+                where: {
+                    viewerAccessCode: accessCode,
+                    deletedAt: null,
+                },
+                select: {
+                    id: true,
+                    name: true,
+                },
+            });
+            if (!league) {
+                (0, logging_1.logAuthFailure)(req, 'auth:league-code-login:invalid', { reason: 'bad-code' });
+                return res.status(400).json({ message: 'Invalid league access code' });
+            }
+            req.session.regenerate((err) => {
+                if (err) {
+                    (0, logging_1.logAuthFailure)(req, 'auth:session:regenerate-failed', {
+                        flow: 'league-code-login',
+                        leagueId: league.id,
+                        error: err.message,
+                    });
+                    return res.status(500).json({ message: 'Server error' });
+                }
+                req.session.leagueAccess = { leagueIds: [league.id] };
+                req.session.save((saveErr) => {
+                    if (saveErr) {
+                        (0, logging_1.logAuthFailure)(req, 'auth:session:save-failed', {
+                            flow: 'league-code-login',
+                            leagueId: league.id,
+                            error: saveErr.message,
+                        });
+                        return res.status(500).json({ message: 'Server error' });
+                    }
+                    (0, logging_1.logAuth)(req, 'auth:league-code-login:success', {
+                        leagueId: league.id,
+                        sessionId: req.sessionID,
+                    });
+                    return res.json({
+                        message: 'League access granted',
+                        user: serializeLeagueViewer(league),
+                        leagueId: league.id,
+                    });
+                });
+            });
+        }
+        catch (error) {
+            console.error(error);
+            res.status(500).json({ message: 'Server error' });
+        }
+    }
     static async logout(req, res) {
         try {
             req.session.destroy((err) => {
@@ -196,4 +273,6 @@ class AuthController {
         }
     }
 }
+const generateLeagueAccessCode = () => crypto_1.default.randomBytes(4).toString('hex').toUpperCase();
+exports.generateLeagueAccessCode = generateLeagueAccessCode;
 exports.default = AuthController;

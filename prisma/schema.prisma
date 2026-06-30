@@ -46,6 +46,8 @@ model user {
   sentLeagueInvitations league_invitation[] @relation("league_invitation_invited_by")
   claimedLeagueInvitations league_invitation[] @relation("league_invitation_claimed_by")
   notifications notification[]
+  leagueAnnouncements league_announcement[]
+  leagueAnnouncementDismissals league_announcement_dismissal[]
   auditLogs audit_log[]
 
   @@index([email])
@@ -135,6 +137,7 @@ model league {
   description      String?
   type             String
   access           String    @default("public")
+  viewerAccessCode String?   @unique @map("viewer_access_code")
   format           String? // e.g. "individual", "team"
   numPlayers       Int       @map("num_players")
   adminId          Int       @map("admin_id")
@@ -155,6 +158,7 @@ model league {
   teamEventPoints team_event_points[]
   invitations     league_invitation[]
   notifications   notification[]
+  announcements   league_announcement[]
   auditLogs       audit_log[]
   onboarding      league_onboarding?
 
@@ -469,6 +473,40 @@ model notification {
   @@index([leagueId])
   @@index([readAt])
   @@index([deletedAt])
+}
+
+model league_announcement {
+  id           Int       @id @default(autoincrement())
+  leagueId     Int       @map("league_id")
+  authorUserId Int       @map("author_user_id")
+  title        String
+  body         String
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  league     league                            @relation(fields: [leagueId], references: [id])
+  author     user                              @relation(fields: [authorUserId], references: [id])
+  dismissals league_announcement_dismissal[]
+
+  @@index([leagueId])
+  @@index([authorUserId])
+  @@index([createdAt])
+  @@index([deletedAt])
+}
+
+model league_announcement_dismissal {
+  id             Int      @id @default(autoincrement())
+  announcementId Int      @map("announcement_id")
+  userId         Int      @map("user_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  announcement league_announcement @relation(fields: [announcementId], references: [id])
+  user         user                @relation(fields: [userId], references: [id])
+
+  @@unique([announcementId, userId])
+  @@index([announcementId])
+  @@index([userId])
 }
 
 model audit_log {

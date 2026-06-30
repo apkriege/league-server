@@ -504,9 +504,14 @@ class EventController {
       const isCompletedEvent =
         Boolean(existingEvent.isComplete) ||
         String(existingEvent.status || '').toLowerCase() === 'completed';
+      const isCanceledEvent = String(existingEvent.status || '').toLowerCase() === 'canceled';
 
       if (isCompletedEvent) {
         res.status(409).json({ message: 'Completed events cannot be edited' });
+        return;
+      }
+      if (isCanceledEvent) {
+        res.status(409).json({ message: 'Canceled events cannot be edited' });
         return;
       }
 
@@ -600,6 +605,62 @@ class EventController {
         summary: `Updated event ${updatedEvent?.name || eventId}.`,
       });
       res.status(200).send(updatedEvent);
+    } catch (error) {
+      console.error(error);
+      const { status, message } = getPublicErrorResponse(error);
+      res.status(status).json({ message });
+    }
+  };
+
+  // CANCEL EVENT
+  static cancelEvent = async (req: Request, res: Response) => {
+    try {
+      const leagueId = Number(req.params.leagueId);
+      const eventId = Number(req.params.eventId);
+
+      const event = await prisma.event.findFirst({
+        where: { id: eventId, leagueId, isDeleted: false },
+        select: {
+          id: true,
+          name: true,
+          leagueId: true,
+          status: true,
+          isComplete: true,
+          _count: { select: { rounds: true } },
+        },
+      });
+
+      if (!event) {
+        return res.status(404).json({ message: 'Event not found' });
+      }
+
+      const normalizedStatus = String(event.status || '').toLowerCase();
+      if (normalizedStatus === 'canceled') {
+        return res.status(200).send(event);
+      }
+
+      if (event.isComplete || normalizedStatus === 'completed' || Number(event._count?.rounds || 0) > 0) {
+        return res.status(409).json({ message: 'Events with scores cannot be canceled.' });
+      }
+
+      const canceledEvent = await prisma.event.update({
+        where: { id: eventId },
+        data: {
+          status: 'canceled',
+          isComplete: false,
+        },
+      });
+
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'event',
+        entityId: eventId,
+        action: 'cancel',
+        summary: `Canceled event ${event.name || eventId}.`,
+      });
+
+      res.status(200).send(canceledEvent);
     } catch (error) {
       console.error(error);
       const { status, message } = getPublicErrorResponse(error);

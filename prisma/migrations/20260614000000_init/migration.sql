@@ -104,6 +104,7 @@ CREATE TABLE "league" (
     "description" TEXT,
     "type" TEXT NOT NULL,
     "access" TEXT NOT NULL DEFAULT 'public',
+    "viewer_access_code" TEXT,
     "format" TEXT,
     "num_players" INTEGER NOT NULL,
     "admin_id" INTEGER NOT NULL,
@@ -344,6 +345,30 @@ CREATE TABLE "notification" (
 );
 
 -- CreateTable
+CREATE TABLE "league_announcement" (
+    "id" SERIAL NOT NULL,
+    "league_id" INTEGER NOT NULL,
+    "author_user_id" INTEGER NOT NULL,
+    "title" TEXT NOT NULL,
+    "body" TEXT NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3) NOT NULL,
+    "deleted_at" TIMESTAMP(3),
+
+    CONSTRAINT "league_announcement_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "league_announcement_dismissal" (
+    "id" SERIAL NOT NULL,
+    "announcement_id" INTEGER NOT NULL,
+    "user_id" INTEGER NOT NULL,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "league_announcement_dismissal_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "audit_log" (
     "id" SERIAL NOT NULL,
     "user_id" INTEGER,
@@ -412,6 +437,9 @@ CREATE INDEX "league_admin_id_idx" ON "league"("admin_id");
 
 -- CreateIndex
 CREATE INDEX "league_start_date_idx" ON "league"("start_date");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "league_viewer_access_code_key" ON "league"("viewer_access_code");
 
 -- CreateIndex
 CREATE INDEX "league_deleted_at_idx" ON "league"("deleted_at");
@@ -570,6 +598,27 @@ CREATE INDEX "notification_read_at_idx" ON "notification"("read_at");
 CREATE INDEX "notification_deleted_at_idx" ON "notification"("deleted_at");
 
 -- CreateIndex
+CREATE INDEX "league_announcement_league_id_idx" ON "league_announcement"("league_id");
+
+-- CreateIndex
+CREATE INDEX "league_announcement_author_user_id_idx" ON "league_announcement"("author_user_id");
+
+-- CreateIndex
+CREATE INDEX "league_announcement_created_at_idx" ON "league_announcement"("created_at");
+
+-- CreateIndex
+CREATE INDEX "league_announcement_deleted_at_idx" ON "league_announcement"("deleted_at");
+
+-- CreateIndex
+CREATE INDEX "league_announcement_dismissal_announcement_id_idx" ON "league_announcement_dismissal"("announcement_id");
+
+-- CreateIndex
+CREATE INDEX "league_announcement_dismissal_user_id_idx" ON "league_announcement_dismissal"("user_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "league_announcement_dismissal_announcement_id_user_id_key" ON "league_announcement_dismissal"("announcement_id", "user_id");
+
+-- CreateIndex
 CREATE INDEX "audit_log_user_id_idx" ON "audit_log"("user_id");
 
 -- CreateIndex
@@ -685,6 +734,18 @@ ALTER TABLE "notification" ADD CONSTRAINT "notification_user_id_fkey" FOREIGN KE
 
 -- AddForeignKey
 ALTER TABLE "notification" ADD CONSTRAINT "notification_league_id_fkey" FOREIGN KEY ("league_id") REFERENCES "league"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "league_announcement" ADD CONSTRAINT "league_announcement_league_id_fkey" FOREIGN KEY ("league_id") REFERENCES "league"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "league_announcement" ADD CONSTRAINT "league_announcement_author_user_id_fkey" FOREIGN KEY ("author_user_id") REFERENCES "user"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "league_announcement_dismissal" ADD CONSTRAINT "league_announcement_dismissal_announcement_id_fkey" FOREIGN KEY ("announcement_id") REFERENCES "league_announcement"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "league_announcement_dismissal" ADD CONSTRAINT "league_announcement_dismissal_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "audit_log" ADD CONSTRAINT "audit_log_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE SET NULL ON UPDATE CASCADE;

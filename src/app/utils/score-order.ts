@@ -15,6 +15,9 @@ const isCompletedEvent = (event: Pick<LeagueEventOrderRow, 'status' | 'isComplet
 const hasAnyScores = (event: Pick<LeagueEventOrderRow, '_count' | 'status' | 'isComplete'>) =>
   Number(event._count?.rounds || 0) > 0 || isCompletedEvent(event);
 
+const isCanceledEvent = (event: Pick<LeagueEventOrderRow, 'status'>) =>
+  String(event.status || '').toLowerCase() === 'canceled';
+
 export const getLeagueScoreOrder = async (leagueId: number) => {
   const events = await prisma.event.findMany({
     where: {
@@ -34,8 +37,9 @@ export const getLeagueScoreOrder = async (leagueId: number) => {
     orderBy: [{ date: 'asc' }, { id: 'asc' }],
   });
 
-  const nextScorableEvent = events.find((event) => !isCompletedEvent(event)) || null;
-  const latestScoredEvent = [...events].reverse().find((event) => hasAnyScores(event)) || null;
+  const scorableEvents = events.filter((event) => !isCanceledEvent(event));
+  const nextScorableEvent = scorableEvents.find((event) => !isCompletedEvent(event)) || null;
+  const latestScoredEvent = [...scorableEvents].reverse().find((event) => hasAnyScores(event)) || null;
 
   return {
     nextScorableEventId: nextScorableEvent ? Number(nextScorableEvent.id) : null,

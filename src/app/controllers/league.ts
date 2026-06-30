@@ -7,8 +7,19 @@ import {
   getBillingState,
 } from '../utils/billing';
 import { writeAuditLog } from '../utils/audit';
+import { generateLeagueAccessCode } from './auth';
 
 class LeagueController {
+  static createUniqueViewerAccessCode = async () => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const code = generateLeagueAccessCode();
+      const existing = await prisma.league.findUnique({ where: { viewerAccessCode: code } });
+      if (!existing) return code;
+    }
+
+    throw new Error('Unable to generate league access code.');
+  };
+
   static normalizeLeaguePayload = (payload: any) => {
     const normalizedType = String(payload?.type || '').toLowerCase();
     const normalizedFormat = payload?.format ? String(payload.format).toLowerCase() : null;
@@ -113,7 +124,17 @@ class LeagueController {
         return;
       }
 
-      res.status(200).send(league);
+      const role = String((req as any).user?.role || '').toUpperCase();
+      const canSeeAccessCode =
+        role === 'SUPER' || Number(league.adminId) === Number(req.session.userId || 0);
+
+      if (canSeeAccessCode) {
+        res.status(200).send(league);
+        return;
+      }
+
+      const { viewerAccessCode: _viewerAccessCode, ...safeLeague } = league;
+      res.status(200).send(safeLeague);
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });
@@ -201,21 +222,34 @@ class LeagueController {
   static getLeagues = async (req: Request, res: Response) => {
     try {
       const userId: any = req.session.userId;
-      const playerIds = await prisma.player.findMany({
-        where: { userId },
-        select: { id: true },
-      });
+      const leagueAccessIds = Array.isArray(req.session.leagueAccess?.leagueIds)
+        ? req.session.leagueAccess.leagueIds.map(Number).filter(Boolean)
+        : [];
+
+      if (!userId && leagueAccessIds.length === 0) {
+        return res.status(401).json({ message: 'Not authenticated' });
+      }
+
+      const playerIds = userId
+        ? await prisma.player.findMany({
+            where: { userId },
+            select: { id: true },
+          })
+        : [];
+
+      const playerIdValues = playerIds.map((p: { id: number }) => p.id);
 
       const leagues = await prisma.league.findMany({
         where: {
           deletedAt: null,
           OR: [
-            { players: { some: { id: { in: playerIds.map((p: { id: number }) => p.id) } } } },
+            ...(leagueAccessIds.length > 0 ? [{ id: { in: leagueAccessIds } }] : []),
+            { players: { some: { id: { in: playerIdValues } } } },
             {
               teams: {
                 some: {
                   players: {
-                    some: { id: { in: playerIds.map((p: { id: number }) => p.id) } },
+                    some: { id: { in: playerIdValues } },
                   },
                 },
               },
@@ -239,7 +273,7 @@ class LeagueController {
         where: {
           players: {
             some: {
-              playerId: { in: playerIds.map((p: { id: number }) => p.id) },
+              playerId: { in: playerIdValues },
             },
           },
         },
@@ -254,7 +288,9 @@ class LeagueController {
         take: 5,
       });
 
-      res.status(200).send({ leagues, upcomingSchedule });
+      const safeLeagues = leagues.map(({ viewerAccessCode: _viewerAccessCode, ...league }) => league);
+
+      res.status(200).send({ leagues: safeLeagues, upcomingSchedule });
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });
@@ -313,6 +349,7 @@ class LeagueController {
         data: {
           ...normalizedLeagueData,
           adminId,
+          viewerAccessCode: await LeagueController.createUniqueViewerAccessCode(),
         },
       });
 
@@ -497,6 +534,11 @@ class LeagueController {
         (String(leagueMeta.format || '').toLowerCase() === 'team' ||
           (leagueMeta.teams?.length || 0) > 0);
 
+      const getRoundTotalPoints = (round: {
+        pointsEarned?: number | null;
+        matchPoints?: number | null;
+      }) => Number(round.pointsEarned || 0) + Number(round.matchPoints || 0);
+
       // All completed rounds for this league
       const rounds = await prisma.round.findMany({
         where: {
@@ -528,9 +570,10 @@ class LeagueController {
 
       for (const r of rounds) {
         const id = r.playerId;
+        const roundPoints = getRoundTotalPoints(r);
         const existing = playerMap.get(id);
         if (existing) {
-          existing.points += Number(r.pointsEarned);
+          existing.points += roundPoints;
           existing.totalGross += r.gross;
           existing.totalNet += r.net;
           existing.rounds += 1;
@@ -542,7 +585,7 @@ class LeagueController {
         } else {
           playerMap.set(id, {
             name: `${r.player.firstName} ${r.player.lastName}`,
-            points: Number(r.pointsEarned),
+            points: roundPoints,
             totalGross: r.gross,
             totalNet: r.net,
             rounds: 1,
@@ -783,7 +826,7 @@ class LeagueController {
         null,
       );
       const mostPointsRound = rounds.reduce(
-        (best: any, r) => (!best || Number(r.pointsEarned) > Number(best.pointsEarned) ? r : best),
+        (best: any, r) => (!best || getRoundTotalPoints(r) > getRoundTotalPoints(best) ? r : best),
         null,
       );
 
@@ -791,7 +834,14 @@ class LeagueController {
         lowGross: buildRecord(lowGrossRound, 'gross'),
         lowNet: buildRecord(lowNetRound, 'net'),
         mostBirdies: buildRecord(mostBirdiesRound, 'birdies'),
-        mostPoints: buildRecord(mostPointsRound, 'pointsEarned'),
+        mostPoints: mostPointsRound
+          ? {
+              playerName: `${mostPointsRound.player.firstName} ${mostPointsRound.player.lastName}`,
+              value: getRoundTotalPoints(mostPointsRound),
+              eventName: mostPointsRound.event.name,
+              eventDate: mostPointsRound.event.date,
+            }
+          : null,
       };
 
       const teamNameMap = new Map<number, string>();

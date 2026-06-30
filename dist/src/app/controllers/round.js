@@ -370,6 +370,9 @@ class ScoreController {
             if (Number(event.leagueId) !== leagueId) {
                 return res.status(400).json({ message: 'Event does not belong to this league' });
             }
+            if (String(event.status || '').toLowerCase() === 'canceled') {
+                return res.status(409).json({ message: 'Canceled events cannot be scored.' });
+            }
             const scoreOrder = await (0, score_order_1.getLeagueScoreOrder)(leagueId);
             if (scoreOrder.nextScorableEventId !== numericEventId) {
                 return res.status(409).json({
@@ -447,6 +450,9 @@ class ScoreController {
             }
             if (Number(event.leagueId) !== leagueId) {
                 return res.status(400).json({ message: 'Event does not belong to this league' });
+            }
+            if (String(event.status || '').toLowerCase() === 'canceled') {
+                return res.status(409).json({ message: 'Canceled events cannot be updated.' });
             }
             const scoreOrder = await (0, score_order_1.getLeagueScoreOrder)(leagueId);
             if (scoreOrder.latestScoredEventId !== eventId) {

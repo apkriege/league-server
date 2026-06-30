@@ -350,6 +350,7 @@ async function main() {
       description: 'Complete test league with players, teams, events, flights, and scores.',
       type: 'season',
       access: 'public',
+      viewerAccessCode: 'TESTCODE',
       format: 'team',
       numPlayers: 8,
       adminId: adminUser.id,

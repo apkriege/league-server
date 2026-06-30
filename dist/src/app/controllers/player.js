@@ -273,9 +273,10 @@ class PlayerController {
             let highPoints = -Infinity;
             const roundSummaries = [];
             for (const r of rounds) {
+                const roundPoints = Number(r.pointsEarned || 0) + Number(r.matchPoints || 0);
                 totalGross += r.gross;
                 totalNet += r.net;
-                totalPoints += Number(r.pointsEarned);
+                totalPoints += roundPoints;
                 totalPutts += r.putts;
                 totalBirdies += r.birdies;
                 totalEagles += r.eagles;
@@ -289,8 +290,8 @@ class PlayerController {
                     lowGross = r.gross;
                 if (r.net < lowNet)
                     lowNet = r.net;
-                if (Number(r.pointsEarned) > highPoints)
-                    highPoints = Number(r.pointsEarned);
+                if (roundPoints > highPoints)
+                    highPoints = roundPoints;
                 roundSummaries.push({
                     id: r.id,
                     eventId: r.event.id,
@@ -304,7 +305,7 @@ class PlayerController {
                     adjusted: r.adjusted,
                     courseRating: r.courseRating,
                     courseSlope: r.courseSlope,
-                    points: Number(r.pointsEarned),
+                    points: roundPoints,
                     putts: r.putts,
                     birdies: r.birdies,
                     eagles: r.eagles,

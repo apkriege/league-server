@@ -13,6 +13,10 @@ const getSessionUser = async (req) => {
         return null;
     return user_1.default.findById(userId);
 };
+const hasLeagueCodeAccess = (req, leagueId) => {
+    const leagueIds = req.session.leagueAccess?.leagueIds;
+    return Array.isArray(leagueIds) && leagueIds.map(Number).includes(Number(leagueId));
+};
 const requireSessionUser = async (req, res, guardName = 'session') => {
     const user = await getSessionUser(req);
     if (!user) {
@@ -156,14 +160,23 @@ const leagueAdminGuard = async (req, res, next) => {
 exports.leagueAdminGuard = leagueAdminGuard;
 const leagueMemberGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res, 'league-member');
-        if (!user)
-            return;
-        const role = String(user.role).toUpperCase();
         const leagueId = Number(req.params.leagueId ?? req.params.id);
         if (!Number.isInteger(leagueId) || leagueId <= 0) {
             return res.status(400).json({ message: 'Invalid league id' });
         }
+        const user = await getSessionUser(req);
+        if (!user && hasLeagueCodeAccess(req, leagueId)) {
+            return next();
+        }
+        if (!user) {
+            (0, logging_1.logAuthFailure)(req, 'auth:unauthorized', {
+                guard: 'league-member',
+                reason: 'missing-session-user-or-code',
+                leagueId,
+            });
+            return res.sendStatus(401);
+        }
+        const role = String(user.role).toUpperCase();
         const league = await prisma_1.prisma.league.findUnique({
             where: { id: leagueId },
             select: { adminId: true },
@@ -236,10 +249,6 @@ const eventAdminGuard = async (req, res, next) => {
 exports.eventAdminGuard = eventAdminGuard;
 const teamMemberGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res, 'team-member');
-        if (!user)
-            return;
-        const role = String(user.role).toUpperCase();
         const teamId = Number(req.params.id);
         if (!Number.isInteger(teamId) || teamId <= 0) {
             return res.status(400).json({ message: 'Invalid team id' });
@@ -251,6 +260,20 @@ const teamMemberGuard = async (req, res, next) => {
         if (!team) {
             return res.status(404).json({ message: 'Team not found' });
         }
+        const user = await getSessionUser(req);
+        if (!user && team.leagueId && hasLeagueCodeAccess(req, Number(team.leagueId))) {
+            return next();
+        }
+        if (!user) {
+            (0, logging_1.logAuthFailure)(req, 'auth:unauthorized', {
+                guard: 'team-member',
+                reason: 'missing-session-user-or-code',
+                teamId,
+                leagueId: team.leagueId,
+            });
+            return res.sendStatus(401);
+        }
+        const role = String(user.role).toUpperCase();
         if (role === 'SUPER' || team.league?.adminId === user.id) {
             req.user = user;
             return next();
@@ -281,10 +304,6 @@ const teamMemberGuard = async (req, res, next) => {
 exports.teamMemberGuard = teamMemberGuard;
 const playerMemberGuard = async (req, res, next) => {
     try {
-        const user = await requireSessionUser(req, res, 'player-member');
-        if (!user)
-            return;
-        const role = String(user.role).toUpperCase();
         const playerId = Number(req.params.id ?? req.params.playerId);
         if (!Number.isInteger(playerId) || playerId <= 0) {
             return res.status(400).json({ message: 'Invalid player id' });
@@ -296,6 +315,20 @@ const playerMemberGuard = async (req, res, next) => {
         if (!player) {
             return res.status(404).json({ message: 'Player not found' });
         }
+        const user = await getSessionUser(req);
+        if (!user && player.leagueId && hasLeagueCodeAccess(req, Number(player.leagueId))) {
+            return next();
+        }
+        if (!user) {
+            (0, logging_1.logAuthFailure)(req, 'auth:unauthorized', {
+                guard: 'player-member',
+                reason: 'missing-session-user-or-code',
+                playerId,
+                leagueId: player.leagueId,
+            });
+            return res.sendStatus(401);
+        }
+        const role = String(user.role).toUpperCase();
         if (role === 'SUPER' ||
             player.league?.adminId === user.id ||
             Number(player.userId || 0) === Number(user.id)) {

@@ -20,6 +20,7 @@ const payment_1 = __importDefault(require("./controllers/payment"));
 const operations_1 = __importDefault(require("./controllers/operations"));
 const test_1 = __importDefault(require("./controllers/test"));
 const health_1 = __importDefault(require("./controllers/health"));
+const seasonSync_1 = __importDefault(require("./controllers/seasonSync"));
 const security_1 = require("./middleware/security");
 const router = express_1.default.Router();
 const authRateLimiter = (0, security_1.createRateLimiter)({ keyPrefix: 'auth', windowMs: 15 * 60 * 1000, max: 20 });
@@ -34,9 +35,10 @@ router.get('/health', health_1.default.getHealth);
 // AUTH ROUTES
 // =====================
 router.post('/auth/login', authRateLimiter, auth_1.default.login);
+router.post('/auth/league-code', authRateLimiter, auth_1.default.loginWithLeagueCode);
 router.post('/auth/register', authRateLimiter, auth_1.default.register);
 router.get('/auth/debug-session', auth_1.default.debugSession);
-router.post('/auth/logout', auth_guard_1.userGuard, auth_1.default.logout);
+router.post('/auth/logout', auth_1.default.logout);
 router.get('/auth/me', auth_guard_1.userGuard, auth_1.default.getProfile);
 // =====================
 // PAYMENT ROUTES
@@ -54,6 +56,10 @@ router.post('/invitations/:token/claim', auth_guard_1.userGuard, operations_1.de
 router.get('/leagues/:leagueId/invitations', auth_guard_1.leagueAdminGuard, operations_1.default.getLeagueInvitations);
 router.post('/leagues/:leagueId/invitations', auth_guard_1.leagueAdminGuard, operations_1.default.createLeagueInvitations);
 router.delete('/leagues/:leagueId/invitations/:invitationId', auth_guard_1.leagueAdminGuard, operations_1.default.revokeLeagueInvitation);
+router.get('/leagues/:leagueId/announcements', auth_guard_1.leagueMemberGuard, operations_1.default.getLeagueAnnouncements);
+router.post('/leagues/:leagueId/announcements', auth_guard_1.leagueAdminGuard, operations_1.default.createLeagueAnnouncement);
+router.put('/leagues/:leagueId/announcements/:announcementId', auth_guard_1.leagueAdminGuard, operations_1.default.updateLeagueAnnouncement);
+router.delete('/leagues/:leagueId/announcements/:announcementId', auth_guard_1.leagueMemberGuard, operations_1.default.dismissLeagueAnnouncement);
 router.get('/leagues/:leagueId/onboarding', auth_guard_1.leagueAdminGuard, operations_1.default.getLeagueOnboarding);
 router.put('/leagues/:leagueId/onboarding', auth_guard_1.leagueAdminGuard, operations_1.default.updateLeagueOnboarding);
 router.get('/leagues/:leagueId/audit-logs', auth_guard_1.leagueAdminGuard, operations_1.default.getLeagueAuditLogs);
@@ -87,12 +93,13 @@ router.post('/courses', auth_guard_1.superAdminGuard, course_1.default.createCou
 router.put('/courses/:id', auth_guard_1.superAdminGuard, course_1.default.updateCourse);
 router.delete('/courses/:id', auth_guard_1.superAdminGuard, course_1.default.deleteCourse);
 // Leagues
-router.get('/leagues', auth_guard_1.userGuard, league_1.default.getLeagues);
+router.get('/leagues', league_1.default.getLeagues);
 router.get('/leagues/:id', auth_guard_1.leagueMemberGuard, league_1.default.getLeague);
 router.get('/leagues/:id/metrics', auth_guard_1.leagueMemberGuard, league_1.default.getLeagueMetrics);
 router.post('/leagues', auth_guard_1.adminGuard, league_1.default.createLeague);
 router.put('/leagues/:id', auth_guard_1.adminGuard, auth_guard_1.leagueAdminGuard, league_1.default.updateLeague);
 router.delete('/leagues/:id', auth_guard_1.adminGuard, auth_guard_1.leagueAdminGuard, league_1.default.deleteLeague);
+router.post('/leagues/:leagueId/season-sync', auth_guard_1.leagueAdminGuard, seasonSync_1.default.recalculateLeague);
 // League Players & Teams
 router.get('/leagues/:leagueId/players', auth_guard_1.leagueMemberGuard, player_1.default.getLeaguePlayers);
 router.post('/leagues/:leagueId/players', auth_guard_1.leagueAdminGuard, player_1.default.createPlayer);
@@ -105,6 +112,7 @@ router.get('/leagues/:leagueId/events/:eventId/scores', auth_guard_1.leagueMembe
 router.post('/leagues/:leagueId/event', auth_guard_1.leagueAdminGuard, event_1.default.createEvent);
 router.post('/leagues/:leagueId/events', auth_guard_1.leagueAdminGuard, event_1.default.createMultipleEvents);
 router.put('/leagues/:leagueId/events/:eventId', auth_guard_1.leagueAdminGuard, event_1.default.updateEvent);
+router.patch('/leagues/:leagueId/events/:eventId/cancel', auth_guard_1.leagueAdminGuard, event_1.default.cancelEvent);
 router.delete('/leagues/:leagueId/events/:eventId', auth_guard_1.leagueAdminGuard, event_1.default.deleteEvent);
 router.post('/leagues/:leagueId/events/:eventId/scores', auth_guard_1.eventAdminGuard, round_1.default.createLeagueEventScores);
 router.put('/leagues/:leagueId/events/:eventId/scores', auth_guard_1.eventAdminGuard, round_1.default.updateLeagueEventScores);

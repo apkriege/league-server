@@ -15,6 +15,155 @@ const addDays = (days) => {
 const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
 const createInviteToken = () => crypto_1.default.randomBytes(24).toString('hex');
 class OperationsController {
+    static getLeagueAnnouncements = async (req, res) => {
+        const leagueId = Number(req.params.leagueId);
+        const userId = Number(req.session.userId);
+        const announcements = await prisma_1.prisma.league_announcement.findMany({
+            where: {
+                leagueId,
+                deletedAt: null,
+                ...(userId
+                    ? {
+                        dismissals: {
+                            none: { userId },
+                        },
+                    }
+                    : {}),
+            },
+            include: {
+                author: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                    },
+                },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.status(200).json(announcements);
+    };
+    static createLeagueAnnouncement = async (req, res) => {
+        const leagueId = Number(req.params.leagueId);
+        const userId = Number(req.session.userId);
+        const title = String(req.body?.title || '').trim();
+        const body = String(req.body?.body || '').trim();
+        if (!title || !body) {
+            return res.status(400).json({ message: 'Title and body are required.' });
+        }
+        const league = await prisma_1.prisma.league.findFirst({
+            where: { id: leagueId, deletedAt: null },
+            select: { id: true, name: true, adminId: true },
+        });
+        if (!league) {
+            return res.status(404).json({ message: 'League not found' });
+        }
+        const announcement = await prisma_1.prisma.league_announcement.create({
+            data: {
+                leagueId,
+                authorUserId: userId,
+                title,
+                body,
+            },
+            include: {
+                author: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                    },
+                },
+            },
+        });
+        await (0, audit_1.writeAuditLog)({
+            userId,
+            leagueId,
+            entity: 'league_announcement',
+            entityId: announcement.id,
+            action: 'create',
+            summary: `Posted league announcement "${title}".`,
+            metadata: { title },
+        });
+        res.status(201).json(announcement);
+    };
+    static updateLeagueAnnouncement = async (req, res) => {
+        const leagueId = Number(req.params.leagueId);
+        const announcementId = Number(req.params.announcementId);
+        const userId = Number(req.session.userId);
+        const title = req.body?.title !== undefined ? String(req.body.title || '').trim() : undefined;
+        const body = req.body?.body !== undefined ? String(req.body.body || '').trim() : undefined;
+        if (title !== undefined && !title) {
+            return res.status(400).json({ message: 'Title is required.' });
+        }
+        if (body !== undefined && !body) {
+            return res.status(400).json({ message: 'Body is required.' });
+        }
+        const existing = await prisma_1.prisma.league_announcement.findFirst({
+            where: { id: announcementId, leagueId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!existing) {
+            return res.status(404).json({ message: 'Announcement not found' });
+        }
+        const announcement = await prisma_1.prisma.league_announcement.update({
+            where: { id: announcementId },
+            data: {
+                ...(title !== undefined ? { title } : {}),
+                ...(body !== undefined ? { body } : {}),
+            },
+            include: {
+                author: {
+                    select: {
+                        id: true,
+                        firstName: true,
+                        lastName: true,
+                        email: true,
+                    },
+                },
+            },
+        });
+        await (0, audit_1.writeAuditLog)({
+            userId,
+            leagueId,
+            entity: 'league_announcement',
+            entityId: announcementId,
+            action: 'update',
+            summary: `Updated league announcement "${announcement.title}".`,
+            metadata: { title: announcement.title },
+        });
+        res.status(200).json(announcement);
+    };
+    static dismissLeagueAnnouncement = async (req, res) => {
+        const leagueId = Number(req.params.leagueId);
+        const announcementId = Number(req.params.announcementId);
+        const userId = Number(req.session.userId);
+        if (!userId) {
+            return res.status(401).json({ message: 'Login is required to remove announcements.' });
+        }
+        const existing = await prisma_1.prisma.league_announcement.findFirst({
+            where: { id: announcementId, leagueId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!existing) {
+            return res.status(404).json({ message: 'Announcement not found' });
+        }
+        await prisma_1.prisma.league_announcement_dismissal.upsert({
+            where: {
+                announcementId_userId: {
+                    announcementId,
+                    userId,
+                },
+            },
+            create: {
+                announcementId,
+                userId,
+            },
+            update: {},
+        });
+        res.status(200).json({ message: 'Announcement removed.' });
+    };
     static getLeagueInvitations = async (req, res) => {
         const leagueId = Number(req.params.leagueId);
         const invitations = await prisma_1.prisma.league_invitation.findMany({

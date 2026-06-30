@@ -4,6 +4,7 @@ exports.buildEventScoreAccess = exports.getLeagueScoreOrder = void 0;
 const prisma_1 = require("../../prisma");
 const isCompletedEvent = (event) => event.isComplete || String(event.status || '').toLowerCase() === 'completed';
 const hasAnyScores = (event) => Number(event._count?.rounds || 0) > 0 || isCompletedEvent(event);
+const isCanceledEvent = (event) => String(event.status || '').toLowerCase() === 'canceled';
 const getLeagueScoreOrder = async (leagueId) => {
     const events = await prisma_1.prisma.event.findMany({
         where: {
@@ -22,8 +23,9 @@ const getLeagueScoreOrder = async (leagueId) => {
         },
         orderBy: [{ date: 'asc' }, { id: 'asc' }],
     });
-    const nextScorableEvent = events.find((event) => !isCompletedEvent(event)) || null;
-    const latestScoredEvent = [...events].reverse().find((event) => hasAnyScores(event)) || null;
+    const scorableEvents = events.filter((event) => !isCanceledEvent(event));
+    const nextScorableEvent = scorableEvents.find((event) => !isCompletedEvent(event)) || null;
+    const latestScoredEvent = [...scorableEvents].reverse().find((event) => hasAnyScores(event)) || null;
     return {
         nextScorableEventId: nextScorableEvent ? Number(nextScorableEvent.id) : null,
         latestScoredEventId: latestScoredEvent ? Number(latestScoredEvent.id) : null,

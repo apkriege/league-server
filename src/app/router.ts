@@ -28,6 +28,7 @@ import Payment from './controllers/payment';
 import Operations from './controllers/operations';
 import TestController from './controllers/test';
 import HealthController from './controllers/health';
+import SeasonSyncController from './controllers/seasonSync';
 import { createRateLimiter } from './middleware/security';
 
 const router: Router = express.Router();
@@ -45,9 +46,10 @@ router.get('/health', HealthController.getHealth);
 // AUTH ROUTES
 // =====================
 router.post('/auth/login', authRateLimiter, Auth.login);
+router.post('/auth/league-code', authRateLimiter, Auth.loginWithLeagueCode);
 router.post('/auth/register', authRateLimiter, Auth.register);
 router.get('/auth/debug-session', Auth.debugSession);
-router.post('/auth/logout', user, Auth.logout);
+router.post('/auth/logout', Auth.logout);
 router.get('/auth/me', user, Auth.getProfile);
 
 // =====================
@@ -70,6 +72,18 @@ router.delete(
   '/leagues/:leagueId/invitations/:invitationId',
   leagueAdminGuard,
   Operations.revokeLeagueInvitation,
+);
+router.get('/leagues/:leagueId/announcements', leagueMemberGuard, Operations.getLeagueAnnouncements);
+router.post('/leagues/:leagueId/announcements', leagueAdminGuard, Operations.createLeagueAnnouncement);
+router.put(
+  '/leagues/:leagueId/announcements/:announcementId',
+  leagueAdminGuard,
+  Operations.updateLeagueAnnouncement,
+);
+router.delete(
+  '/leagues/:leagueId/announcements/:announcementId',
+  leagueMemberGuard,
+  Operations.dismissLeagueAnnouncement,
 );
 router.get('/leagues/:leagueId/onboarding', leagueAdminGuard, Operations.getLeagueOnboarding);
 router.put('/leagues/:leagueId/onboarding', leagueAdminGuard, Operations.updateLeagueOnboarding);
@@ -110,12 +124,13 @@ router.put('/courses/:id', superAdmin, Course.updateCourse);
 router.delete('/courses/:id', superAdmin, Course.deleteCourse);
 
 // Leagues
-router.get('/leagues', user, League.getLeagues);
+router.get('/leagues', League.getLeagues);
 router.get('/leagues/:id', leagueMemberGuard, League.getLeague);
 router.get('/leagues/:id/metrics', leagueMemberGuard, League.getLeagueMetrics);
 router.post('/leagues', admin, League.createLeague);
 router.put('/leagues/:id', admin, leagueAdminGuard, League.updateLeague);
 router.delete('/leagues/:id', admin, leagueAdminGuard, League.deleteLeague);
+router.post('/leagues/:leagueId/season-sync', leagueAdminGuard, SeasonSyncController.recalculateLeague);
 
 // League Players & Teams
 router.get('/leagues/:leagueId/players', leagueMemberGuard, Player.getLeaguePlayers);
@@ -130,6 +145,7 @@ router.get('/leagues/:leagueId/events/:eventId/scores', leagueMemberGuard, Score
 router.post('/leagues/:leagueId/event', leagueAdminGuard, Event.createEvent);
 router.post('/leagues/:leagueId/events', leagueAdminGuard, Event.createMultipleEvents);
 router.put('/leagues/:leagueId/events/:eventId', leagueAdminGuard, Event.updateEvent);
+router.patch('/leagues/:leagueId/events/:eventId/cancel', leagueAdminGuard, Event.cancelEvent);
 router.delete('/leagues/:leagueId/events/:eventId', leagueAdminGuard, Event.deleteEvent);
 router.post('/leagues/:leagueId/events/:eventId/scores', eventAdminGuard, Score.createLeagueEventScores);
 router.put('/leagues/:leagueId/events/:eventId/scores', eventAdminGuard, Score.updateLeagueEventScores);

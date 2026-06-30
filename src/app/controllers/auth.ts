@@ -2,6 +2,7 @@ import 'express-session';
 import { Request, Response } from 'express';
 import { prisma } from '../../prisma';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 
 import User from '../models/user';
 import { BILLING_CURRENCY, BILLING_MIN_GOLFERS, BILLING_PRICE_PER_GOLFER_CENTS } from '../utils/billing';
@@ -10,6 +11,9 @@ import { logAuth, logAuthFailure } from '../middleware/logging';
 declare module 'express-session' {
   interface SessionData {
     userId?: number;
+    leagueAccess?: {
+      leagueIds: number[];
+    };
   }
 }
 
@@ -24,13 +28,33 @@ const serializeUser = (user: any, extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+const serializeLeagueViewer = (league: { id: number; name: string }) => ({
+  id: `league-viewer-${league.id}`,
+  firstName: 'League',
+  lastName: 'Viewer',
+  email: '',
+  role: 'VIEWER',
+  phone: null,
+  metadata: { accessType: 'league-code' },
+  leagues: [{ id: league.id, playerId: null, access: 'viewer' }],
+  leagueAccess: { leagueId: league.id, leagueName: league.name },
+});
+
+const normalizeAccessCode = (code: unknown) =>
+  String(code || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+
 class AuthController {
   static async debugSession(req: Request, res: Response) {
     res.json({
       authenticated: Boolean(req.session.userId),
+      hasLeagueAccess: Boolean(req.session.leagueAccess?.leagueIds?.length),
       hasCookieHeader: Boolean(req.headers.cookie),
       sessionId: req.sessionID,
       userId: req.session.userId ?? null,
+      leagueAccess: req.session.leagueAccess ?? null,
       nodeEnv: process.env.NODE_ENV ?? null,
       railwayEnvironment: process.env.RAILWAY_ENVIRONMENT ?? null,
     });
@@ -179,6 +203,70 @@ class AuthController {
     }
   }
 
+  static async loginWithLeagueCode(req: Request, res: Response) {
+    try {
+      const accessCode = normalizeAccessCode(req.body?.code);
+      logAuth(req, 'auth:league-code-login:start', { codeProvided: Boolean(accessCode) });
+
+      if (!accessCode) {
+        logAuthFailure(req, 'auth:league-code-login:invalid', { reason: 'missing-code' });
+        return res.status(400).json({ message: 'League access code is required' });
+      }
+
+      const league = await prisma.league.findFirst({
+        where: {
+          viewerAccessCode: accessCode,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          name: true,
+        },
+      });
+
+      if (!league) {
+        logAuthFailure(req, 'auth:league-code-login:invalid', { reason: 'bad-code' });
+        return res.status(400).json({ message: 'Invalid league access code' });
+      }
+
+      req.session.regenerate((err) => {
+        if (err) {
+          logAuthFailure(req, 'auth:session:regenerate-failed', {
+            flow: 'league-code-login',
+            leagueId: league.id,
+            error: err.message,
+          });
+          return res.status(500).json({ message: 'Server error' });
+        }
+
+        req.session.leagueAccess = { leagueIds: [league.id] };
+        req.session.save((saveErr) => {
+          if (saveErr) {
+            logAuthFailure(req, 'auth:session:save-failed', {
+              flow: 'league-code-login',
+              leagueId: league.id,
+              error: saveErr.message,
+            });
+            return res.status(500).json({ message: 'Server error' });
+          }
+
+          logAuth(req, 'auth:league-code-login:success', {
+            leagueId: league.id,
+            sessionId: req.sessionID,
+          });
+          return res.json({
+            message: 'League access granted',
+            user: serializeLeagueViewer(league),
+            leagueId: league.id,
+          });
+        });
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: 'Server error' });
+    }
+  }
+
   static async logout(req: Request, res: Response) {
     try {
       req.session.destroy((err) => {
@@ -217,5 +305,7 @@ class AuthController {
     }
   }
 }
+
+export const generateLeagueAccessCode = () => crypto.randomBytes(4).toString('hex').toUpperCase();
 
 export default AuthController;
