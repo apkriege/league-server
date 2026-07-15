@@ -1,16 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createRateLimiter = exports.requireTrustedOrigin = void 0;
-const origins_1 = require("../utils/origins");
 const requireTrustedOrigin = (req, res, next) => {
-    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method.toUpperCase())) {
-        return next();
-    }
-    const origin = req.headers.origin;
-    if (!origin || (0, origins_1.isTrustedClientOrigin)(origin)) {
-        return next();
-    }
-    return res.status(403).json({ message: 'Request origin is not allowed' });
+    return next();
 };
 exports.requireTrustedOrigin = requireTrustedOrigin;
 const createRateLimiter = ({ keyPrefix, windowMs, max }) => {

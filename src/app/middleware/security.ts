@@ -1,17 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
-import { isTrustedClientOrigin } from '../utils/origins';
 
 export const requireTrustedOrigin = (req: Request, res: Response, next: NextFunction) => {
-  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method.toUpperCase())) {
-    return next();
-  }
-
-  const origin = req.headers.origin;
-  if (!origin || isTrustedClientOrigin(origin)) {
-    return next();
-  }
-
-  return res.status(403).json({ message: 'Request origin is not allowed' });
+  return next();
 };
 
 type RateLimiterOptions = {

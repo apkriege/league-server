@@ -16,7 +16,6 @@ const health_1 = __importDefault(require("./app/controllers/health"));
 const security_1 = require("./app/middleware/security");
 const logging_1 = require("./app/middleware/logging");
 const error_response_1 = require("./app/utils/error-response");
-const origins_1 = require("./app/utils/origins");
 const app = (0, express_1.default)();
 const sessionSecret = process.env.SESSION_SECRET;
 const isRailway = Boolean(process.env.RAILWAY_ENVIRONMENT) ||
@@ -37,13 +36,7 @@ if (!sessionSecret) {
     trustProxy: true,
 });
 const corsOptions = {
-    origin: (origin, callback) => {
-        if (!origin || (0, origins_1.isTrustedClientOrigin)(origin)) {
-            callback(null, true);
-            return;
-        }
-        callback(null, false);
-    },
+    origin: true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: [
