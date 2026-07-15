@@ -108,7 +108,7 @@ export const userSelfOrAdminGuard = async (req: Request, res: Response, next: Ne
 
     const requestedUserId = Number(req.params.id);
     const role = String(user.role).toUpperCase();
-    if (role === 'ADMIN' || role === 'SUPER' || user.id === requestedUserId) {
+    if (role === 'SUPER' || user.id === requestedUserId) {
       return next();
     }
 
@@ -137,8 +137,8 @@ export const leagueAdminGuard = async (req: Request, res: Response, next: NextFu
       return res.status(400).json({ message: 'Invalid league id' });
     }
 
-    const league = await prisma.league.findUnique({
-      where: { id: leagueId },
+    const league = await prisma.league.findFirst({
+      where: { id: leagueId, deletedAt: null },
       select: { adminId: true },
     });
 
@@ -187,8 +187,8 @@ export const leagueMemberGuard = async (req: Request, res: Response, next: NextF
 
     const role = String(user.role).toUpperCase();
 
-    const league = await prisma.league.findUnique({
-      where: { id: leagueId },
+    const league = await prisma.league.findFirst({
+      where: { id: leagueId, deletedAt: null },
       select: { adminId: true },
     });
 
@@ -236,8 +236,8 @@ export const eventAdminGuard = async (req: Request, res: Response, next: NextFun
       return res.status(400).json({ message: 'Invalid event id' });
     }
 
-    const event = await prisma.event.findUnique({
-      where: { id: eventId },
+    const event = await prisma.event.findFirst({
+      where: { id: eventId, isDeleted: false, deletedAt: null, league: { deletedAt: null } },
       include: { league: { select: { adminId: true } } },
     });
 
@@ -271,8 +271,8 @@ export const teamMemberGuard = async (req: Request, res: Response, next: NextFun
       return res.status(400).json({ message: 'Invalid team id' });
     }
 
-    const team = await prisma.team.findUnique({
-      where: { id: teamId },
+    const team = await prisma.team.findFirst({
+      where: { id: teamId, deletedAt: null, league: { deletedAt: null } },
       select: { leagueId: true, league: { select: { adminId: true } } },
     });
 
@@ -333,8 +333,8 @@ export const playerMemberGuard = async (req: Request, res: Response, next: NextF
       return res.status(400).json({ message: 'Invalid player id' });
     }
 
-    const player = await prisma.player.findUnique({
-      where: { id: playerId },
+    const player = await prisma.player.findFirst({
+      where: { id: playerId, deletedAt: null, league: { deletedAt: null } },
       select: { userId: true, leagueId: true, league: { select: { adminId: true } } },
     });
 
@@ -403,8 +403,8 @@ export const playerAdminGuard = async (req: Request, res: Response, next: NextFu
       return res.status(400).json({ message: 'Invalid player id' });
     }
 
-    const player = await prisma.player.findUnique({
-      where: { id: playerId },
+    const player = await prisma.player.findFirst({
+      where: { id: playerId, deletedAt: null, league: { deletedAt: null } },
       include: { league: { select: { adminId: true } } },
     });
 
@@ -442,8 +442,8 @@ export const teamAdminGuard = async (req: Request, res: Response, next: NextFunc
       return res.status(400).json({ message: 'Invalid team id' });
     }
 
-    const team = await prisma.team.findUnique({
-      where: { id: teamId },
+    const team = await prisma.team.findFirst({
+      where: { id: teamId, deletedAt: null, league: { deletedAt: null } },
       include: { league: { select: { adminId: true } } },
     });
 
@@ -481,8 +481,12 @@ export const flightAdminGuard = async (req: Request, res: Response, next: NextFu
       return res.status(400).json({ message: 'Invalid flight id' });
     }
 
-    const flight = await prisma.flight.findUnique({
-      where: { id: flightId },
+    const flight = await prisma.flight.findFirst({
+      where: {
+        id: flightId,
+        deletedAt: null,
+        event: { isDeleted: false, deletedAt: null, league: { deletedAt: null } },
+      },
       include: { event: { include: { league: { select: { adminId: true } } } } },
     });
 

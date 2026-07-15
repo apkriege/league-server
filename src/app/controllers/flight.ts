@@ -42,6 +42,17 @@ export default class FlightController {
         return res.status(400).json({ message: 'Invalid players payload' });
       }
 
+      const flight = await prisma.flight.findUnique({
+        where: { id: flightId },
+        include: { event: { select: { leagueId: true } } },
+      });
+      if (!flight) {
+        return res.status(404).json({ message: 'Flight not found' });
+      }
+      if (flight.status === 'completed') {
+        return res.status(409).json({ message: 'Completed flights cannot be changed' });
+      }
+
       const existingFlightPlayers = await prisma.flight_player.findMany({
         where: { flightId },
         orderBy: { id: 'asc' },
@@ -53,6 +64,35 @@ export default class FlightController {
           expected: existingFlightPlayers.length,
           received: players.length,
         });
+      }
+
+      const playerIds = players.map((player: any) => Number(player?.playerId));
+      if (playerIds.some((id: number) => !Number.isInteger(id) || id <= 0) || new Set(playerIds).size !== playerIds.length) {
+        return res.status(400).json({ message: 'Flight players must be unique valid player IDs' });
+      }
+
+      const validPlayers = await prisma.player.findMany({
+        where: { id: { in: playerIds }, leagueId: flight.event.leagueId, deletedAt: null },
+        select: { id: true },
+      });
+      if (validPlayers.length !== playerIds.length) {
+        return res.status(400).json({ message: 'All flight players must belong to the event league' });
+      }
+
+      const teamIds = [...new Set(players.map((player: any) => Number(player?.teamId)).filter(Boolean))];
+      if (teamIds.length > 0) {
+        const validTeams = await prisma.team.findMany({
+          where: { id: { in: teamIds }, leagueId: flight.event.leagueId, deletedAt: null },
+          select: { id: true },
+        });
+        if (validTeams.length !== teamIds.length) {
+          return res.status(400).json({ message: 'All flight teams must belong to the event league' });
+        }
+      }
+
+      const opponentIds = players.map((player: any) => Number(player?.opponentId)).filter(Boolean);
+      if (opponentIds.some((id: number) => !playerIds.includes(id))) {
+        return res.status(400).json({ message: 'Flight opponents must be players in the same flight' });
       }
 
       await prisma.$transaction(
@@ -68,11 +108,6 @@ export default class FlightController {
           });
         }),
       );
-
-      const flight = await prisma.flight.findUnique({
-        where: { id: flightId },
-        include: { event: { select: { leagueId: true } } },
-      });
 
       await writeAuditLog({
         userId: req.session.userId ?? null,

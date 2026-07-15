@@ -10,12 +10,14 @@ export class Round {
   private player: any;
   private isEdit = false;
   private round?: any;
+  private db: any;
 
-  constructor(eventId: number, playerRound: any, round?: any) {
+  constructor(eventId: number, playerRound: any, round?: any, db: any = prisma) {
     this.eventId = eventId;
     this.playerRound = playerRound;
     this.round = round;
     this.isEdit = Boolean(round);
+    this.db = db;
   }
 
   async process() {
@@ -51,7 +53,7 @@ export class Round {
     const stats = this.calculateStats(modeledScores);
 
     // save the round to db
-    const round = await prisma.round.create({
+    const round = await this.db.round.create({
       data: {
         eventId: this.eventId,
         playerId: pr.playerId,
@@ -86,7 +88,7 @@ export class Round {
     });
 
     // save the scores to db
-    await prisma.score.createMany({
+    await this.db.score.createMany({
       data: modeledScores.map((s: any) => ({
         eventId: this.eventId,
         playerId: pr.playerId,
@@ -107,7 +109,7 @@ export class Round {
   }
 
   private async updateRound(roundId: number, newRound: any) {
-    const round = await prisma.round.findUnique({
+    const round = await this.db.round.findUnique({
       where: { id: roundId },
     });
 
@@ -119,7 +121,7 @@ export class Round {
     const modeledScores = this.calculateScores(newRound);
     const stats = this.calculateStats(modeledScores);
 
-    const r = await prisma.round.update({
+    const r = await this.db.round.update({
       where: { id: roundId },
       data: {
         gross: stats.totalGross,
@@ -146,7 +148,7 @@ export class Round {
 
     // Update scores
     for (const score of modeledScores) {
-      await prisma.score.update({
+      await this.db.score.update({
         where: {
           roundId_hole: {
             roundId,
@@ -165,7 +167,7 @@ export class Round {
   }
 
   private checkForExistingRound(playerId: number, eventId: number) {
-    return prisma.round.findUnique({
+    return this.db.round.findUnique({
       where: {
         eventId_playerId: {
           eventId,
@@ -178,6 +180,24 @@ export class Round {
   private calculateScores(playerRound: any) {
     const hcp = this.isEdit ? Math.round(this.round.preHandicap) : Math.round(this.player.handicap);
     const grossScores = playerRound.scores;
+    if (!grossScores || Array.isArray(grossScores) || typeof grossScores !== 'object') {
+      throw new Error('Scores must include a value for every hole.');
+    }
+
+    const expectedHoleNumbers = new Set(this.tee.holes.map((hole: any) => Number(hole.num)));
+    const submittedEntries = Object.entries(grossScores);
+    const hasInvalidScore = submittedEntries.some(([hole, score]) => {
+      const numericScore = Number(score);
+      return (
+        !expectedHoleNumbers.has(Number(hole)) ||
+        !Number.isInteger(numericScore) ||
+        numericScore < 1 ||
+        numericScore > 30
+      );
+    });
+    if (hasInvalidScore || submittedEntries.length !== expectedHoleNumbers.size) {
+      throw new Error('Scores must contain one valid stroke total for every hole.');
+    }
     const netScores = this.getNetScores(hcp, grossScores);
     const ecsScores = this.calulateEquitableStrokeControl(hcp, grossScores);
 
@@ -192,7 +212,7 @@ export class Round {
         playerId: playerRound.playerId,
         hole: Number(holeNum),
         par: h.par,
-        gross: score,
+        gross: Number(score),
         adjusted: ecsScores[Number(holeNum)],
         net: netScores[Number(holeNum)],
       };
@@ -324,8 +344,8 @@ export class Round {
 
   // SET PLAYER
   private async setPlayer() {
-    const player = await prisma.player.findUnique({
-      where: { id: this.playerRound.playerId },
+    const player = await this.db.player.findFirst({
+      where: { id: this.playerRound.playerId, deletedAt: null },
     });
 
     if (!player) {
@@ -337,8 +357,8 @@ export class Round {
 
   // SET EVENT DATA
   private async setEventData() {
-    const event = await prisma.event.findFirst({
-      where: { id: this.eventId },
+    const event = await this.db.event.findFirst({
+      where: { id: this.eventId, isDeleted: false, deletedAt: null },
       include: {
         course: true,
         tee: true,
@@ -363,7 +383,7 @@ export class Round {
       round.adjusted,
     );
 
-    await prisma.round.update({
+    await this.db.round.update({
       where: { id: round.id },
       data: {
         preHandicap: this.isEdit ? round.preHandicap : this.player.handicap,
@@ -374,7 +394,7 @@ export class Round {
       },
     });
 
-    await prisma.player.update({
+    await this.db.player.update({
       where: { id: this.player.id },
       data: { handicap: handicapData.handicap },
     });
@@ -393,7 +413,7 @@ export class Round {
         ? { id: { not: this.round.id } } // Exclude current round if editing
         : undefined;
 
-    const player = await prisma.player.findUnique({
+    const player = await this.db.player.findUnique({
       where: { id: playerId },
       include: {
         rounds: {
@@ -411,8 +431,10 @@ export class Round {
 
     // Get past differentials
     const differentials = player.rounds
-      .map((r) => r.differential)
-      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+      .map((r: any) => r.differential)
+      .filter((value: any): value is number =>
+        typeof value === 'number' && Number.isFinite(value),
+      );
 
     // Add current differential
     const differential = Number(

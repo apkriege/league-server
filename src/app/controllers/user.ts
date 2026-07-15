@@ -18,7 +18,7 @@ const serializeUser = (user: any) => ({
 });
 
 class UserController {
-  static sanitizeUserUpdatePayload = (payload: any, isAdmin: boolean) => {
+  static sanitizeUserUpdatePayload = (payload: any, canManageRoles: boolean) => {
     const data: Record<string, unknown> = {};
 
     if (payload.firstName != null) data.firstName = String(payload.firstName).trim();
@@ -27,9 +27,15 @@ class UserController {
     if (payload.phone !== undefined) data.phone = payload.phone ? String(payload.phone).trim() : null;
     if (payload.password) data.password = payload.password;
 
-    if (isAdmin) {
+    if (canManageRoles) {
       if (payload.username != null) data.username = String(payload.username).trim();
-      if (payload.role != null) data.role = String(payload.role).trim().toUpperCase();
+      if (payload.role != null) {
+        const role = String(payload.role).trim().toUpperCase();
+        if (!['USER', 'ADMIN', 'SUPER'].includes(role)) {
+          throw new Error('Invalid user role');
+        }
+        data.role = role;
+      }
     }
 
     return data;
@@ -82,7 +88,13 @@ class UserController {
 
   static createUser = async (req: Request, res: Response) => {
     try {
-      const newUser = req.body;
+      const newUser = UserController.sanitizeUserUpdatePayload(req.body || {}, true);
+      if (!newUser.firstName || !newUser.lastName || !newUser.email || !newUser.password) {
+        return res.status(400).json({ message: 'First name, last name, email, and password are required' });
+      }
+      if (String(newUser.password).length < 10) {
+        return res.status(400).json({ message: 'Password must be at least 10 characters' });
+      }
       if (newUser.password) {
         newUser.password = await bcrypt.hash(String(newUser.password), 10);
       }
@@ -90,6 +102,9 @@ class UserController {
       res.status(201).json(serializeUser(user));
     } catch (error) {
       console.error(error);
+      if (error instanceof Error && error.message === 'Invalid user role') {
+        return res.status(400).json({ message: error.message });
+      }
       res.status(500).send(error);
     }
   };
@@ -99,14 +114,17 @@ class UserController {
       const id = Number(req.params.id);
       const sessionUser = req.user as { id: number; role: string };
       const role = String(sessionUser?.role || '').toUpperCase();
-      const isAdmin = role === 'ADMIN' || role === 'SUPER';
-      const updatedUser = UserController.sanitizeUserUpdatePayload(req.body || {}, isAdmin);
+      const canManageRoles = role === 'SUPER';
+      const updatedUser = UserController.sanitizeUserUpdatePayload(req.body || {}, canManageRoles);
 
       if (Object.keys(updatedUser).length === 0) {
         return res.status(400).json({ message: 'No valid fields provided for update' });
       }
 
       if (updatedUser.password) {
+        if (String(updatedUser.password).length < 10) {
+          return res.status(400).json({ message: 'Password must be at least 10 characters' });
+        }
         updatedUser.password = await bcrypt.hash(String(updatedUser.password), 10);
       }
       const user = await UserService.update(id, updatedUser);
@@ -119,6 +137,9 @@ class UserController {
       res.status(200).json(serializeUser(user));
     } catch (error) {
       console.error(error);
+      if (error instanceof Error && error.message === 'Invalid user role') {
+        return res.status(400).json({ message: error.message });
+      }
       res.status(500).send(error);
     }
   };
@@ -126,8 +147,16 @@ class UserController {
   static deleteUser = async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
+      const activeManagedLeagues = await prisma.league.count({
+        where: { adminId: id, deletedAt: null },
+      });
+      if (activeManagedLeagues > 0) {
+        return res.status(409).json({
+          message: 'Transfer or delete active leagues before deleting this account',
+        });
+      }
       const user = await UserService.delete(id);
-      res.status(200).json(user);
+      res.status(200).json({ message: 'User deleted' });
     } catch (error) {
       console.error(error);
       res.status(500).send(error);
@@ -138,12 +167,12 @@ class UserController {
     try {
       const userId = Number(req.params.id);
       const leagueIds = await prisma.player.findMany({
-        where: { userId },
+        where: { userId, deletedAt: null },
         select: { leagueId: true },
       });
 
       const leagues = await prisma.league.findMany({
-        where: { id: { in: leagueIds.map((l: any) => l.leagueId) } },
+        where: { id: { in: leagueIds.map((l: any) => l.leagueId) }, deletedAt: null },
       });
 
       if (!leagues) {

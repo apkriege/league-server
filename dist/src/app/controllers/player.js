@@ -6,6 +6,23 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const player_1 = __importDefault(require("../models/player"));
 const prisma_1 = require("../../prisma");
 const audit_1 = require("../utils/audit");
+const getMissingRequiredPlayerFields = (payload) => {
+    const missing = [];
+    const handicap = payload.handicap !== undefined && payload.handicap !== null && String(payload.handicap).trim() !== ''
+        ? Number(payload.handicap)
+        : NaN;
+    if (!String(payload.firstName ?? '').trim())
+        missing.push('firstName');
+    if (!String(payload.lastName ?? '').trim())
+        missing.push('lastName');
+    if (!String(payload.email ?? '').trim())
+        missing.push('email');
+    if (!String(payload.type ?? '').trim())
+        missing.push('type');
+    if (!Number.isFinite(handicap))
+        missing.push('handicap');
+    return missing;
+};
 class PlayerController {
     static getPlayers = async (_req, res) => {
         try {
@@ -77,17 +94,39 @@ class PlayerController {
             if (!leagueId) {
                 return res.status(400).json({ message: 'leagueId is required' });
             }
-            if (!payload.firstName || !payload.lastName || !payload.email) {
-                return res.status(400).json({ message: 'firstName, lastName, and email are required' });
+            const missingRequiredFields = getMissingRequiredPlayerFields(payload);
+            if (missingRequiredFields.length > 0) {
+                return res.status(400).json({
+                    message: `Missing required fields: ${missingRequiredFields.join(', ')}`,
+                });
             }
-            const handicap = Number(payload.handicap ?? 0);
+            const handicap = Number(payload.handicap);
+            if (handicap < -10 || handicap > 54) {
+                return res.status(400).json({ message: 'Handicap must be between -10 and 54' });
+            }
+            const playerType = String(payload.type || 'player').trim().toLowerCase();
+            if (!['player', 'substitute', 'captain'].includes(playerType)) {
+                return res.status(400).json({ message: 'Player type is invalid' });
+            }
             const teamId = payload.teamId != null ? Number(payload.teamId) : null;
-            const league = await prisma_1.prisma.league.findUnique({
-                where: { id: Number(leagueId) },
+            if (teamId != null && (!Number.isInteger(teamId) || teamId <= 0)) {
+                return res.status(400).json({ message: 'Team id is invalid' });
+            }
+            const league = await prisma_1.prisma.league.findFirst({
+                where: { id: Number(leagueId), deletedAt: null },
                 select: { id: true, numPlayers: true },
             });
             if (!league) {
                 return res.status(404).json({ message: 'League not found' });
+            }
+            if (teamId) {
+                const team = await prisma_1.prisma.team.findFirst({
+                    where: { id: teamId, leagueId: Number(leagueId), deletedAt: null },
+                    select: { id: true },
+                });
+                if (!team) {
+                    return res.status(400).json({ message: 'Selected team does not belong to this league' });
+                }
             }
             const activePlayers = await prisma_1.prisma.player.count({
                 where: { leagueId: Number(leagueId), deletedAt: null },
@@ -101,16 +140,15 @@ class PlayerController {
             }
             const created = await player_1.default.create({
                 leagueId: Number(leagueId),
-                userId: payload.userId != null ? Number(payload.userId) : null,
                 firstName: String(payload.firstName).trim(),
                 lastName: String(payload.lastName).trim(),
                 email: String(payload.email).trim().toLowerCase(),
                 phone: payload.phone ? String(payload.phone).trim() : null,
                 handicap,
-                startingHandicap: payload.startingHandicap != null ? Number(payload.startingHandicap) : handicap,
-                seasonPoints: payload.seasonPoints != null ? Number(payload.seasonPoints) : 0,
-                seasonRank: payload.seasonRank != null ? Number(payload.seasonRank) : null,
-                type: String(payload.type || 'player').toLowerCase(),
+                startingHandicap: handicap,
+                seasonPoints: 0,
+                seasonRank: null,
+                type: playerType,
                 teamId,
             });
             await (0, audit_1.writeAuditLog)({
@@ -135,6 +173,42 @@ class PlayerController {
             if (!id) {
                 return res.status(400).json({ message: 'Player ID is required' });
             }
+            const missingRequiredFields = getMissingRequiredPlayerFields(payload);
+            if (missingRequiredFields.length > 0) {
+                return res.status(400).json({
+                    message: `Missing required fields: ${missingRequiredFields.join(', ')}`,
+                });
+            }
+            const existingPlayer = await prisma_1.prisma.player.findFirst({
+                where: { id: Number(id), deletedAt: null },
+                select: { id: true, leagueId: true },
+            });
+            if (!existingPlayer) {
+                return res.status(404).json({ message: 'Player not found' });
+            }
+            const handicap = Number(payload.handicap);
+            if (handicap < -10 || handicap > 54) {
+                return res.status(400).json({ message: 'Handicap must be between -10 and 54' });
+            }
+            const playerType = String(payload.type || 'player').trim().toLowerCase();
+            if (!['player', 'substitute', 'captain'].includes(playerType)) {
+                return res.status(400).json({ message: 'Player type is invalid' });
+            }
+            const teamId = payload.teamId === undefined || payload.teamId == null
+                ? null
+                : Number(payload.teamId);
+            if (teamId != null && (!Number.isInteger(teamId) || teamId <= 0)) {
+                return res.status(400).json({ message: 'Team id is invalid' });
+            }
+            if (payload.teamId !== undefined && teamId) {
+                const team = await prisma_1.prisma.team.findFirst({
+                    where: { id: teamId, leagueId: existingPlayer.leagueId, deletedAt: null },
+                    select: { id: true },
+                });
+                if (!team) {
+                    return res.status(400).json({ message: 'Selected team does not belong to this league' });
+                }
+            }
             const data = {
                 ...(payload.firstName != null ? { firstName: String(payload.firstName).trim() } : {}),
                 ...(payload.lastName != null ? { lastName: String(payload.lastName).trim() } : {}),
@@ -142,17 +216,10 @@ class PlayerController {
                 ...(payload.phone !== undefined
                     ? { phone: payload.phone ? String(payload.phone).trim() : null }
                     : {}),
-                ...(payload.type != null ? { type: String(payload.type).toLowerCase() } : {}),
-                ...(payload.handicap != null ? { handicap: Number(payload.handicap) } : {}),
-                ...(payload.startingHandicap != null
-                    ? { startingHandicap: Number(payload.startingHandicap) }
-                    : {}),
-                ...(payload.seasonPoints != null ? { seasonPoints: Number(payload.seasonPoints) } : {}),
-                ...(payload.seasonRank !== undefined
-                    ? { seasonRank: payload.seasonRank == null ? null : Number(payload.seasonRank) }
-                    : {}),
+                ...(payload.type != null ? { type: playerType } : {}),
+                ...(payload.handicap != null ? { handicap } : {}),
                 ...(payload.teamId !== undefined
-                    ? { teamId: payload.teamId == null ? null : Number(payload.teamId) }
+                    ? { teamId }
                     : {}),
             };
             const updated = await player_1.default.update(Number(id), data);
@@ -180,7 +247,33 @@ class PlayerController {
             if (!id) {
                 return res.status(400).json({ message: 'Player ID is required' });
             }
-            const player = await prisma_1.prisma.player.findUnique({ where: { id: Number(id) } });
+            const player = await prisma_1.prisma.player.findFirst({
+                where: { id: Number(id), deletedAt: null },
+            });
+            if (!player) {
+                return res.status(404).json({ message: 'Player not found' });
+            }
+            const scheduledAssignment = await prisma_1.prisma.flight_player.findFirst({
+                where: {
+                    playerId: Number(id),
+                    deletedAt: null,
+                    flight: {
+                        deletedAt: null,
+                        event: {
+                            isDeleted: false,
+                            deletedAt: null,
+                            isComplete: false,
+                            status: { not: 'canceled' },
+                        },
+                    },
+                },
+                select: { id: true },
+            });
+            if (scheduledAssignment) {
+                return res.status(409).json({
+                    message: 'Player is assigned to an upcoming event. Update that event before removing the player.',
+                });
+            }
             await player_1.default.delete(Number(id));
             await (0, audit_1.writeAuditLog)({
                 userId: req.session.userId ?? null,

@@ -14,6 +14,7 @@ const validationMessagePatterns = [
     /^Event /i,
     /^Flight /i,
     /^Hole /i,
+    /^Selected /i,
     /required/i,
     /not found/i,
     /already exists/i,

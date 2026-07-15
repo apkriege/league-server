@@ -1,4 +1,4 @@
-const { Handicap } = require('../services/handicap');
+import { Handicap } from '../services/handicap';
 
 export default class TestController {
   static fullHandicapTest = async (req: any, res: any) => {

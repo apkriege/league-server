@@ -1,6 +1,6 @@
 import express, { Express, Request, Response, NextFunction } from 'express';
 import api from './app/router';
-import cors from 'cors';
+import cors, { CorsOptions } from 'cors';
 import session from 'express-session';
 import dotenv from 'dotenv';
 import PgSession from 'connect-pg-simple';
@@ -11,6 +11,7 @@ import HealthController from './app/controllers/health';
 import { requireTrustedOrigin } from './app/middleware/security';
 import { logError, logInfo, requestId, requestLogger } from './app/middleware/logging';
 import { getPublicErrorResponse } from './app/utils/error-response';
+import { isTrustedClientOrigin } from './app/utils/origins';
 
 const app: Express = express();
 const sessionSecret = process.env.SESSION_SECRET;
@@ -37,8 +38,15 @@ logInfo('server:config', {
   trustProxy: true,
 });
 
-const corsOptions = {
-  origin: true,
+const corsOptions: CorsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || isTrustedClientOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(null, false);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: [

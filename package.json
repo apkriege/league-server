@@ -5,24 +5,27 @@
   "main": "index.js",
   "scripts": {
     "test": "vitest",
+    "deploy": "npm run build && git add . && git commit -m 'Deploy' && git push",
+    "test:run": "vitest run",
     "test:file": "npx vitest --testNamePattern $1",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "npm run db:generate && tsc -p tsconfig.json",
+    "build:railway": "npm run build",
     "start": "ts-node src/index.ts",
     "start:prod": "node dist/src/index.js",
+    "start:railway": "npm run db:migrate:deploy && npm run start:prod",
     "dev": "nodemon --exec ts-node src/index.ts",
-    "seed": "npx ts-node prisma/seed.ts",
+    "seed": "npm run seed:demo",
+    "seed:demo": "npx ts-node prisma/seed.ts",
     "seed:export": "node prisma/export-current-db-seed.js",
     "db:generate": "npx prisma generate --schema=./prisma/schema.prisma",
     "db:migrate:deploy": "npx prisma migrate deploy --schema=./prisma/schema.prisma",
     "db:seed:users": "node scripts/createUsers.js",
     "db:push": "npx prisma db push --schema=./prisma/schema.prisma",
-    "db:full": "npx prisma db push --force-reset && npx ts-node prisma/seed.ts",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down -v",
-    "deploy": "npm run build && git add . && git commit -m 'Deploy' && git push",
-    "migrate:deploy": "prisma migrate deploy",
-    "x": "prisma migrate reset --force && npm run seed"
+    "verify": "npm run typecheck && npm run test:run && npm run build",
+    "migrate:deploy": "prisma migrate deploy"
   },
   "keywords": [],
   "author": "",
@@ -42,8 +45,7 @@
     "passport-local": "^1.0.0",
     "pg": "^8.16.3",
     "prisma": "^6.19.2",
-    "stripe": "^20.4.1",
-    "vite": "^7.1.12"
+    "stripe": "^20.4.1"
   },
   "devDependencies": {
     "@faker-js/faker": "^10.1.0",
@@ -64,6 +66,7 @@
     "ts-node-dev": "^2.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
+    "vite": "^7.1.12",
     "vitest": "^4.0.5"
   }
 }

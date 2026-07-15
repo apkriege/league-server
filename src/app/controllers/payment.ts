@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import Stripe from 'stripe';
 import { prisma } from '../../prisma';
-import { getPrimaryClientOrigin } from '../utils/origins';
+import { getPrimaryClientOrigin, isTrustedClientOrigin } from '../utils/origins';
 import {
   BILLING_CURRENCY,
   BILLING_MIN_GOLFERS,
@@ -34,7 +34,12 @@ const getProductName = (purpose: CheckoutPurpose, quantity: number) => {
   return `Additional golfer seats (${quantity})`;
 };
 
-const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Session) => {
+const getCheckoutRedirectUrl = (value: unknown, fallback: string) => {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  return isTrustedClientOrigin(value.trim()) ? value.trim() : fallback;
+};
+
+export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Session) => {
   const userIdFromReference = Number(session.client_reference_id);
   if (!userIdFromReference) return null;
 
@@ -42,68 +47,104 @@ const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Session) =
     return null;
   }
 
-  const user = await prisma.user.findUnique({ where: { id: userIdFromReference } });
-  if (!user) return null;
-
-  const currentMetadata = user.metadata && typeof user.metadata === 'object' ? user.metadata : {};
-  const currentStripeMetadata =
-    (currentMetadata as any)?.stripe && typeof (currentMetadata as any).stripe === 'object'
-      ? (currentMetadata as any).stripe
-      : {};
-  const currentBillingMetadata = getBillingMetadata(currentMetadata);
-  if (
-    currentStripeMetadata.lastCheckoutSessionId === session.id &&
-    currentStripeMetadata.lastCheckoutStatus === 'completed'
-  ) {
-    return user;
-  }
-
   const completedQuantity = Math.max(0, Number(session.metadata?.quantity || 0));
   const requestedTargetGolfers = Math.max(0, Number(session.metadata?.targetGolfers || 0));
   const completedPurpose = String(session.metadata?.purpose || 'seat_upgrade');
-  const currentIncludedGolfers = Math.max(0, Number(currentBillingMetadata.includedGolfers || 0));
-  const nextIncludedGolfers = Math.max(
-    currentIncludedGolfers + completedQuantity,
-    requestedTargetGolfers,
-    currentIncludedGolfers
-  );
+  if (!Number.isInteger(completedQuantity) || completedQuantity <= 0) return null;
 
-  return prisma.user.update({
-    where: { id: user.id },
-    data: {
-      metadata: mergeBillingMetadata(
-        {
-          ...(currentMetadata as object),
-          stripe: {
-            ...currentStripeMetadata,
-            customerId:
-              typeof session.customer === 'string'
-                ? session.customer
-                : currentStripeMetadata.customerId,
-            lastCheckoutSessionId: session.id,
-            lastCheckoutStatus: 'completed',
-            lastCheckoutPurpose: completedPurpose,
-            lastPaymentIntentId:
-              typeof session.payment_intent === 'string' ? session.payment_intent : null,
-            lastCompletedAt: new Date().toISOString(),
-          },
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await prisma.$transaction(
+        async (tx) => {
+          const processed = await tx.stripe_checkout_completion.findUnique({
+            where: { sessionId: session.id },
+          });
+          if (processed) {
+            return tx.user.findFirst({ where: { id: userIdFromReference, deletedAt: null } });
+          }
+
+          const user = await tx.user.findFirst({
+            where: { id: userIdFromReference, deletedAt: null },
+          });
+          if (!user) return null;
+
+          const currentMetadata =
+            user.metadata && typeof user.metadata === 'object' ? user.metadata : {};
+          const currentStripeMetadata =
+            (currentMetadata as any)?.stripe && typeof (currentMetadata as any).stripe === 'object'
+              ? (currentMetadata as any).stripe
+              : {};
+          const currentBillingMetadata = getBillingMetadata(currentMetadata);
+          const currentIncludedGolfers = Math.max(
+            0,
+            Number(currentBillingMetadata.includedGolfers || 0),
+          );
+          const nextIncludedGolfers = Math.max(
+            currentIncludedGolfers + completedQuantity,
+            requestedTargetGolfers,
+            currentIncludedGolfers,
+          );
+
+          const updatedUser = await tx.user.update({
+            where: { id: user.id },
+            data: {
+              metadata: mergeBillingMetadata(
+                {
+                  ...(currentMetadata as object),
+                  stripe: {
+                    ...currentStripeMetadata,
+                    customerId:
+                      typeof session.customer === 'string'
+                        ? session.customer
+                        : currentStripeMetadata.customerId,
+                    lastCheckoutSessionId: session.id,
+                    lastCheckoutStatus: 'completed',
+                    lastCheckoutPurpose: completedPurpose,
+                    lastPaymentIntentId:
+                      typeof session.payment_intent === 'string' ? session.payment_intent : null,
+                    lastCompletedAt: new Date().toISOString(),
+                  },
+                },
+                {
+                  includedGolfers: nextIncludedGolfers,
+                  minimumGolfers: BILLING_MIN_GOLFERS,
+                  pricePerGolferCents: BILLING_PRICE_PER_GOLFER_CENTS,
+                  currency: BILLING_CURRENCY,
+                  lastCompletedCheckoutPurpose: completedPurpose,
+                  lastCompletedSeatQuantity: completedQuantity,
+                  lastCompletedTargetGolfers: requestedTargetGolfers,
+                  registrationCompletedAt:
+                    completedPurpose === 'registration'
+                      ? new Date().toISOString()
+                      : currentBillingMetadata.registrationCompletedAt || null,
+                },
+              ),
+            },
+          });
+
+          await tx.stripe_checkout_completion.create({
+            data: {
+              sessionId: session.id,
+              userId: user.id,
+              purpose: completedPurpose,
+              quantity: completedQuantity,
+              targetGolfers: requestedTargetGolfers,
+            },
+          });
+
+          return updatedUser;
         },
-        {
-          includedGolfers: nextIncludedGolfers,
-          minimumGolfers: BILLING_MIN_GOLFERS,
-          pricePerGolferCents: BILLING_PRICE_PER_GOLFER_CENTS,
-          currency: BILLING_CURRENCY,
-          lastCompletedCheckoutPurpose: completedPurpose,
-          lastCompletedSeatQuantity: completedQuantity,
-          lastCompletedTargetGolfers: requestedTargetGolfers,
-          registrationCompletedAt:
-            completedPurpose === 'registration'
-              ? new Date().toISOString()
-              : currentBillingMetadata.registrationCompletedAt || null,
-        }
-      ),
-    },
-  });
+        { isolationLevel: 'Serializable' },
+      );
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        return prisma.user.findFirst({ where: { id: userIdFromReference, deletedAt: null } });
+      }
+      if (error?.code !== 'P2034' || attempt === 2) throw error;
+    }
+  }
+
+  return null;
 };
 
 class PaymentController {
@@ -128,17 +169,14 @@ class PaymentController {
         0,
         Number(req.body?.requestedGolfers ?? req.body?.quantity ?? BILLING_MIN_GOLFERS)
       );
-      const successUrl =
-        typeof req.body?.successUrl === 'string' && req.body.successUrl.trim().length > 0
-          ? req.body.successUrl.trim()
-          : DEFAULT_SUCCESS_URL;
-      const cancelUrl =
-        typeof req.body?.cancelUrl === 'string' && req.body.cancelUrl.trim().length > 0
-          ? req.body.cancelUrl.trim()
-          : DEFAULT_CANCEL_URL;
+      const successUrl = getCheckoutRedirectUrl(req.body?.successUrl, DEFAULT_SUCCESS_URL);
+      const cancelUrl = getCheckoutRedirectUrl(req.body?.cancelUrl, DEFAULT_CANCEL_URL);
 
       if (!['registration', 'seat_upgrade'].includes(purpose)) {
         return res.status(400).json({ message: 'Invalid checkout purpose' });
+      }
+      if (!Number.isInteger(requestedGolfers) || requestedGolfers < 1 || requestedGolfers > 10000) {
+        return res.status(400).json({ message: 'Requested golfers must be a whole number from 1 to 10000' });
       }
 
       if (!DEFAULT_PRICE_ID && BILLING_PRICE_PER_GOLFER_CENTS <= 0) {

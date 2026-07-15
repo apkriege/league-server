@@ -47,19 +47,6 @@ const normalizeAccessCode = (code: unknown) =>
     .replace(/[^A-Z0-9]/g, '');
 
 class AuthController {
-  static async debugSession(req: Request, res: Response) {
-    res.json({
-      authenticated: Boolean(req.session.userId),
-      hasLeagueAccess: Boolean(req.session.leagueAccess?.leagueIds?.length),
-      hasCookieHeader: Boolean(req.headers.cookie),
-      sessionId: req.sessionID,
-      userId: req.session.userId ?? null,
-      leagueAccess: req.session.leagueAccess ?? null,
-      nodeEnv: process.env.NODE_ENV ?? null,
-      railwayEnvironment: process.env.RAILWAY_ENVIRONMENT ?? null,
-    });
-  }
-
   static async register(req: Request, res: Response) {
     try {
       const { firstName, lastName, email, password } = req.body || {};
@@ -70,6 +57,10 @@ class AuthController {
         return res
           .status(400)
           .json({ message: 'First name, last name, email, and password are required' });
+      }
+
+      if (String(password).length < 10) {
+        return res.status(400).json({ message: 'Password must be at least 10 characters' });
       }
 
       const normalizedEmail = String(email).trim().toLowerCase();

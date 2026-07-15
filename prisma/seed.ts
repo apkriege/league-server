@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-const password = 'testing';
+const password = String(process.env.DEMO_SEED_PASSWORD || '');
 
 const fortressParByHole = [5, 3, 4, 3, 4, 5, 4, 4, 4, 4, 4, 3, 4, 5, 4, 4, 3, 5];
 const fortressHandicapByHole = [6, 12, 2, 14, 18, 16, 8, 10, 4, 17, 15, 11, 1, 9, 13, 5, 7, 3];
@@ -241,6 +241,13 @@ async function createRound({
 }
 
 async function main() {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Demo seed is disabled in production. Use npm run db:seed:users instead.');
+  }
+  if (password.length < 10) {
+    throw new Error('DEMO_SEED_PASSWORD must be at least 10 characters.');
+  }
+
   await clearData();
   const hashedPassword = await hashPassword();
 

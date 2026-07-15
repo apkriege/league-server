@@ -9,6 +9,23 @@ import {
 import { writeAuditLog } from '../utils/audit';
 import { generateLeagueAccessCode } from './auth';
 
+const getMissingRequiredPlayerFields = (player: any) => {
+  const missing: string[] = [];
+  const handicap =
+    player?.handicap !== undefined && player?.handicap !== null && String(player.handicap).trim() !== ''
+      ? Number(player.handicap)
+      : NaN;
+
+  if (!String(player?.firstName ?? '').trim()) missing.push('firstName');
+  if (!String(player?.lastName ?? '').trim()) missing.push('lastName');
+  if (!String(player?.email ?? '').trim()) missing.push('email');
+  const type = String(player?.type ?? '').trim().toLowerCase();
+  if (!['player', 'substitute', 'captain'].includes(type)) missing.push('type');
+  if (!Number.isFinite(handicap) || handicap < -10 || handicap > 54) missing.push('handicap');
+
+  return missing;
+};
+
 class LeagueController {
   static createUniqueViewerAccessCode = async () => {
     for (let attempt = 0; attempt < 10; attempt += 1) {
@@ -23,15 +40,49 @@ class LeagueController {
   static normalizeLeaguePayload = (payload: any) => {
     const normalizedType = String(payload?.type || '').toLowerCase();
     const normalizedFormat = payload?.format ? String(payload.format).toLowerCase() : null;
+    const normalizedAccess = String(payload?.access || 'public').toLowerCase();
+
+    if (!['season', 'tournament'].includes(normalizedType)) {
+      throw new Error('League type must be either "season" or "tournament".');
+    }
 
     if (normalizedType === 'season' && !['individual', 'team'].includes(normalizedFormat || '')) {
       throw new Error('Season leagues require format to be either "individual" or "team".');
     }
 
+    if (!['public', 'private'].includes(normalizedAccess)) {
+      throw new Error('League access must be either "public" or "private".');
+    }
+
+    const requiredTextFields = [
+      ['name', payload?.name],
+      ['contactFirstName', payload?.contactFirstName],
+      ['contactLastName', payload?.contactLastName],
+      ['contactEmail', payload?.contactEmail],
+    ] as const;
+    const missingField = requiredTextFields.find(([, value]) => !String(value || '').trim());
+    if (missingField) {
+      throw new Error(`${missingField[0]} is required.`);
+    }
+
+    const numPlayers = Number(payload?.numPlayers);
+    if (!Number.isInteger(numPlayers) || numPlayers < 1) {
+      throw new Error('League player capacity must be a positive whole number.');
+    }
+
     return {
-      ...payload,
+      name: String(payload.name).trim(),
+      description: payload.description ? String(payload.description).trim() : null,
       type: normalizedType,
+      access: normalizedAccess,
       format: normalizedType === 'season' ? normalizedFormat : null,
+      numPlayers,
+      startDate: new Date(payload.startDate),
+      endDate: new Date(payload.endDate),
+      contactFirstName: String(payload.contactFirstName).trim(),
+      contactLastName: String(payload.contactLastName).trim(),
+      contactEmail: String(payload.contactEmail).trim().toLowerCase(),
+      contactPhone: payload.contactPhone ? String(payload.contactPhone).trim() : null,
     };
   };
 
@@ -60,7 +111,7 @@ class LeagueController {
       const league = await LeagueService.findById(id);
 
       const lastEvent = await prisma.event.findFirst({
-        where: { leagueId: id, isComplete: true },
+        where: { leagueId: id, isComplete: true, isDeleted: false, deletedAt: null },
         include: {
           rounds: {
             include: {
@@ -95,11 +146,11 @@ class LeagueController {
     try {
       const id = Number(req.params.id);
 
-      const league = await prisma.league.findUnique({
-        where: { id },
+      const league = await prisma.league.findFirst({
+        where: { id, deletedAt: null },
         include: {
           events: {
-            where: { isDeleted: false },
+            where: { isDeleted: false, deletedAt: null },
             include: {
               course: true,
               tee: true,
@@ -154,7 +205,7 @@ class LeagueController {
   static getAdminLeagues = async (req: Request, res: Response) => {
     try {
       const leagues = await prisma.league.findMany({
-        where: { adminId: req.session.userId },
+        where: { adminId: req.session.userId, deletedAt: null },
         select: {
           id: true,
           name: true,
@@ -171,8 +222,8 @@ class LeagueController {
     try {
       const id = Number(req.params.id);
 
-      const league = await prisma.league.findUnique({
-        where: { id },
+      const league = await prisma.league.findFirst({
+        where: { id, deletedAt: null },
         include: {
           players: {
             where: { deletedAt: null },
@@ -186,7 +237,7 @@ class LeagueController {
             },
           },
           events: {
-            where: { isDeleted: false },
+            where: { isDeleted: false, deletedAt: null },
             include: {
               course: true,
               flights: {
@@ -320,11 +371,41 @@ class LeagueController {
         Array.isArray(players) ? players.length : 0,
         Number(leagueData?.numPlayers ?? 0)
       );
+      const invalidPlayerIndex = Array.isArray(players)
+        ? players.findIndex((player: any) => getMissingRequiredPlayerFields(player).length > 0)
+        : -1;
+      if (invalidPlayerIndex >= 0) {
+        const missingFields = getMissingRequiredPlayerFields(players[invalidPlayerIndex]);
+        return res.status(400).json({
+          message: `Player ${invalidPlayerIndex + 1} is missing required fields: ${missingFields.join(', ')}`,
+        });
+      }
+
       const normalizedLeagueData = LeagueController.normalizeLeaguePayload({
         ...leagueData,
         numPlayers: requestedGolfers,
       });
       LeagueController.validateLeagueDates(normalizedLeagueData);
+
+      if (normalizedLeagueData.type === 'season' && normalizedLeagueData.format === 'team') {
+        const playerIds = new Set(players.map((player: any) => Number(player.id)));
+        const assignedPlayerIds = new Set<number>();
+        for (const team of teams) {
+          if (!String(team?.name || '').trim()) {
+            return res.status(400).json({ message: 'Every team must have a name.' });
+          }
+          for (const rawPlayerId of team?.players || []) {
+            const playerId = Number(rawPlayerId);
+            if (!playerIds.has(playerId)) {
+              return res.status(400).json({ message: 'A team contains an invalid player.' });
+            }
+            if (assignedPlayerIds.has(playerId)) {
+              return res.status(400).json({ message: 'A player cannot belong to multiple teams.' });
+            }
+            assignedPlayerIds.add(playerId);
+          }
+        }
+      }
       const allocatedGolfers = await getAllocatedGolfersForAdmin(adminId);
       const billingState = getBillingState(adminUser.metadata, allocatedGolfers);
 
@@ -345,71 +426,75 @@ class LeagueController {
         });
       }
 
-      const newLeague = await prisma.league.create({
-        data: {
-          ...normalizedLeagueData,
-          adminId,
-          viewerAccessCode: await LeagueController.createUniqueViewerAccessCode(),
-        },
-      });
+      const viewerAccessCode = await LeagueController.createUniqueViewerAccessCode();
+      const newLeague = await prisma.$transaction(async (tx) => {
+        const createdLeague = await tx.league.create({
+          data: {
+            ...normalizedLeagueData,
+            adminId,
+            viewerAccessCode,
+          },
+        });
 
-      await prisma.league_onboarding.upsert({
-        where: { leagueId: newLeague.id },
-        create: { leagueId: newLeague.id },
-        update: {},
-      });
+        await tx.league_onboarding.create({ data: { leagueId: createdLeague.id } });
 
-      if (players && players.length > 0) {
-        const playerIdMap = new Map<number, number>();
+        if (players.length > 0) {
+          const playerIdMap = new Map<number, number>();
 
-        for (const player of players) {
-          const createdPlayer = await prisma.player.create({
-            data: {
-              firstName: player.firstName,
-              lastName: player.lastName,
-              email: player.email,
-              phone: player.phone,
-              type: player.type,
-              handicap: Number(player.handicap),
-              startingHandicap: Number(player.handicap),
-              seasonPoints: 0,
-              leagueId: newLeague.id,
-            },
-          });
-
-          if (player?.id !== undefined && player?.id !== null) {
-            playerIdMap.set(Number(player.id), createdPlayer.id);
-          }
-        }
-
-        if (normalizedLeagueData.type === 'season' && normalizedLeagueData.format === 'team') {
-          for (const team of teams) {
-            const createdTeam = await prisma.team.create({
+          for (const player of players) {
+            const createdPlayer = await tx.player.create({
               data: {
-                name: team.name,
-                leagueId: newLeague.id,
+                firstName: String(player.firstName).trim(),
+                lastName: String(player.lastName).trim(),
+                email: String(player.email).trim().toLowerCase(),
+                phone: player.phone ? String(player.phone).trim() : null,
+                type: String(player.type).trim().toLowerCase(),
+                handicap: Number(player.handicap),
+                startingHandicap: Number(player.handicap),
                 seasonPoints: 0,
+                seasonRank: null,
+                leagueId: createdLeague.id,
               },
             });
 
-            const mappedPlayerIds = (team.players || [])
-              .map((id: any) => playerIdMap.get(Number(id)))
-              .filter(Boolean) as number[];
+            if (player?.id !== undefined && player?.id !== null) {
+              playerIdMap.set(Number(player.id), createdPlayer.id);
+            }
+          }
 
-            if (mappedPlayerIds.length > 0) {
-              await prisma.player.updateMany({
-                where: {
-                  leagueId: newLeague.id,
-                  id: { in: mappedPlayerIds },
-                },
+          if (normalizedLeagueData.type === 'season' && normalizedLeagueData.format === 'team') {
+            for (const team of teams) {
+              const teamName = String(team?.name || '').trim();
+              if (!teamName) throw new Error('Team name is required.');
+
+              const createdTeam = await tx.team.create({
                 data: {
-                  teamId: createdTeam.id,
+                  name: teamName,
+                  leagueId: createdLeague.id,
+                  seasonPoints: 0,
+                  seasonRank: null,
                 },
               });
+
+              const mappedPlayerIds = (team.players || [])
+                .map((id: any) => playerIdMap.get(Number(id)))
+                .filter(Boolean) as number[];
+
+              if (mappedPlayerIds.length > 0) {
+                await tx.player.updateMany({
+                  where: {
+                    leagueId: createdLeague.id,
+                    id: { in: mappedPlayerIds },
+                  },
+                  data: { teamId: createdTeam.id },
+                });
+              }
             }
           }
         }
-      }
+
+        return createdLeague;
+      });
 
       await writeAuditLog({
         userId: adminId,
@@ -425,7 +510,11 @@ class LeagueController {
       console.error(error);
       const message = error instanceof Error ? error.message : 'Internal server error';
       const status =
+        message.includes('League type') ||
         message.includes('Season leagues require format') ||
+        message.includes('League access') ||
+        message.includes('is required') ||
+        message.includes('player capacity') ||
         message.includes('League dates are invalid') ||
         message.includes('End date')
           ? 400
@@ -437,9 +526,8 @@ class LeagueController {
   static updateLeague = async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
-      const existingLeague = await prisma.league.findUnique({
-        where: { id },
-        select: { adminId: true, numPlayers: true },
+      const existingLeague = await prisma.league.findFirst({
+        where: { id, deletedAt: null },
       });
 
       if (!existingLeague) {
@@ -447,15 +535,50 @@ class LeagueController {
         return;
       }
 
-      const nextNumPlayers = Math.max(
-        1,
-        Number(req.body?.numPlayers ?? existingLeague.numPlayers ?? 0)
-      );
+      const nextNumPlayers = Number(req.body?.numPlayers ?? existingLeague.numPlayers);
       const league = LeagueController.normalizeLeaguePayload({
+        ...existingLeague,
         ...req.body,
         numPlayers: nextNumPlayers,
       });
       LeagueController.validateLeagueDates(league);
+
+      const [activePlayerCount, activeTeamCount, activeEvents] = await Promise.all([
+        prisma.player.count({ where: { leagueId: id, deletedAt: null } }),
+        prisma.team.count({ where: { leagueId: id, deletedAt: null } }),
+        prisma.event.findMany({
+          where: { leagueId: id, isDeleted: false, deletedAt: null },
+          select: { id: true, date: true },
+        }),
+      ]);
+
+      if (nextNumPlayers < activePlayerCount) {
+        return res.status(409).json({
+          message: `Player capacity cannot be below the ${activePlayerCount} active players in this league.`,
+        });
+      }
+
+      const structureChanged =
+        league.type !== existingLeague.type || league.format !== existingLeague.format;
+      if (structureChanged && activeEvents.length > 0) {
+        return res.status(409).json({
+          message: 'League type and format cannot change after events have been created.',
+        });
+      }
+      if (structureChanged && activeTeamCount > 0 && league.format !== 'team') {
+        return res.status(409).json({
+          message: 'Remove active teams before changing away from a team league.',
+        });
+      }
+
+      const outsideDateRange = activeEvents.some(
+        (event) => event.date < league.startDate || event.date > league.endDate,
+      );
+      if (outsideDateRange) {
+        return res.status(409).json({
+          message: 'League dates must continue to include every existing event.',
+        });
+      }
 
       const adminUser = await prisma.user.findUnique({
         where: { id: existingLeague.adminId },
@@ -486,7 +609,11 @@ class LeagueController {
       console.error(error);
       const message = error instanceof Error ? error.message : 'Internal server error';
       const status =
+        message.includes('League type') ||
         message.includes('Season leagues require format') ||
+        message.includes('League access') ||
+        message.includes('is required') ||
+        message.includes('player capacity') ||
         message.includes('League dates are invalid') ||
         message.includes('End date')
           ? 400
@@ -510,12 +637,13 @@ class LeagueController {
     try {
       const leagueId = Number(req.params.id);
 
-      const leagueMeta = await prisma.league.findUnique({
-        where: { id: leagueId },
+      const leagueMeta = await prisma.league.findFirst({
+        where: { id: leagueId, deletedAt: null },
         select: {
           type: true,
           format: true,
           teams: {
+            where: { deletedAt: null },
             select: {
               id: true,
               name: true,
@@ -529,9 +657,9 @@ class LeagueController {
         return;
       }
 
-      const isTournamentTeamLeague =
-        String(leagueMeta.type || '').toLowerCase() === 'tournament' &&
-        (String(leagueMeta.format || '').toLowerCase() === 'team' ||
+      const isTeamLeague =
+        String(leagueMeta.format || '').toLowerCase() === 'team' ||
+        (String(leagueMeta.type || '').toLowerCase() === 'tournament' &&
           (leagueMeta.teams?.length || 0) > 0);
 
       const getRoundTotalPoints = (round: {
@@ -542,7 +670,8 @@ class LeagueController {
       // All completed rounds for this league
       const rounds = await prisma.round.findMany({
         where: {
-          event: { leagueId, isDeleted: false },
+          deletedAt: null,
+          event: { leagueId, isDeleted: false, deletedAt: null },
           status: 'completed',
         },
         include: {
@@ -621,7 +750,7 @@ class LeagueController {
         eventsPlayed: number;
       }> = [];
 
-      if (isTournamentTeamLeague) {
+      if (isTeamLeague) {
         standingsMode = 'team';
 
         const teamPointsRows = await prisma.team_event_points.findMany({

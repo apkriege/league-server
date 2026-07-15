@@ -54,6 +54,18 @@ model user {
   @@index([deletedAt])
 }
 
+model stripe_checkout_completion {
+  id            Int      @id @default(autoincrement())
+  sessionId     String   @unique @map("session_id")
+  userId        Int      @map("user_id")
+  purpose       String
+  quantity      Int
+  targetGolfers Int      @map("target_golfers")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+}
+
 model club {
   id          Int       @id @default(autoincrement())
   name        String

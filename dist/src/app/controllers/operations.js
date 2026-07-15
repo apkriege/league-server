@@ -249,6 +249,13 @@ class OperationsController {
         const leagueId = Number(req.params.leagueId);
         const invitationId = Number(req.params.invitationId);
         const userId = Number(req.session.userId);
+        const existing = await prisma_1.prisma.league_invitation.findFirst({
+            where: { id: invitationId, leagueId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!existing) {
+            return res.status(404).json({ message: 'Invitation not found' });
+        }
         const invitation = await prisma_1.prisma.league_invitation.update({
             where: { id: invitationId },
             data: { status: 'revoked', deletedAt: new Date() },
@@ -286,11 +293,11 @@ class OperationsController {
     static claimInvitation = async (req, res) => {
         const userId = Number(req.session.userId);
         const token = String(req.params.token || '');
-        const invitation = await prisma_1.prisma.league_invitation.findUnique({
-            where: { token },
+        const invitation = await prisma_1.prisma.league_invitation.findFirst({
+            where: { token, deletedAt: null, status: 'pending', league: { deletedAt: null } },
             include: { league: { select: { id: true, name: true, adminId: true } }, player: true },
         });
-        if (!invitation || invitation.deletedAt || invitation.status !== 'pending') {
+        if (!invitation) {
             return res.status(404).json({ message: 'Invitation not found' });
         }
         if (invitation.expiresAt && invitation.expiresAt < new Date()) {
@@ -300,7 +307,7 @@ class OperationsController {
             });
             return res.status(410).json({ message: 'Invitation expired' });
         }
-        const user = await prisma_1.prisma.user.findUnique({ where: { id: userId } });
+        const user = await prisma_1.prisma.user.findFirst({ where: { id: userId, deletedAt: null } });
         if (!user) {
             return res.status(404).json({ message: 'User not found' });
         }

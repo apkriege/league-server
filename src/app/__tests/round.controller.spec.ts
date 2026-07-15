@@ -1,74 +1,68 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mockPrisma = {
-  event: {
-    findFirst: vi.fn(),
-    update: vi.fn(),
+const processMock = vi.fn();
+const roundConstructorMock = vi.fn();
+const mockPrisma: any = {
+  event: { findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), findUnique: vi.fn() },
+  flight: { findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn() },
+  round: { findFirst: vi.fn(), updateMany: vi.fn(), update: vi.fn() },
+  team_event_points: { findUnique: vi.fn(), upsert: vi.fn() },
+  team: { update: vi.fn() },
+  league_onboarding: { upsert: vi.fn() },
+};
+mockPrisma.$transaction = vi.fn(async (callback: any) => callback(mockPrisma));
+
+vi.mock('../../prisma', () => ({ prisma: mockPrisma }));
+vi.mock('../services/round', () => ({
+  Round: function (...args: any[]) {
+    roundConstructorMock(...args);
+    return { process: processMock };
   },
-  round: {
-    count: vi.fn(),
-    findMany: vi.fn(),
-    deleteMany: vi.fn(),
-  },
-  score: {
-    deleteMany: vi.fn(),
-  },
-  flight: {
-    update: vi.fn(),
-    updateMany: vi.fn(),
-  },
-  team_event_points: {
-    findMany: vi.fn(),
-    deleteMany: vi.fn(),
-  },
-  team: {
-    update: vi.fn(),
-  },
-  player: {
-    update: vi.fn(),
-  },
-  $transaction: vi.fn(async (arg: any) => {
-    if (typeof arg === 'function') return arg(mockPrisma);
-    return [];
-  }),
+}));
+vi.mock('../utils/audit', () => ({ writeAuditLog: vi.fn() }));
+vi.mock('../utils/notifications', () => ({ notifyLeagueAdmins: vi.fn() }));
+
+const eventFixture = {
+  id: 99,
+  leagueId: 10,
+  name: 'Week 1',
+  status: 'upcoming',
+  isComplete: false,
+  isDeleted: false,
+  deletedAt: null,
+  format: 'individual',
+  scoringFormat: 'match',
+  pointsEnabled: true,
+  ptsPerHole: 1,
+  ptsPerMatch: 2,
+  ptsPerTeamWin: 0,
+  holes: 9,
 };
 
-const processMock = vi.fn();
-const editRoundsMock = vi.fn();
-const scoringRunMock = vi.fn();
+const payload = {
+  eventId: 99,
+  flightId: 1,
+  players: [
+    {
+      playerId: 101,
+      opponentId: 102,
+      scores: Object.fromEntries(Array.from({ length: 9 }, (_, index) => [index + 1, 4])),
+      points: 5,
+      matchPoints: 2,
+    },
+    {
+      playerId: 102,
+      opponentId: 101,
+      scores: Object.fromEntries(Array.from({ length: 9 }, (_, index) => [index + 1, 5])),
+      points: 4,
+      matchPoints: 0,
+    },
+  ],
+  teams: [],
+};
 
-vi.mock('../../prisma', () => ({
-  prisma: mockPrisma,
-}));
-
-vi.mock('../services/round', () => {
-  function Round(this: any) {
-    this.process = processMock;
-    this.editRounds = editRoundsMock;
-  }
-  return { Round };
-});
-
-vi.mock('../services/scoring', () => {
-  function Scoring(this: any) {
-    this.run = scoringRunMock;
-  }
-  return { Scoring };
-});
-
-const buildReq = (method: 'post' | 'put', existingBody?: any) =>
-  ({
-    method,
-    params: { leagueId: '10', eventId: '99' },
-    query: {},
-    body: existingBody || [
-      {
-        flightId: 1,
-        playerId: 101,
-        scores: { 1: 4, 2: 5, 3: 3 },
-      },
-    ],
-  }) as any;
+const buildReq = (body: any = payload) =>
+  ({ params: { leagueId: '10', eventId: '99' }, body, session: { userId: 7 } }) as any;
 
 const buildRes = () => {
   const res: any = {};
@@ -77,102 +71,83 @@ const buildRes = () => {
   return res;
 };
 
-const eventFixture = {
-  id: 99,
-  leagueId: 10,
-  holes: 9,
-  flights: [
-    {
-      id: 1,
-      players: [{ playerId: 101, player: { id: 101 } }],
-      teams: [],
-    },
-  ],
-};
-
-describe('ScoreController create/update score endpoints', async () => {
+describe('ScoreController transactional score validation', async () => {
   const ScoreController = (await import('../controllers/round')).default;
 
   beforeEach(() => {
     vi.clearAllMocks();
-
-    mockPrisma.event.findFirst.mockResolvedValue(eventFixture as any);
-    mockPrisma.event.update.mockResolvedValue({});
-    mockPrisma.round.findMany.mockResolvedValue([]);
-    mockPrisma.flight.update.mockResolvedValue({});
-    mockPrisma.flight.updateMany.mockResolvedValue({ count: 0 });
-    processMock.mockResolvedValue(undefined);
-    editRoundsMock.mockResolvedValue(undefined);
-    scoringRunMock.mockResolvedValue(undefined);
-  });
-
-  it('POST rejects with 409 when submitted player rounds already exist', async () => {
-    mockPrisma.round.count.mockResolvedValueOnce(1);
-
-    const req = buildReq('post');
-    const res = buildRes();
-
-    await ScoreController.createLeagueEventScores(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(409);
-    expect(res.json).toHaveBeenCalledWith({
-      message: 'Rounds already exist for submitted players. Use update endpoint to edit scores.',
+    mockPrisma.event.findFirst.mockResolvedValue(eventFixture);
+    mockPrisma.event.findMany.mockResolvedValue([
+      { id: 99, status: 'upcoming', isComplete: false, _count: { rounds: 0 } },
+    ]);
+    mockPrisma.flight.findFirst.mockResolvedValue({
+      id: 1,
+      eventId: 99,
+      status: 'not_started',
+      players: [
+        { playerId: 101, opponentId: 102 },
+        { playerId: 102, opponentId: 101 },
+      ],
+      teams: [],
     });
-    expect(processMock).not.toHaveBeenCalled();
-    expect(editRoundsMock).not.toHaveBeenCalled();
-    expect(scoringRunMock).not.toHaveBeenCalled();
+    mockPrisma.flight.findMany.mockResolvedValue([{ status: 'in_progress' }]);
+    mockPrisma.flight.update.mockResolvedValue({});
+    mockPrisma.league_onboarding.upsert.mockResolvedValue({});
+    processMock.mockResolvedValue(undefined);
   });
 
-  it('PUT rejects with 400 when submitted player rounds do not exist', async () => {
-    mockPrisma.round.count.mockResolvedValueOnce(0);
-
-    const req = buildReq('put');
+  it('rejects a body event id that differs from the guarded route', async () => {
     const res = buildRes();
-
-    await ScoreController.updateLeagueEventScores(req, res);
+    await ScoreController.createLeagueEventScores(buildReq({ ...payload, eventId: 100 }), res);
 
     expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith({
-      message: 'No existing rounds found for submitted players. Use create endpoint first.',
-    });
-    expect(processMock).not.toHaveBeenCalled();
-    expect(editRoundsMock).not.toHaveBeenCalled();
-    expect(scoringRunMock).not.toHaveBeenCalled();
+    expect(mockPrisma.event.findFirst).not.toHaveBeenCalled();
   });
 
-  it('POST creates new rounds and scores event when no existing submitted rounds', async () => {
-    mockPrisma.round.count.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
-
-    const req = buildReq('post');
+  it('rejects a flight from another event before processing rounds', async () => {
+    mockPrisma.flight.findFirst.mockResolvedValue(null);
     const res = buildRes();
+    await ScoreController.createLeagueEventScores(buildReq(), res);
 
-    await ScoreController.createLeagueEventScores(req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(processMock).not.toHaveBeenCalled();
+    expect(mockPrisma.flight.update).not.toHaveBeenCalled();
+  });
 
-    expect(processMock).toHaveBeenCalledTimes(1);
-    expect(editRoundsMock).not.toHaveBeenCalled();
-    expect(scoringRunMock).toHaveBeenCalledTimes(1);
+  it('requires exactly the players assigned to the flight', async () => {
+    const res = buildRes();
+    await ScoreController.createLeagueEventScores(
+      buildReq({ ...payload, players: payload.players.slice(0, 1) }),
+      res,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(processMock).not.toHaveBeenCalled();
+  });
+
+  it('processes every assigned player inside the transaction', async () => {
+    const res = buildRes();
+    await ScoreController.createLeagueEventScores(buildReq(), res);
+
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(processMock).toHaveBeenCalledTimes(2);
+    expect(roundConstructorMock).toHaveBeenCalledWith(99, expect.any(Object), undefined, mockPrisma);
+    expect(mockPrisma.flight.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: { status: 'completed' },
+    });
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(res.json).toHaveBeenCalledWith({
-      message: 'Scores saved and event completed',
-      isComplete: true,
-    });
   });
 
-  it('PUT updates existing rounds and scores event', async () => {
-    mockPrisma.round.count.mockResolvedValueOnce(1).mockResolvedValueOnce(1);
-
-    const req = buildReq('put');
+  it('rolls back the update path when an assigned round is missing', async () => {
+    mockPrisma.event.findMany.mockResolvedValue([
+      { id: 99, status: 'completed', isComplete: true, _count: { rounds: 2 } },
+    ]);
+    mockPrisma.round.findFirst.mockResolvedValue(null);
     const res = buildRes();
+    await ScoreController.updateLeagueEventScores(buildReq(), res);
 
-    await ScoreController.updateLeagueEventScores(req, res);
-
-    expect(processMock).not.toHaveBeenCalled();
-    expect(editRoundsMock).toHaveBeenCalledTimes(1);
-    expect(scoringRunMock).toHaveBeenCalledTimes(1);
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({
-      message: 'Scores saved and event completed',
-      isComplete: true,
-    });
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(mockPrisma.flight.update).not.toHaveBeenCalled();
   });
 });

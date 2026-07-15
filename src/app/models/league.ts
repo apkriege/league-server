@@ -6,11 +6,11 @@ export default class LeagueService {
   }
 
   static async findAll() {
-    return await prisma.league.findMany();
+    return await prisma.league.findMany({ where: { deletedAt: null } });
   }
 
   static async findById(id: number) {
-    return await prisma.league.findUnique({ where: { id } });
+    return await prisma.league.findFirst({ where: { id, deletedAt: null } });
   }
 
   static async create(league: any) {

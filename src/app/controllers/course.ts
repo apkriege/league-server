@@ -77,10 +77,10 @@ class CourseController {
       const id = Number(req.params.id);
 
       const course = await CourseService.query().findUnique({
-        where: { id },
+        where: { id, deletedAt: null },
         include: {
           club: true,
-          tees: true,
+          tees: { where: { deletedAt: null } },
         },
       });
 
@@ -100,9 +100,10 @@ class CourseController {
     try {
       const query = req.query;
       const courses = await CourseService.query().findMany({
+        where: { deletedAt: null },
         include: {
           club: true,
-          tees: query.withTees === 'true',
+          tees: query.withTees === 'true' ? { where: { deletedAt: null } } : false,
         },
       });
 
@@ -160,7 +161,7 @@ class CourseController {
 
         // 2. Get existing tee ids for this course
         const existingTees = await tx.tee.findMany({
-          where: { courseId: id },
+          where: { courseId: id, deletedAt: null },
           select: { id: true },
         });
         const existingTeeIds: number[] = existingTees.map((t: { id: number }) => t.id);
@@ -169,6 +170,10 @@ class CourseController {
         const teesToUpdate = incomingTees.filter((t) => t.id != null);
         const teesToCreate = incomingTees.filter((t) => t.id == null);
         const incomingIds = new Set(teesToUpdate.map((t) => t.id as number));
+
+        if (teesToUpdate.some((tee) => !existingTeeIds.includes(Number(tee.id)))) {
+          throw new Error('One or more tees do not belong to this course');
+        }
 
         // 4. Existing tees absent from the incoming payload — candidates for deletion
         const deleteCandidates = existingTeeIds.filter((eid) => !incomingIds.has(eid));
@@ -214,8 +219,8 @@ class CourseController {
       });
 
       const updatedCourse = await prisma.course.findUnique({
-        where: { id },
-        include: { club: true, tees: true },
+        where: { id, deletedAt: null },
+        include: { club: true, tees: { where: { deletedAt: null } } },
       });
 
       if (!updatedCourse) {
@@ -226,6 +231,9 @@ class CourseController {
       res.status(200).send(updatedCourse);
     } catch (error) {
       console.error(error);
+      if (error instanceof Error && error.message.includes('do not belong')) {
+        return res.status(400).json({ message: error.message });
+      }
       res.status(500).json({ message: 'Internal server error' });
     }
   };

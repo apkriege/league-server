@@ -48,7 +48,6 @@ router.get('/health', HealthController.getHealth);
 router.post('/auth/login', authRateLimiter, Auth.login);
 router.post('/auth/league-code', authRateLimiter, Auth.loginWithLeagueCode);
 router.post('/auth/register', authRateLimiter, Auth.register);
-router.get('/auth/debug-session', Auth.debugSession);
 router.post('/auth/logout', Auth.logout);
 router.get('/auth/me', user, Auth.getProfile);
 
@@ -94,19 +93,19 @@ router.post('/leagues/:leagueId/notifications', leagueAdminGuard, Operations.cre
 // ADMIN ROUTES
 // =====================
 const adminRoutes = express.Router();
-router.get('/admin/leagues', admin, Admin.getLeagues);
-router.get('/admin/leagues/:id', admin, Admin.getLeague);
-router.use('/admin', admin, adminRoutes); // Uncomment to enable admin routes
+router.get('/admin/leagues', superAdmin, Admin.getLeagues);
+router.get('/admin/leagues/:id', superAdmin, Admin.getLeague);
+router.use('/admin', superAdmin, adminRoutes);
 
 // =====================
 // PUBLIC ROUTES
 // =====================
 
 // Users
-router.get('/users', admin, User.getUsers);
+router.get('/users', superAdmin, User.getUsers);
 router.get('/users/:id', userSelfOrAdminGuard, User.getUserById);
 router.get('/users/:id/leagues', userSelfOrAdminGuard, User.getUserLeagues);
-router.post('/users', admin, User.createUser);
+router.post('/users', superAdmin, User.createUser);
 router.put('/users/:id', userSelfOrAdminGuard, User.updateUser);
 router.delete('/users/:id', userSelfOrAdminGuard, User.deleteUser);
 
@@ -154,7 +153,7 @@ router.put('/leagues/:leagueId/events/:eventId/scores', eventAdminGuard, Score.u
 router.put('/flights/:flightId/players', flightAdminGuard, Flight.updateFlightPlayers);
 
 // player
-router.get('/players', admin, Player.getPlayers);
+router.get('/players', superAdmin, Player.getPlayers);
 router.get('/players/:id', playerMemberGuard, Player.getPlayer);
 router.put('/players/:id', playerAdminGuard, Player.updatePlayer);
 router.delete('/players/:id', playerAdminGuard, Player.deletePlayer);

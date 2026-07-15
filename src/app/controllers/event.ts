@@ -50,7 +50,7 @@ class EventController {
       const leagueId = Number(req.params.leagueId);
 
       const events = await prisma.event.findMany({
-        where: { leagueId, isDeleted: false },
+        where: { leagueId, isDeleted: false, deletedAt: null },
         include: {
           course: true,
           tee: {
@@ -79,7 +79,7 @@ class EventController {
             },
           },
         },
-        orderBy: { date: 'asc' },
+        orderBy: [{ date: 'asc' }, { id: 'asc' }],
       });
       const scoreOrder = await getLeagueScoreOrder(leagueId);
 
@@ -103,7 +103,7 @@ class EventController {
       const eventId = Number(req.params.eventId);
 
       const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false },
+        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
         include: {
           course: true,
           tee: true,
@@ -177,7 +177,11 @@ class EventController {
       const eventId = Number(req.params.eventId);
 
       const scores = await prisma.round.findMany({
-        where: { eventId },
+        where: {
+          eventId,
+          deletedAt: null,
+          event: { leagueId, isDeleted: false, deletedAt: null },
+        },
         include: {
           player: {
             include: {
@@ -189,12 +193,12 @@ class EventController {
       });
 
       const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false },
+        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
         include: {
           course: true,
           tee: true,
           flights: {
-            where: { eventId },
+            where: { eventId, deletedAt: null },
             include: {
               teams: {
                 include: {
@@ -251,10 +255,11 @@ class EventController {
       const leagueId = Number(req.params.leagueId);
       const eventData = req.body;
       const league = await LeagueService.query().findFirst({
-        where: { id: leagueId },
+        where: { id: leagueId, deletedAt: null },
         include: {
-          players: true,
+          players: { where: { deletedAt: null } },
           teams: {
+            where: { deletedAt: null },
             include: {
               players: {
                 select: {
@@ -274,6 +279,7 @@ class EventController {
       validateEventDateWithinLeague(eventData?.date, league);
 
       const newEvent = await prisma.$transaction(async (tx: any) => {
+        await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
         const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
         const pointsEnabled = eventData?.pointsEnabled !== false;
@@ -372,12 +378,12 @@ class EventController {
       const leagueId = Number(req.params.leagueId);
       const eventsData = req.body.events;
 
-      const createdEvents = [];
       const league = await LeagueService.query().findFirst({
-        where: { id: leagueId },
+        where: { id: leagueId, deletedAt: null },
         include: {
-          players: true,
+          players: { where: { deletedAt: null } },
           teams: {
+            where: { deletedAt: null },
             include: {
               players: {
                 select: {
@@ -398,27 +404,29 @@ class EventController {
         validateEventDateWithinLeague(eventData?.date, league);
       }
 
-      for (const eventData of eventsData) {
-        const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
-        const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
-        const pointsEnabled = eventData?.pointsEnabled !== false;
-        const normalizedStrokePoints = normalizeStrokePoints(
-          eventData?.strokePoints,
-          forcedFormat,
-          normalizedScoringFormat,
-          pointsEnabled,
-        );
-        validateEventMode(forcedFormat, normalizedScoringFormat);
-        const { flights, ...e } = {
-          ...eventData,
-          format: forcedFormat,
-          scoringFormat: normalizedScoringFormat,
-          pointsEnabled,
-          strokePoints: normalizedStrokePoints,
-        };
+      const createdEvents = await prisma.$transaction(async (tx: any) => {
+        const createdEventsInTransaction = [];
+        for (const eventData of eventsData) {
+          await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+          const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
+          const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
+          const pointsEnabled = eventData?.pointsEnabled !== false;
+          const normalizedStrokePoints = normalizeStrokePoints(
+            eventData?.strokePoints,
+            forcedFormat,
+            normalizedScoringFormat,
+            pointsEnabled,
+          );
+          validateEventMode(forcedFormat, normalizedScoringFormat);
+          const { flights: _flights, ...e } = {
+            ...eventData,
+            format: forcedFormat,
+            scoringFormat: normalizedScoringFormat,
+            pointsEnabled,
+            strokePoints: normalizedStrokePoints,
+          };
 
-        const newEvent = await prisma.$transaction(async (tx: any) => {
-          const created = await tx.event.create({
+          const createdEvent = await tx.event.create({
             data: {
               leagueId: leagueId,
               status: 'upcoming',
@@ -449,16 +457,15 @@ class EventController {
           const flightGen = new FlightGen(
             league,
             { ...eventData, format: forcedFormat, scoringFormat: normalizedScoringFormat },
-            created.id,
+            createdEvent.id,
             tx,
           );
           await flightGen.saveFlights();
 
-          return created;
-        });
-
-        createdEvents.push(newEvent);
-      }
+          createdEventsInTransaction.push(createdEvent);
+        }
+        return createdEventsInTransaction;
+      });
 
       await prisma.league_onboarding.upsert({
         where: { leagueId },
@@ -491,9 +498,23 @@ class EventController {
       const eventData = req.body;
       delete eventData.id;
 
+      const eventLeague = await prisma.league.findFirst({
+        where: { id: leagueId, deletedAt: null },
+        select: { startDate: true, endDate: true },
+      });
+      if (!eventLeague) {
+        return res.status(404).json({ message: 'League not found' });
+      }
+      validateEventDateWithinLeague(eventData?.date, eventLeague);
+
       const existingEvent = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false },
-        select: { id: true, status: true, isComplete: true },
+        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+        select: {
+          id: true,
+          status: true,
+          isComplete: true,
+          _count: { select: { rounds: true } },
+        },
       });
 
       if (!existingEvent) {
@@ -514,9 +535,15 @@ class EventController {
         res.status(409).json({ message: 'Canceled events cannot be edited' });
         return;
       }
+      if (existingEvent._count.rounds > 0) {
+        res.status(409).json({ message: 'Events with scores cannot have their setup edited' });
+        return;
+      }
 
       // have to delete and recreate flights to update players/teams in flights, which is the main reason for using a transaction here
       await prisma.$transaction(async (tx: any) => {
+        await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+
         const flightIds = await tx.flight.findMany({
           where: { eventId },
           select: { id: true },
@@ -530,10 +557,11 @@ class EventController {
         await tx.flight.deleteMany({ where: { eventId } });
 
         const league = await LeagueService.query().findFirst({
-          where: { id: leagueId },
+          where: { id: leagueId, deletedAt: null },
           include: {
-            players: true,
+            players: { where: { deletedAt: null } },
             teams: {
+              where: { deletedAt: null },
               include: {
                 players: {
                   select: {
@@ -619,7 +647,7 @@ class EventController {
       const eventId = Number(req.params.eventId);
 
       const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false },
+        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
         select: {
           id: true,
           name: true,
@@ -675,12 +703,23 @@ class EventController {
       const eventId = Number(req.params.eventId);
 
       const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false },
-        select: { id: true, name: true, leagueId: true },
+        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+        select: {
+          id: true,
+          name: true,
+          leagueId: true,
+          status: true,
+          isComplete: true,
+          _count: { select: { rounds: true } },
+        },
       });
 
       if (!event) {
         return res.status(404).json({ message: 'Event not found' });
+      }
+
+      if (event.isComplete || event.status === 'completed' || event._count.rounds > 0) {
+        return res.status(409).json({ message: 'Events with scores cannot be deleted.' });
       }
 
       const deletedEvent = await prisma.event.update({
@@ -760,6 +799,28 @@ const validateEventDateWithinLeague = (eventDate: unknown, league: any) => {
     throw new Error(
       `Event date must be within the league date range (${leagueStartKey} to ${leagueEndKey}).`,
     );
+  }
+};
+
+const validateCourseAndTee = async (db: any, rawCourseId: unknown, rawTeeId: unknown) => {
+  const courseId = Number(rawCourseId);
+  const teeId = Number(rawTeeId);
+  if (!Number.isInteger(courseId) || courseId <= 0 || !Number.isInteger(teeId) || teeId <= 0) {
+    throw new Error('A valid course and tee are required.');
+  }
+
+  const tee = await db.tee.findFirst({
+    where: {
+      id: teeId,
+      courseId,
+      deletedAt: null,
+      course: { deletedAt: null },
+    },
+    select: { id: true },
+  });
+
+  if (!tee) {
+    throw new Error('Selected tee does not belong to the selected course.');
   }
 };
 

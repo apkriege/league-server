@@ -24,8 +24,8 @@ const toStrokePointsArray = (raw: unknown): number[] => {
   return [];
 };
 
-const finalizeIndividualStrokeEventPoints = async (eventId: number) => {
-  const event = await prisma.event.findUnique({
+const finalizeIndividualStrokeEventPoints = async (eventId: number, db: any = prisma) => {
+  const event = await db.event.findUnique({
     where: { id: eventId },
     select: {
       pointsEnabled: true,
@@ -51,7 +51,7 @@ const finalizeIndividualStrokeEventPoints = async (eventId: number) => {
   if (!event || event.rounds.length === 0) return;
 
   if (event.pointsEnabled === false) {
-    await prisma.round.updateMany({
+    await db.round.updateMany({
       where: { eventId, status: 'completed' },
       data: { pointsEarned: 0, matchPoints: 0 },
     });
@@ -72,16 +72,16 @@ const finalizeIndividualStrokeEventPoints = async (eventId: number) => {
       return 0;
     };
 
-    await prisma.$transaction(
-      event.rounds.map((round) => {
-        const points = (round.scores || []).reduce((sum, score) => {
+    await Promise.all(
+      event.rounds.map((round: any) => {
+        const points = (round.scores || []).reduce((sum: number, score: any) => {
           const net = Number(score.net);
           const par = Number(score.par);
           if (!Number.isFinite(net) || !Number.isFinite(par)) return sum;
           return sum + stablefordPoints(net, par);
         }, 0);
 
-        return prisma.round.update({
+        return db.round.update({
           where: { id: round.id },
           data: { pointsEarned: points },
         });
@@ -124,9 +124,9 @@ const finalizeIndividualStrokeEventPoints = async (eventId: number) => {
     cursor = end + 1;
   }
 
-  await prisma.$transaction(
+  await Promise.all(
     [...roundPoints.entries()].map(([roundId, points]) =>
-      prisma.round.update({
+      db.round.update({
         where: { id: roundId },
         data: { pointsEarned: points },
       }),
@@ -157,13 +157,13 @@ const syncTeamEventPoints = async (
   leagueId: number,
   eventId: number,
   teamPointsRows: TeamPointsRow[],
+  db: any = prisma,
 ) => {
   const normalized = normalizeTeamPoints(teamPointsRows);
   if (normalized.length === 0) return;
 
-  await prisma.$transaction(async (tx) => {
-    for (const row of normalized) {
-      const existing = await tx.team_event_points.findUnique({
+  for (const row of normalized) {
+      const existing = await db.team_event_points.findUnique({
         where: {
           teamId_eventId: {
             teamId: row.teamId,
@@ -175,7 +175,7 @@ const syncTeamEventPoints = async (
       const previousPoints = Number(existing?.points || 0);
       const delta = row.points - previousPoints;
 
-      await tx.team_event_points.upsert({
+      await db.team_event_points.upsert({
         where: {
           teamId_eventId: {
             teamId: row.teamId,
@@ -194,7 +194,7 @@ const syncTeamEventPoints = async (
       });
 
       if (delta !== 0) {
-        await tx.team.update({
+        await db.team.update({
           where: { id: row.teamId },
           data: {
             seasonPoints: {
@@ -204,11 +204,14 @@ const syncTeamEventPoints = async (
         });
       }
     }
-  });
 };
 
-const calculateTeamStrokeBestBallPoints = async (eventId: number, flightId: number) => {
-  const event = await prisma.event.findUnique({
+const calculateTeamStrokeBestBallPoints = async (
+  eventId: number,
+  flightId: number,
+  db: any = prisma,
+) => {
+  const event = await db.event.findUnique({
     where: { id: eventId },
     include: {
       flights: {
@@ -225,15 +228,15 @@ const calculateTeamStrokeBestBallPoints = async (eventId: number, flightId: numb
   if (event.pointsEnabled === false) return [];
 
   const flight = event.flights[0];
-  const teamIds = [
-    ...new Set((flight.teams || []).map((t: any) => Number(t.teamId)).filter(Boolean)),
+  const teamIds: number[] = [
+    ...new Set<number>((flight.teams || []).map((t: any) => Number(t.teamId)).filter(Boolean)),
   ];
 
   if (teamIds.length < 2) return [];
 
   const playersByTeamId = new Map<number, number[]>();
   for (const teamId of teamIds) {
-    const playerIds = (flight.players || [])
+    const playerIds: number[] = (flight.players || [])
       .filter((p: any) => Number(p.teamId) === teamId)
       .map((p: any) => Number(p.playerId))
       .filter(Boolean);
@@ -244,7 +247,7 @@ const calculateTeamStrokeBestBallPoints = async (eventId: number, flightId: numb
 
   const allPlayerIds = [...playersByTeamId.values()].flat();
 
-  const roundRows = await prisma.round.findMany({
+  const roundRows = await db.round.findMany({
     where: {
       eventId,
       playerId: { in: allPlayerIds },
@@ -271,7 +274,7 @@ const calculateTeamStrokeBestBallPoints = async (eventId: number, flightId: numb
   }
 
   const holeSet = new Set<number>();
-  roundRows.forEach((row) => {
+  roundRows.forEach((row: any) => {
     (row.scores || []).forEach((score: any) => {
       if (Number.isFinite(Number(score.hole))) {
         holeSet.add(Number(score.hole));
@@ -359,6 +362,108 @@ const calculateTeamStrokeBestBallPoints = async (eventId: number, flightId: numb
   }));
 };
 
+const validateScoreSubmission = async (
+  db: any,
+  event: any,
+  flightId: number,
+  rawPlayers: unknown,
+  rawTeams: unknown,
+  isEdit: boolean,
+) => {
+  if (!Number.isInteger(flightId) || flightId <= 0) {
+    throw new Error('Flight id is invalid.');
+  }
+  if (!Array.isArray(rawPlayers) || rawPlayers.length === 0) {
+    throw new Error('Players and scores are required.');
+  }
+
+  const flight = await db.flight.findFirst({
+    where: { id: flightId, eventId: event.id, deletedAt: null },
+    include: {
+      players: { where: { deletedAt: null } },
+      teams: { where: { deletedAt: null } },
+    },
+  });
+  if (!flight) {
+    throw new Error('Flight does not belong to this event.');
+  }
+  if (!isEdit && String(flight.status || '').toLowerCase() === 'completed') {
+    throw new Error('Flight scores have already been entered.');
+  }
+
+  const submittedPlayerIds = rawPlayers.map((player: any) => Number(player?.playerId));
+  if (
+    submittedPlayerIds.some((id) => !Number.isInteger(id) || id <= 0) ||
+    new Set(submittedPlayerIds).size !== submittedPlayerIds.length
+  ) {
+    throw new Error('Player ids must be valid and unique.');
+  }
+
+  const assignmentByPlayerId = new Map(
+    flight.players.map((assignment: any) => [Number(assignment.playerId), assignment]),
+  );
+  if (
+    submittedPlayerIds.length !== assignmentByPlayerId.size ||
+    submittedPlayerIds.some((id) => !assignmentByPlayerId.has(id))
+  ) {
+    throw new Error('Scores must include exactly the players assigned to this flight.');
+  }
+
+  const eventFormat = normalizeEventFormat(event.format, 'individual');
+  const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
+  const maxHolePoints = Math.max(0, Number(event.ptsPerHole || 0)) * Number(event.holes || 0);
+  const maxMatchPoints = Math.max(0, Number(event.ptsPerMatch || 0));
+  const players = rawPlayers.map((player: any) => {
+    const points = Number(player?.points || 0);
+    const matchPoints = Number(player?.matchPoints || 0);
+    if (scoringFormat === 'match' && (
+      !Number.isFinite(points) ||
+      points < 0 ||
+      points > maxHolePoints ||
+      !Number.isFinite(matchPoints) ||
+      matchPoints < 0 ||
+      matchPoints > maxMatchPoints
+    )) {
+      throw new Error('Submitted player points are outside the event scoring rules.');
+    }
+
+    const assignment: any = assignmentByPlayerId.get(Number(player.playerId));
+    const assignedOpponentId = assignment?.opponentId == null ? null : Number(assignment.opponentId);
+    const submittedOpponentId = player?.opponentId == null ? null : Number(player.opponentId);
+    if (submittedOpponentId !== assignedOpponentId) {
+      throw new Error('Player opponents must match the flight assignments.');
+    }
+
+    return {
+      ...player,
+      playerId: Number(player.playerId),
+      opponentId: assignedOpponentId,
+      points,
+      matchPoints,
+    };
+  });
+
+  const teams = normalizeTeamPoints(Array.isArray(rawTeams) ? rawTeams : []);
+  const assignedTeamIds = new Set(
+    flight.teams.map((assignment: any) => Number(assignment.teamId)).filter(Boolean),
+  );
+  if (teams.some((team) => !assignedTeamIds.has(team.teamId))) {
+    throw new Error('Submitted teams must belong to this flight.');
+  }
+
+  if (eventFormat === 'team' && scoringFormat === 'match') {
+    if (teams.length !== assignedTeamIds.size) {
+      throw new Error('Team points must include every team assigned to this flight.');
+    }
+    const maxTeamPoints = Math.max(0, Number(event.ptsPerTeamWin || 0));
+    if (teams.some((team) => team.points < 0 || team.points > maxTeamPoints)) {
+      throw new Error('Submitted team points are outside the event scoring rules.');
+    }
+  }
+
+  return { players, teams };
+};
+
 // Score seed - overall scores for each player in an event
 export default class ScoreController {
   static getLeagueEventScores = async (req: Request, res: Response) => {
@@ -368,11 +473,17 @@ export default class ScoreController {
       const numericEventId = Number(eventId);
 
       const event = await prisma.event.findFirst({
-        where: { id: numericEventId, leagueId: numericLeagueId, isDeleted: false },
+        where: {
+          id: numericEventId,
+          leagueId: numericLeagueId,
+          isDeleted: false,
+          deletedAt: null,
+        },
         include: {
           course: true,
           tee: true,
           flights: {
+            where: { deletedAt: null },
             include: {
               players: {
                 include: {
@@ -391,6 +502,7 @@ export default class ScoreController {
             },
           },
           rounds: {
+            where: { deletedAt: null },
             include: {
               player: {
                 include: {
@@ -417,24 +529,27 @@ export default class ScoreController {
   static createLeagueEventScores = async (req: Request, res: Response) => {
     try {
       const leagueId = Number(req.params.leagueId);
-      const { eventId, flightId, players, teams } = req.body;
+      const eventId = Number(req.params.eventId);
+      const flightId = Number(req.body?.flightId);
+      if (req.body?.eventId != null && Number(req.body.eventId) !== eventId) {
+        return res.status(400).json({ message: 'Request event id does not match the route.' });
+      }
 
-      const numericEventId = Number(eventId);
-      const numericFlightId = Number(flightId);
-
-      const event = await prisma.event.findUnique({ where: { id: numericEventId } });
+      const event = await prisma.event.findFirst({
+        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+      });
       if (!event) {
         return res.status(404).json({ message: 'Event not found' });
-      }
-      if (Number(event.leagueId) !== leagueId) {
-        return res.status(400).json({ message: 'Event does not belong to this league' });
       }
       if (String(event.status || '').toLowerCase() === 'canceled') {
         return res.status(409).json({ message: 'Canceled events cannot be scored.' });
       }
+      if (event.isComplete || String(event.status || '').toLowerCase() === 'completed') {
+        return res.status(409).json({ message: 'Completed events cannot receive new scores.' });
+      }
 
       const scoreOrder = await getLeagueScoreOrder(leagueId);
-      if (scoreOrder.nextScorableEventId !== numericEventId) {
+      if (scoreOrder.nextScorableEventId !== eventId) {
         return res.status(409).json({
           message: 'Scores must be entered in event order. Complete earlier events first.',
         });
@@ -444,56 +559,64 @@ export default class ScoreController {
       const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
       const pointsEnabled = event.pointsEnabled !== false;
 
-      for (const player of players) {
-        const normalizedPlayer =
-          !pointsEnabled || (eventFormat === 'individual' && scoringFormat === 'stroke')
-            ? { ...player, points: 0, matchPoints: 0 }
-            : player;
-        const r = new Round(numericEventId, normalizedPlayer);
-        await r.process();
-      }
+      await prisma.$transaction(async (tx) => {
+        const submission = await validateScoreSubmission(
+          tx,
+          event,
+          flightId,
+          req.body?.players,
+          req.body?.teams,
+          false,
+        );
 
-      const teamRows =
-        !pointsEnabled
-          ? []
-          : eventFormat === 'team' && scoringFormat === 'stroke'
-          ? await calculateTeamStrokeBestBallPoints(numericEventId, numericFlightId)
-          : normalizeTeamPoints((teams ?? []).filter((t: any) => t.teamId != null));
-
-      await syncTeamEventPoints(leagueId, numericEventId, teamRows);
-
-      await prisma.flight.update({
-        where: { id: numericFlightId },
-        data: { status: 'completed' },
-      });
-
-      // Auto-complete the event once all flights are complete
-      const allFlights = await prisma.flight.findMany({
-        where: { eventId: numericEventId },
-        select: { status: true },
-      });
-      if (allFlights.length > 0 && allFlights.every((f) => f.status === 'completed')) {
-        if (eventFormat === 'individual' && scoringFormat === 'stroke') {
-          await finalizeIndividualStrokeEventPoints(numericEventId);
+        for (const player of submission.players) {
+          const normalizedPlayer =
+            !pointsEnabled || scoringFormat === 'stroke'
+              ? { ...player, points: 0, matchPoints: 0 }
+              : player;
+          const round = new Round(eventId, normalizedPlayer, undefined, tx);
+          await round.process();
         }
 
-        await prisma.event.update({
-          where: { id: numericEventId },
-          data: { status: 'completed', isComplete: true },
-        });
-      }
+        const teamRows =
+          !pointsEnabled
+            ? []
+            : eventFormat === 'team' && scoringFormat === 'stroke'
+              ? await calculateTeamStrokeBestBallPoints(eventId, flightId, tx)
+              : submission.teams;
 
-      await prisma.league_onboarding.upsert({
-        where: { leagueId },
-        create: { leagueId, firstScoresEnteredAt: new Date() },
-        update: { firstScoresEnteredAt: new Date() },
+        await syncTeamEventPoints(leagueId, eventId, teamRows, tx);
+        await tx.flight.update({
+          where: { id: flightId },
+          data: { status: 'completed' },
+        });
+
+        const allFlights = await tx.flight.findMany({
+          where: { eventId, deletedAt: null },
+          select: { status: true },
+        });
+        if (allFlights.length > 0 && allFlights.every((flight) => flight.status === 'completed')) {
+          if (eventFormat === 'individual' && scoringFormat === 'stroke') {
+            await finalizeIndividualStrokeEventPoints(eventId, tx);
+          }
+          await tx.event.update({
+            where: { id: eventId },
+            data: { status: 'completed', isComplete: true },
+          });
+        }
+
+        await tx.league_onboarding.upsert({
+          where: { leagueId },
+          create: { leagueId, firstScoresEnteredAt: new Date() },
+          update: { firstScoresEnteredAt: new Date() },
+        });
       });
 
       await writeAuditLog({
         userId: req.session.userId ?? null,
         leagueId,
         entity: 'event',
-        entityId: numericEventId,
+        entityId: eventId,
         action: 'create_scores',
         summary: `Entered scores for event ${event.name}.`,
       });
@@ -502,7 +625,7 @@ export default class ScoreController {
         type: 'scores_entered',
         title: 'Scores entered',
         body: `Scores were entered for ${event.name}.`,
-        metadata: { eventId: numericEventId, flightId: numericFlightId },
+        metadata: { eventId, flightId },
       });
 
       return res.status(201).json({ message: 'Scores created successfully' });
@@ -517,13 +640,17 @@ export default class ScoreController {
       const leagueId = Number(req.params.leagueId);
       const eventId = Number(req.params.eventId);
       const scoresData = req.body;
+      const flightId = Number(scoresData?.flightId);
 
-      const event = await prisma.event.findUnique({ where: { id: eventId } });
+      if (scoresData?.eventId != null && Number(scoresData.eventId) !== eventId) {
+        return res.status(400).json({ message: 'Request event id does not match the route.' });
+      }
+
+      const event = await prisma.event.findFirst({
+        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+      });
       if (!event) {
         return res.status(404).json({ message: 'Event not found' });
-      }
-      if (Number(event.leagueId) !== leagueId) {
-        return res.status(400).json({ message: 'Event does not belong to this league' });
       }
       if (String(event.status || '').toLowerCase() === 'canceled') {
         return res.status(409).json({ message: 'Canceled events cannot be updated.' });
@@ -540,58 +667,63 @@ export default class ScoreController {
       const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
       const pointsEnabled = event.pointsEnabled !== false;
 
-      for (const player of scoresData.players) {
-        const existingRound = await prisma.round.findFirst({
-          where: {
-            eventId,
-            playerId: player.playerId,
-          },
-        });
+      await prisma.$transaction(async (tx) => {
+        const submission = await validateScoreSubmission(
+          tx,
+          event,
+          flightId,
+          scoresData?.players,
+          scoresData?.teams,
+          true,
+        );
 
-        if (!existingRound) {
-          console.warn(
-            `No existing round found for player ${player.playerId} in event ${eventId}. Skipping score update for this player.`,
-          );
-          continue;
+        for (const player of submission.players) {
+          const existingRound = await tx.round.findFirst({
+            where: { eventId, playerId: player.playerId, deletedAt: null },
+          });
+
+          if (!existingRound) {
+            throw new Error(
+              `Round not found for player ${player.playerId} in this event.`,
+            );
+          }
+
+          const normalizedPlayer =
+            !pointsEnabled || scoringFormat === 'stroke'
+              ? { ...player, points: 0, matchPoints: 0 }
+              : player;
+          const round = new Round(eventId, normalizedPlayer, existingRound, tx);
+          await round.process();
         }
 
-        const normalizedPlayer =
-          !pointsEnabled || (eventFormat === 'individual' && scoringFormat === 'stroke')
-            ? { ...player, points: 0, matchPoints: 0 }
-            : player;
-        const r = new Round(eventId, normalizedPlayer, existingRound);
-        await r.process();
-      }
+        const teamRows =
+          !pointsEnabled
+            ? []
+            : eventFormat === 'team' && scoringFormat === 'stroke'
+              ? await calculateTeamStrokeBestBallPoints(eventId, flightId, tx)
+              : submission.teams;
 
-      const teamRows =
-        !pointsEnabled
-          ? []
-          : eventFormat === 'team' && scoringFormat === 'stroke'
-          ? await calculateTeamStrokeBestBallPoints(eventId, Number(scoresData.flightId))
-          : normalizeTeamPoints((scoresData.teams ?? []).filter((t: any) => t.teamId != null));
-
-      await syncTeamEventPoints(leagueId, eventId, teamRows);
-
-      await prisma.flight.update({
-        where: { id: scoresData.flightId },
-        data: { status: 'completed' },
-      });
-
-      // Auto-complete the event once all flights are complete
-      const allFlights = await prisma.flight.findMany({
-        where: { eventId },
-        select: { status: true },
-      });
-      if (allFlights.length > 0 && allFlights.every((f) => f.status === 'completed')) {
-        if (eventFormat === 'individual' && scoringFormat === 'stroke') {
-          await finalizeIndividualStrokeEventPoints(eventId);
-        }
-
-        await prisma.event.update({
-          where: { id: eventId },
-          data: { status: 'completed', isComplete: true },
+        await syncTeamEventPoints(leagueId, eventId, teamRows, tx);
+        await tx.flight.update({
+          where: { id: flightId },
+          data: { status: 'completed' },
         });
-      }
+
+        const allFlights = await tx.flight.findMany({
+          where: { eventId, deletedAt: null },
+          select: { status: true },
+        });
+        if (allFlights.length > 0 && allFlights.every((flight) => flight.status === 'completed')) {
+          if (eventFormat === 'individual' && scoringFormat === 'stroke') {
+            await finalizeIndividualStrokeEventPoints(eventId, tx);
+          }
+
+          await tx.event.update({
+            where: { id: eventId },
+            data: { status: 'completed', isComplete: true },
+          });
+        }
+      });
 
       await writeAuditLog({
         userId: req.session.userId ?? null,

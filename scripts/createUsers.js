@@ -3,15 +3,15 @@ const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient();
 
-const email = (process.env.SUPER_ADMIN_EMAIL || 'adamkrieger87@gmail.com').trim().toLowerCase();
-const password = process.env.SUPER_ADMIN_PASSWORD || 'testing';
-const firstName = process.env.SUPER_ADMIN_FIRST_NAME || 'Adam';
-const lastName = process.env.SUPER_ADMIN_LAST_NAME || 'Krieger';
+const email = String(process.env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase();
+const password = String(process.env.SUPER_ADMIN_PASSWORD || '');
+const firstName = String(process.env.SUPER_ADMIN_FIRST_NAME || '').trim();
+const lastName = String(process.env.SUPER_ADMIN_LAST_NAME || '').trim();
 
-const adminEmail = (process.env.TEST_ADMIN_EMAIL || 'admin@test.com').trim().toLowerCase();
-const adminPassword = process.env.TEST_ADMIN_PASSWORD || 'testing';
-const adminFirstName = process.env.TEST_ADMIN_FIRST_NAME || 'Test';
-const adminLastName = process.env.TEST_ADMIN_LAST_NAME || 'Admin';
+const adminEmail = String(process.env.TEST_ADMIN_EMAIL || '').trim().toLowerCase();
+const adminPassword = String(process.env.TEST_ADMIN_PASSWORD || '');
+const adminFirstName = String(process.env.TEST_ADMIN_FIRST_NAME || '').trim();
+const adminLastName = String(process.env.TEST_ADMIN_LAST_NAME || '').trim();
 
 async function upsertUser({ email, password, firstName, lastName, role }) {
   const hashedPassword = await bcrypt.hash(password, 10);
@@ -38,12 +38,12 @@ async function upsertUser({ email, password, firstName, lastName, role }) {
 }
 
 async function main() {
-  if (!email || !password) {
-    throw new Error('SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD are required');
+  if (!email || !password || !firstName || !lastName) {
+    throw new Error('All SUPER_ADMIN_* environment variables are required');
   }
 
-  if (!adminEmail || !adminPassword) {
-    throw new Error('TEST_ADMIN_EMAIL and TEST_ADMIN_PASSWORD are required');
+  if (!adminEmail || !adminPassword || !adminFirstName || !adminLastName) {
+    throw new Error('All TEST_ADMIN_* environment variables are required');
   }
 
   await upsertUser({

@@ -223,8 +223,8 @@ class TeamController {
           data: {
             name,
             leagueId: numericLeagueId,
-            seasonPoints: Number(payload.seasonPoints ?? 0),
-            seasonRank: payload.seasonRank != null ? Number(payload.seasonRank) : null,
+            seasonPoints: 0,
+            seasonRank: null,
           },
           select: { id: true },
         });
@@ -330,13 +330,7 @@ class TeamController {
 
         await tx.team.update({
           where: { id },
-          data: {
-            name,
-            ...(payload.seasonPoints != null ? { seasonPoints: Number(payload.seasonPoints) } : {}),
-            ...(payload.seasonRank !== undefined
-              ? { seasonRank: payload.seasonRank == null ? null : Number(payload.seasonRank) }
-              : {}),
-          },
+          data: { name },
         });
 
         await tx.player.updateMany({
@@ -408,6 +402,19 @@ class TeamController {
           throw new Error('Team not found');
         }
 
+        const scheduledAssignment = await tx.flight_team.findFirst({
+          where: {
+            teamId: id,
+            flight: {
+              event: { isDeleted: false, isComplete: false, status: { not: 'canceled' } },
+            },
+          },
+          select: { id: true },
+        });
+        if (scheduledAssignment) {
+          throw new Error('Team is assigned to an upcoming event. Update that event before removing the team.');
+        }
+
         await tx.player.updateMany({
           where: {
             leagueId: Number(existingTeam.leagueId),
@@ -429,6 +436,9 @@ class TeamController {
       console.error(error);
       if (String(error?.message || '').includes('Team not found')) {
         return res.status(404).json({ message: 'Team not found' });
+      }
+      if (String(error?.message || '').includes('upcoming event')) {
+        return res.status(409).json({ message: String(error.message) });
       }
       res.status(500).json({ message: 'Internal server error' });
     }

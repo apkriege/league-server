@@ -37,7 +37,6 @@ router.get('/health', health_1.default.getHealth);
 router.post('/auth/login', authRateLimiter, auth_1.default.login);
 router.post('/auth/league-code', authRateLimiter, auth_1.default.loginWithLeagueCode);
 router.post('/auth/register', authRateLimiter, auth_1.default.register);
-router.get('/auth/debug-session', auth_1.default.debugSession);
 router.post('/auth/logout', auth_1.default.logout);
 router.get('/auth/me', auth_guard_1.userGuard, auth_1.default.getProfile);
 // =====================
@@ -68,17 +67,17 @@ router.post('/leagues/:leagueId/notifications', auth_guard_1.leagueAdminGuard, o
 // ADMIN ROUTES
 // =====================
 const adminRoutes = express_1.default.Router();
-router.get('/admin/leagues', auth_guard_1.adminGuard, admin_1.default.getLeagues);
-router.get('/admin/leagues/:id', auth_guard_1.adminGuard, admin_1.default.getLeague);
-router.use('/admin', auth_guard_1.adminGuard, adminRoutes); // Uncomment to enable admin routes
+router.get('/admin/leagues', auth_guard_1.superAdminGuard, admin_1.default.getLeagues);
+router.get('/admin/leagues/:id', auth_guard_1.superAdminGuard, admin_1.default.getLeague);
+router.use('/admin', auth_guard_1.superAdminGuard, adminRoutes);
 // =====================
 // PUBLIC ROUTES
 // =====================
 // Users
-router.get('/users', auth_guard_1.adminGuard, user_1.default.getUsers);
+router.get('/users', auth_guard_1.superAdminGuard, user_1.default.getUsers);
 router.get('/users/:id', auth_guard_1.userSelfOrAdminGuard, user_1.default.getUserById);
 router.get('/users/:id/leagues', auth_guard_1.userSelfOrAdminGuard, user_1.default.getUserLeagues);
-router.post('/users', auth_guard_1.adminGuard, user_1.default.createUser);
+router.post('/users', auth_guard_1.superAdminGuard, user_1.default.createUser);
 router.put('/users/:id', auth_guard_1.userSelfOrAdminGuard, user_1.default.updateUser);
 router.delete('/users/:id', auth_guard_1.userSelfOrAdminGuard, user_1.default.deleteUser);
 // Clubs
@@ -119,7 +118,7 @@ router.put('/leagues/:leagueId/events/:eventId/scores', auth_guard_1.eventAdminG
 // Flights
 router.put('/flights/:flightId/players', auth_guard_1.flightAdminGuard, flight_1.default.updateFlightPlayers);
 // player
-router.get('/players', auth_guard_1.adminGuard, player_1.default.getPlayers);
+router.get('/players', auth_guard_1.superAdminGuard, player_1.default.getPlayers);
 router.get('/players/:id', auth_guard_1.playerMemberGuard, player_1.default.getPlayer);
 router.put('/players/:id', auth_guard_1.playerAdminGuard, player_1.default.updatePlayer);
 router.delete('/players/:id', auth_guard_1.playerAdminGuard, player_1.default.deletePlayer);

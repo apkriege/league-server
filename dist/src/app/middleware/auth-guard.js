@@ -104,7 +104,7 @@ const userSelfOrAdminGuard = async (req, res, next) => {
             return;
         const requestedUserId = Number(req.params.id);
         const role = String(user.role).toUpperCase();
-        if (role === 'ADMIN' || role === 'SUPER' || user.id === requestedUserId) {
+        if (role === 'SUPER' || user.id === requestedUserId) {
             return next();
         }
         (0, logging_1.logAuthFailure)(req, 'auth:forbidden', {
@@ -132,8 +132,8 @@ const leagueAdminGuard = async (req, res, next) => {
         if (!Number.isInteger(leagueId) || leagueId <= 0) {
             return res.status(400).json({ message: 'Invalid league id' });
         }
-        const league = await prisma_1.prisma.league.findUnique({
-            where: { id: leagueId },
+        const league = await prisma_1.prisma.league.findFirst({
+            where: { id: leagueId, deletedAt: null },
             select: { adminId: true },
         });
         if (!league) {
@@ -177,8 +177,8 @@ const leagueMemberGuard = async (req, res, next) => {
             return res.sendStatus(401);
         }
         const role = String(user.role).toUpperCase();
-        const league = await prisma_1.prisma.league.findUnique({
-            where: { id: leagueId },
+        const league = await prisma_1.prisma.league.findFirst({
+            where: { id: leagueId, deletedAt: null },
             select: { adminId: true },
         });
         if (!league) {
@@ -221,8 +221,8 @@ const eventAdminGuard = async (req, res, next) => {
         if (!Number.isInteger(eventId) || eventId <= 0) {
             return res.status(400).json({ message: 'Invalid event id' });
         }
-        const event = await prisma_1.prisma.event.findUnique({
-            where: { id: eventId },
+        const event = await prisma_1.prisma.event.findFirst({
+            where: { id: eventId, isDeleted: false, deletedAt: null, league: { deletedAt: null } },
             include: { league: { select: { adminId: true } } },
         });
         if (!event) {
@@ -253,8 +253,8 @@ const teamMemberGuard = async (req, res, next) => {
         if (!Number.isInteger(teamId) || teamId <= 0) {
             return res.status(400).json({ message: 'Invalid team id' });
         }
-        const team = await prisma_1.prisma.team.findUnique({
-            where: { id: teamId },
+        const team = await prisma_1.prisma.team.findFirst({
+            where: { id: teamId, deletedAt: null, league: { deletedAt: null } },
             select: { leagueId: true, league: { select: { adminId: true } } },
         });
         if (!team) {
@@ -308,8 +308,8 @@ const playerMemberGuard = async (req, res, next) => {
         if (!Number.isInteger(playerId) || playerId <= 0) {
             return res.status(400).json({ message: 'Invalid player id' });
         }
-        const player = await prisma_1.prisma.player.findUnique({
-            where: { id: playerId },
+        const player = await prisma_1.prisma.player.findFirst({
+            where: { id: playerId, deletedAt: null, league: { deletedAt: null } },
             select: { userId: true, leagueId: true, league: { select: { adminId: true } } },
         });
         if (!player) {
@@ -369,8 +369,8 @@ const playerAdminGuard = async (req, res, next) => {
         if (!Number.isInteger(playerId) || playerId <= 0) {
             return res.status(400).json({ message: 'Invalid player id' });
         }
-        const player = await prisma_1.prisma.player.findUnique({
-            where: { id: playerId },
+        const player = await prisma_1.prisma.player.findFirst({
+            where: { id: playerId, deletedAt: null, league: { deletedAt: null } },
             include: { league: { select: { adminId: true } } },
         });
         if (!player) {
@@ -405,8 +405,8 @@ const teamAdminGuard = async (req, res, next) => {
         if (!Number.isInteger(teamId) || teamId <= 0) {
             return res.status(400).json({ message: 'Invalid team id' });
         }
-        const team = await prisma_1.prisma.team.findUnique({
-            where: { id: teamId },
+        const team = await prisma_1.prisma.team.findFirst({
+            where: { id: teamId, deletedAt: null, league: { deletedAt: null } },
             include: { league: { select: { adminId: true } } },
         });
         if (!team) {
@@ -441,8 +441,12 @@ const flightAdminGuard = async (req, res, next) => {
         if (!Number.isInteger(flightId) || flightId <= 0) {
             return res.status(400).json({ message: 'Invalid flight id' });
         }
-        const flight = await prisma_1.prisma.flight.findUnique({
-            where: { id: flightId },
+        const flight = await prisma_1.prisma.flight.findFirst({
+            where: {
+                id: flightId,
+                deletedAt: null,
+                event: { isDeleted: false, deletedAt: null, league: { deletedAt: null } },
+            },
             include: { event: { include: { league: { select: { adminId: true } } } } },
         });
         if (!flight) {

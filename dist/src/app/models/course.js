@@ -6,10 +6,10 @@ class CourseService {
         return prisma_1.prisma.course;
     }
     static async findAll() {
-        return await prisma_1.prisma.course.findMany();
+        return await prisma_1.prisma.course.findMany({ where: { deletedAt: null } });
     }
     static async findById(id) {
-        return await prisma_1.prisma.course.findUnique({ where: { id } });
+        return await prisma_1.prisma.course.findFirst({ where: { id, deletedAt: null } });
     }
     static async create(course) {
         return await prisma_1.prisma.course.create({ data: course });

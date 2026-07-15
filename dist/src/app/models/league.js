@@ -6,10 +6,10 @@ class LeagueService {
         return prisma_1.prisma.league;
     }
     static async findAll() {
-        return await prisma_1.prisma.league.findMany();
+        return await prisma_1.prisma.league.findMany({ where: { deletedAt: null } });
     }
     static async findById(id) {
-        return await prisma_1.prisma.league.findUnique({ where: { id } });
+        return await prisma_1.prisma.league.findFirst({ where: { id, deletedAt: null } });
     }
     static async create(league) {
         return await prisma_1.prisma.league.create({ data: league });
