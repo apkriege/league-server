@@ -93,8 +93,8 @@ router.post('/leagues/:leagueId/notifications', leagueAdminGuard, Operations.cre
 // ADMIN ROUTES
 // =====================
 const adminRoutes = express.Router();
-router.get('/admin/leagues', superAdmin, Admin.getLeagues);
-router.get('/admin/leagues/:id', superAdmin, Admin.getLeague);
+router.get('/admin/leagues', admin, Admin.getLeagues);
+router.get('/admin/leagues/:id', admin, Admin.getLeague);
 router.use('/admin', superAdmin, adminRoutes);
 
 // =====================

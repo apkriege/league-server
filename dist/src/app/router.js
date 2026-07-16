@@ -67,8 +67,8 @@ router.post('/leagues/:leagueId/notifications', auth_guard_1.leagueAdminGuard, o
 // ADMIN ROUTES
 // =====================
 const adminRoutes = express_1.default.Router();
-router.get('/admin/leagues', auth_guard_1.superAdminGuard, admin_1.default.getLeagues);
-router.get('/admin/leagues/:id', auth_guard_1.superAdminGuard, admin_1.default.getLeague);
+router.get('/admin/leagues', auth_guard_1.adminGuard, admin_1.default.getLeagues);
+router.get('/admin/leagues/:id', auth_guard_1.adminGuard, admin_1.default.getLeague);
 router.use('/admin', auth_guard_1.superAdminGuard, adminRoutes);
 // =====================
 // PUBLIC ROUTES
