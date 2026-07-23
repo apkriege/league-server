@@ -1,7 +1,25 @@
 import { Request, Response, NextFunction } from 'express';
+import { isCorsOriginAllowed } from '../utils/origins';
+import { logWarn } from './logging';
 
 export const requireTrustedOrigin = (req: Request, res: Response, next: NextFunction) => {
-  return next();
+  const origin = req.get('origin');
+
+  if (isCorsOriginAllowed(origin)) {
+    return next();
+  }
+
+  logWarn('security:origin-rejected', {
+    requestId: (req as any).requestId,
+    method: req.method,
+    path: req.originalUrl,
+    origin: origin || null,
+  });
+
+  return res.status(403).json({
+    message: 'Request origin is not allowed',
+    requestId: (req as any).requestId,
+  });
 };
 
 type RateLimiterOptions = {

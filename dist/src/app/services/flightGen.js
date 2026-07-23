@@ -7,6 +7,9 @@ exports.FlightGen = exports.extractTeamId = void 0;
 const prisma_1 = require("../../prisma");
 const dayjs_1 = __importDefault(require("dayjs"));
 const extractTeamId = (value) => {
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
     if (Number.isFinite(Number(value))) {
         return Number(value);
     }

@@ -33,6 +33,37 @@ Required configuration includes:
 - `STRIPE_WEBHOOK_SECRET`
 - `STRIPE_PRICE_ID` or a valid per-golfer price configuration
 
+### Railway CORS and cookies
+
+Set `CLIENT_URL` to the exact public origin that serves the browser client. Do not set it to the API
+service URL and do not include `/api` or another path.
+
+```env
+CLIENT_URL=https://your-client.up.railway.app
+CLIENT_URLS=https://app.your-custom-domain.com
+COOKIE_SECURE=true
+```
+
+`CLIENT_URLS` is optional and accepts comma- or whitespace-separated additional origins. Host-only
+Railway values such as `your-client.up.railway.app` are normalized to HTTPS, although full URLs are
+clearer. Origins are exact: scheme, hostname, and non-default port must match the browser's `Origin`
+header. Paths and trailing slashes are ignored.
+
+The client build must point to the API service:
+
+```env
+VITE_API_URL=https://your-api.up.railway.app/api
+```
+
+Because authentication uses a cross-origin session cookie, browser requests must retain
+`withCredentials: true` (already configured in `client/api/client.ts`). Railway production cookies
+are emitted with `Secure`, `HttpOnly`, and `SameSite=None`. If `CLIENT_URL`/`CLIENT_URLS` contains no
+valid origin, the Railway server now exits at startup with `Missing valid CLIENT_URL or CLIENT_URLS`
+instead of starting with unusable CORS.
+
+On startup, the structured `server:config` log records the normalized `clientOrigins` allowlist. Use
+that value and the browser console's request `Origin` to diagnose a mismatch without logging secrets.
+
 Build and start commands:
 
 ```bash

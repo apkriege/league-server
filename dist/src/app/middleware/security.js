@@ -1,8 +1,23 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createRateLimiter = exports.requireTrustedOrigin = void 0;
+const origins_1 = require("../utils/origins");
+const logging_1 = require("./logging");
 const requireTrustedOrigin = (req, res, next) => {
-    return next();
+    const origin = req.get('origin');
+    if ((0, origins_1.isCorsOriginAllowed)(origin)) {
+        return next();
+    }
+    (0, logging_1.logWarn)('security:origin-rejected', {
+        requestId: req.requestId,
+        method: req.method,
+        path: req.originalUrl,
+        origin: origin || null,
+    });
+    return res.status(403).json({
+        message: 'Request origin is not allowed',
+        requestId: req.requestId,
+    });
 };
 exports.requireTrustedOrigin = requireTrustedOrigin;
 const createRateLimiter = ({ keyPrefix, windowMs, max }) => {

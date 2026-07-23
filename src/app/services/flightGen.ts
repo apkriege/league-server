@@ -2,6 +2,10 @@ import { prisma } from '../../prisma';
 import dayjs from 'dayjs';
 
 export const extractTeamId = (value: any): number | null => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
   if (Number.isFinite(Number(value))) {
     return Number(value);
   }

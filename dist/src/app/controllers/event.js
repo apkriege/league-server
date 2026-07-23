@@ -7,6 +7,7 @@ const prisma_1 = require("../../prisma");
 const event_1 = __importDefault(require("../models/event"));
 const league_1 = __importDefault(require("../models/league"));
 const flightGen_1 = require("../services/flightGen");
+const eventTeamResolution_1 = require("../services/eventTeamResolution");
 const event_mode_1 = require("../utils/event-mode");
 const score_order_1 = require("../utils/score-order");
 const audit_1 = require("../utils/audit");
@@ -465,15 +466,32 @@ class EventController {
             // have to delete and recreate flights to update players/teams in flights, which is the main reason for using a transaction here
             await prisma_1.prisma.$transaction(async (tx) => {
                 await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
-                const flightIds = await tx.flight.findMany({
+                const existingFlights = await tx.flight.findMany({
                     where: { eventId },
-                    select: { id: true },
+                    select: {
+                        id: true,
+                        teams: {
+                            include: {
+                                team: {
+                                    include: {
+                                        players: {
+                                            where: { deletedAt: null },
+                                            select: { id: true },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
                 });
+                const existingFlightTeams = existingFlights.flatMap((flight) => flight.teams);
+                eventData.flights = (0, eventTeamResolution_1.normalizeEventFlightTeamIds)(eventData.flights, existingFlightTeams, eventData.teams);
+                const flightIds = existingFlights.map((flight) => flight.id);
                 await tx.flight_player.deleteMany({
-                    where: { flightId: { in: flightIds.map((f) => f.id) } },
+                    where: { flightId: { in: flightIds } },
                 });
                 await tx.flight_team.deleteMany({
-                    where: { flightId: { in: flightIds.map((f) => f.id) } },
+                    where: { flightId: { in: flightIds } },
                 });
                 await tx.flight.deleteMany({ where: { eventId } });
                 const league = await league_1.default.query().findFirst({
@@ -525,7 +543,16 @@ class EventController {
                         strokePoints: normalizeStrokePoints(eventData.strokePoints, forcedFormat, normalizedScoringFormat, pointsEnabled),
                     },
                 });
-                const flightGen = new flightGen_1.FlightGen(league, eventData, eventId, tx);
+                const resolvedTeams = forcedFormat === 'team'
+                    ? await (0, eventTeamResolution_1.resolveEventFlightTeams)(tx, leagueId, eventId, eventData.flights)
+                    : league.teams;
+                const teamsForFlights = Array.from(new Map([
+                    ...resolvedTeams,
+                    ...existingFlightTeams
+                        .map((entry) => entry.team)
+                        .filter(Boolean),
+                ].map((team) => [Number(team.id), team])).values());
+                const flightGen = new flightGen_1.FlightGen({ ...league, teams: teamsForFlights }, eventData, eventId, tx);
                 await flightGen.saveFlights();
             });
             const updatedEvent = await prisma_1.prisma.event.findUnique({ where: { id: eventId } });

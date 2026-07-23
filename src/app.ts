@@ -11,6 +11,7 @@ import HealthController from './app/controllers/health';
 import { requireTrustedOrigin } from './app/middleware/security';
 import { logError, logInfo, requestId, requestLogger } from './app/middleware/logging';
 import { getPublicErrorResponse } from './app/utils/error-response';
+import { getConfiguredClientOrigins, isCorsOriginAllowed } from './app/utils/origins';
 
 const app: Express = express();
 const sessionSecret = process.env.SESSION_SECRET;
@@ -21,11 +22,16 @@ const isRailway =
 const useSecureCookies =
   process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production' || isRailway;
 const sessionCookieName = process.env.SESSION_COOKIE_NAME || 'connect.sid';
+const configuredClientOrigins = getConfiguredClientOrigins();
 
 app.set('trust proxy', true);
 
 if (!sessionSecret) {
   throw new Error('Missing SESSION_SECRET');
+}
+
+if ((process.env.NODE_ENV === 'production' || isRailway) && configuredClientOrigins.length === 0) {
+  throw new Error('Missing valid CLIENT_URL or CLIENT_URLS');
 }
 
 logInfo('server:config', {
@@ -35,19 +41,18 @@ logInfo('server:config', {
   sessionCookieName,
   sessionSameSite: useSecureCookies ? 'none' : 'lax',
   trustProxy: true,
+  clientOrigins: configuredClientOrigins,
 });
 
 const corsOptions = {
-  origin: true,
+  origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
+    callback(null, isCorsOriginAllowed(origin));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'X-Requested-With',
-    'Access-Control-Allow-Origin',
-  ],
-  optionsSuccessStatus: 200,
+  exposedHeaders: ['X-Request-Id'],
+  optionsSuccessStatus: 204,
+  maxAge: 60 * 60 * 24,
 };
 
 app.use(requestId);

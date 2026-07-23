@@ -4,6 +4,10 @@ import EventService from '../models/event';
 import LeagueService from '../models/league';
 import { extractTeamId, FlightGen } from '../services/flightGen';
 import {
+  normalizeEventFlightTeamIds,
+  resolveEventFlightTeams,
+} from '../services/eventTeamResolution';
+import {
   normalizeEventFormat,
   normalizeScoringFormat,
   validateEventMode,
@@ -544,15 +548,36 @@ class EventController {
       await prisma.$transaction(async (tx: any) => {
         await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
 
-        const flightIds = await tx.flight.findMany({
+        const existingFlights = await tx.flight.findMany({
           where: { eventId },
-          select: { id: true },
+          select: {
+            id: true,
+            teams: {
+              include: {
+                team: {
+                  include: {
+                    players: {
+                      where: { deletedAt: null },
+                      select: { id: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
         });
+        const existingFlightTeams = existingFlights.flatMap((flight: any) => flight.teams);
+        eventData.flights = normalizeEventFlightTeamIds(
+          eventData.flights,
+          existingFlightTeams,
+          eventData.teams,
+        );
+        const flightIds = existingFlights.map((flight: any) => flight.id);
         await tx.flight_player.deleteMany({
-          where: { flightId: { in: flightIds.map((f: { id: number }) => f.id) } },
+          where: { flightId: { in: flightIds } },
         });
         await tx.flight_team.deleteMany({
-          where: { flightId: { in: flightIds.map((f: { id: number }) => f.id) } },
+          where: { flightId: { in: flightIds } },
         });
         await tx.flight.deleteMany({ where: { eventId } });
 
@@ -619,7 +644,26 @@ class EventController {
           },
         });
 
-        const flightGen = new FlightGen(league, eventData, eventId, tx);
+        const resolvedTeams =
+          forcedFormat === 'team'
+            ? await resolveEventFlightTeams(tx, leagueId, eventId, eventData.flights)
+            : league.teams;
+        const teamsForFlights = Array.from(
+          new Map(
+            [
+              ...resolvedTeams,
+              ...existingFlightTeams
+                .map((entry: any) => entry.team)
+                .filter(Boolean),
+            ].map((team: any) => [Number(team.id), team]),
+          ).values(),
+        );
+        const flightGen = new FlightGen(
+          { ...league, teams: teamsForFlights },
+          eventData,
+          eventId,
+          tx,
+        );
         await flightGen.saveFlights();
       });
 

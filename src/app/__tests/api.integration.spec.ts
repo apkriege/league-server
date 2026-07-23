@@ -24,6 +24,37 @@ describe('API integration', () => {
     expect(Number.isNaN(Date.parse(response.body.timestamp))).toBe(false);
   });
 
+  it('allows configured CORS preflights and rejects untrusted browser origins', async () => {
+    const trustedOrigin = new URL(String(process.env.CLIENT_URL)).origin;
+    const hostileOrigin = 'https://hostile.example.com';
+
+    const [trustedPreflight, hostilePreflight, hostileRequest, serverRequest] = await Promise.all([
+      request(app)
+        .options('/api/auth/login')
+        .set('Origin', trustedOrigin)
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'content-type'),
+      request(app)
+        .options('/api/auth/login')
+        .set('Origin', hostileOrigin)
+        .set('Access-Control-Request-Method', 'POST'),
+      request(app).get('/api/courses').set('Origin', hostileOrigin),
+      request(app).get('/api/courses'),
+    ]);
+
+    expect(trustedPreflight.status).toBe(204);
+    expect(trustedPreflight.headers['access-control-allow-origin']).toBe(trustedOrigin);
+    expect(trustedPreflight.headers['access-control-allow-credentials']).toBe('true');
+    expect(trustedPreflight.headers.vary).toContain('Origin');
+
+    expect(hostilePreflight.status).toBe(403);
+    expect(hostilePreflight.headers['access-control-allow-origin']).toBeUndefined();
+    expect(hostileRequest.status).toBe(403);
+    expect(hostileRequest.body.message).toBe('Request origin is not allowed');
+
+    expect(serverRequest.status).toBe(200);
+  });
+
   it('serves public course data but protects account data', async () => {
     const [courses, profile, adminLeagues] = await Promise.all([
       request(app).get('/api/courses'),
