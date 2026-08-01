@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma';
+import { getPublicErrorResponse } from '../utils/error-response';
 
 class TeamController {
   static buildTeamInclude = () =>
@@ -15,13 +16,14 @@ class TeamController {
             select: {
               id: true,
               name: true,
-              date: true,
+              startsAt: true,
+              timeZone: true,
             },
           },
         },
         orderBy: {
           event: {
-            date: 'asc',
+            startsAt: 'asc',
           },
         },
       },
@@ -47,7 +49,8 @@ class TeamController {
       res.status(200).json(teams);
     } catch (error) {
       console.error(error);
-      res.status(500).send(error);
+      const response = getPublicErrorResponse(error);
+      res.status(response.status).json({ message: response.message });
     }
   };
 
@@ -118,7 +121,8 @@ class TeamController {
                   select: {
                     id: true,
                     name: true,
-                    date: true,
+                    startsAt: true,
+                    timeZone: true,
                     scoringFormat: true,
                     format: true,
                   },
@@ -135,19 +139,19 @@ class TeamController {
                 isDeleted: false,
                 deletedAt: null,
                 status: { not: 'canceled' },
-                date: { gte: now },
+                startsAt: { gte: now },
               },
               select: {
                 id: true,
                 name: true,
-                date: true,
-                startTime: true,
+                startsAt: true,
+                timeZone: true,
                 format: true,
                 scoringFormat: true,
                 holes: true,
                 status: true,
               },
-              orderBy: [{ date: 'asc' }, { id: 'asc' }],
+              orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
               take: 6,
             })
           : [],

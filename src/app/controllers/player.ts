@@ -51,7 +51,8 @@ export default class PlayerController {
                 select: {
                   id: true,
                   name: true,
-                  date: true,
+                  startsAt: true,
+                  timeZone: true,
                   startSide: true,
                 },
               },
@@ -332,7 +333,9 @@ export default class PlayerController {
               status: 'completed',
             },
             include: {
-              event: { select: { id: true, name: true, date: true, startSide: true } },
+              event: {
+                select: { id: true, name: true, startsAt: true, timeZone: true, startSide: true },
+              },
               course: {
                 select: {
                   id: true,
@@ -419,7 +422,8 @@ export default class PlayerController {
           id: r.id,
           eventId: r.event.id,
           eventName: r.event.name,
-          date: r.event.date,
+          startsAt: r.event.startsAt,
+          timeZone: r.event.timeZone,
           event: r.event,
           course: r.course,
           tee: r.tee,

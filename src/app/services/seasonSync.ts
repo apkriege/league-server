@@ -1,4 +1,5 @@
 import { prisma } from '../../prisma';
+import { dateOnlyInTimeZone } from '../utils/time-zone';
 import { modelTeeForRound } from '../utils/tee-rating';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
 
@@ -777,7 +778,7 @@ const recalculateEvent = async ({
         netBogeys: calculation.stats.netBogeys,
         netDoubleBogeys: calculation.stats.netDoubleBogeys,
         netTripleBogeys: calculation.stats.netTripleBogeys,
-        date: event.date,
+        date: dateOnlyInTimeZone(event.startsAt, event.timeZone),
       },
     });
 
@@ -859,7 +860,7 @@ export class SeasonSync {
                 deletedAt: null,
                 status: { not: 'canceled' },
               },
-              orderBy: [{ date: 'asc' }, { id: 'asc' }],
+              orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
               include: {
                 tee: true,
                 flights: {

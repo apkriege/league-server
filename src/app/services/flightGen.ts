@@ -1,5 +1,15 @@
 import { prisma } from '../../prisma';
-import dayjs from 'dayjs';
+
+export const getFlightStartsAt = (
+  eventStartsAt: Date | string,
+  interval: number,
+  flightIndex: number,
+) => {
+  const startsAt = eventStartsAt instanceof Date ? eventStartsAt : new Date(eventStartsAt);
+  if (Number.isNaN(startsAt.getTime())) throw new Error('Invalid event start timestamp.');
+
+  return new Date(startsAt.getTime() + Number(flightIndex) * Number(interval) * 60_000);
+};
 
 export const extractTeamId = (value: any): number | null => {
   if (value === null || value === undefined || value === '') {
@@ -11,7 +21,7 @@ export const extractTeamId = (value: any): number | null => {
   }
 
   if (value && typeof value === 'object') {
-    const raw = value.id ?? value.teamId ?? value.team?.id ?? value.team?.teamId;
+    const raw = value.teamId ?? value.team?.id ?? value.team?.teamId ?? value.id;
     if (Number.isFinite(Number(raw))) {
       return Number(raw);
     }
@@ -55,14 +65,12 @@ export class FlightGen {
       const f = this.event.flights[i];
       const playerIds = f.map((p: any) => Number(p));
 
-      const startTime = dayjs(this.event.startTime, 'H:mm')
-        .add(Number(i) * Number(this.event.interval), 'minute')
-        .format('H:mm');
+      const startsAt = getFlightStartsAt(this.event.startsAt, this.event.interval, Number(i));
 
       await this.prismaClient.flight.create({
         data: {
           eventId: this.eventId,
-          startTime: startTime,
+          startsAt,
           players: {
             create: playerIds.map((playerId: number) => ({
               playerId,
@@ -92,14 +100,12 @@ export class FlightGen {
         throw new Error(`Invalid individual match flight at index ${i}.`);
       }
 
-      const startTime = dayjs(this.event.startTime, 'H:mm')
-        .add(Number(i) * Number(this.event.interval), 'minute')
-        .format('H:mm');
+      const startsAt = getFlightStartsAt(this.event.startsAt, this.event.interval, Number(i));
 
       await this.prismaClient.flight.create({
         data: {
           eventId: this.eventId,
-          startTime: startTime,
+          startsAt,
           players: {
             create: playerIds.map((playerId: number) => ({ playerId })),
           },
@@ -134,14 +140,12 @@ export class FlightGen {
       const team1PlayerIds = team1.players.map((p: any) => Number(p.id));
       const team2PlayerIds = team2.players.map((p: any) => Number(p.id));
 
-      const startTime = dayjs(this.event.startTime, 'H:mm')
-        .add(Number(i) * Number(this.event.interval), 'minute')
-        .format('H:mm');
+      const startsAt = getFlightStartsAt(this.event.startsAt, this.event.interval, Number(i));
 
       await this.prismaClient.flight.create({
         data: {
           eventId: this.eventId,
-          startTime: startTime,
+          startsAt,
           teams: {
             create: [
               {
@@ -199,14 +203,12 @@ export class FlightGen {
       const team1PlayerIds = team1.players.map((p: any) => p.id).slice(0, 2);
       const team2PlayerIds = team2.players.map((p: any) => p.id).slice(0, 2);
 
-      const startTime = dayjs(this.event.startTime, 'H:mm')
-        .add(Number(i) * Number(this.event.interval), 'minute')
-        .format('H:mm');
+      const startsAt = getFlightStartsAt(this.event.startsAt, this.event.interval, Number(i));
 
       await this.prismaClient.flight.create({
         data: {
           eventId: this.eventId,
-          startTime: startTime,
+          startsAt,
           teams: {
             create: [
               {
@@ -259,14 +261,12 @@ export class FlightGen {
       const team1PlayerIds = team1.players.map((p: any) => p.id).slice(0, 2);
       const team2PlayerIds = team2.players.map((p: any) => p.id).slice(0, 2);
 
-      const startTime = dayjs(this.event.startTime, 'H:mm')
-        .add(Number(i) * Number(this.event.interval), 'minute')
-        .format('H:mm');
+      const startsAt = getFlightStartsAt(this.event.startsAt, this.event.interval, Number(i));
 
       await this.prismaClient.flight.create({
         data: {
           eventId: this.eventId,
-          startTime: startTime,
+          startsAt,
           teams: {
             create: [
               {

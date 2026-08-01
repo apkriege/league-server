@@ -7,6 +7,8 @@ import crypto from 'crypto';
 import User from '../models/user';
 import { BILLING_CURRENCY, BILLING_MIN_GOLFERS, BILLING_PRICE_PER_GOLFER_CENTS } from '../utils/billing';
 import { logAuth, logAuthFailure } from '../middleware/logging';
+import { sendSignupNotification } from '../services/signupNotification';
+import { isProductionRuntime } from '../utils/runtime-config';
 
 declare module 'express-session' {
   interface SessionData {
@@ -59,8 +61,8 @@ class AuthController {
           .json({ message: 'First name, last name, email, and password are required' });
       }
 
-      if (String(password).length < 10) {
-        return res.status(400).json({ message: 'Password must be at least 10 characters' });
+      if (String(password).length < 8) {
+        return res.status(400).json({ message: 'Password must be at least 8 characters' });
       }
 
       const normalizedEmail = String(email).trim().toLowerCase();
@@ -89,6 +91,13 @@ class AuthController {
             currency: BILLING_CURRENCY,
           },
         },
+      });
+      await sendSignupNotification({
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
       });
 
       req.session.regenerate((err) => {
@@ -266,7 +275,13 @@ class AuthController {
           return res.status(500).json({ message: 'Server error' });
         }
         logAuth(req, 'auth:logout:success');
-        res.clearCookie('connect.sid');
+        const secure = process.env.COOKIE_SECURE === 'true' || isProductionRuntime();
+        res.clearCookie(process.env.SESSION_COOKIE_NAME || 'connect.sid', {
+          httpOnly: true,
+          path: '/',
+          sameSite: secure ? 'none' : 'lax',
+          secure,
+        });
         res.json({ message: 'Logout successful' });
       });
     } catch (error) {

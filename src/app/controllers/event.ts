@@ -15,11 +15,8 @@ import {
 import { buildEventScoreAccess, getLeagueScoreOrder } from '../utils/score-order';
 import { writeAuditLog } from '../utils/audit';
 import { getPublicErrorResponse } from '../utils/error-response';
-
-import dayjs from 'dayjs';
-import customParseFormat from 'dayjs/plugin/customParseFormat';
 import { EventMetrics } from '../services/eventMetrics';
-dayjs.extend(customParseFormat);
+import { localEventTimeToUtc, normalizeTimeZone } from '../utils/time-zone';
 
 class EventController {
   static getAdminEvent = async (req: Request, res: Response) => {
@@ -83,7 +80,7 @@ class EventController {
             },
           },
         },
-        orderBy: [{ date: 'asc' }, { id: 'asc' }],
+        orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
       });
       const scoreOrder = await getLeagueScoreOrder(leagueId);
 
@@ -283,7 +280,7 @@ class EventController {
       validateEventDateWithinLeague(eventData?.date, league);
 
       const newEvent = await prisma.$transaction(async (tx: any) => {
-        await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+        const timeZone = await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
         const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
         const pointsEnabled = eventData?.pointsEnabled !== false;
@@ -308,6 +305,7 @@ class EventController {
         );
 
         const { flights, ...e } = normalizedEventData;
+        const startsAt = localEventTimeToUtc(e.date, e.startTime, timeZone);
 
         const created = await tx.event.create({
           data: {
@@ -316,8 +314,8 @@ class EventController {
             courseId: Number(e.courseId),
             teeId: Number(e.teeId),
             name: e.name,
-            date: toEventDateTime(e.date),
-            startTime: e.startTime,
+            startsAt,
+            timeZone,
             startSide: e.startSide,
             interval: e.interval,
             format: forcedFormat,
@@ -347,7 +345,12 @@ class EventController {
         const leagueForFlights =
           createdLeagueTeams.length > 0 ? { ...league, teams: createdLeagueTeams } : league;
 
-        const flightGen = new FlightGen(leagueForFlights, normalizedEventData, created.id, tx);
+        const flightGen = new FlightGen(
+          leagueForFlights,
+          { ...normalizedEventData, startsAt },
+          created.id,
+          tx,
+        );
         await flightGen.saveFlights();
 
         return created;
@@ -411,7 +414,7 @@ class EventController {
       const createdEvents = await prisma.$transaction(async (tx: any) => {
         const createdEventsInTransaction = [];
         for (const eventData of eventsData) {
-          await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+          const timeZone = await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
           const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
           const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
           const pointsEnabled = eventData?.pointsEnabled !== false;
@@ -429,6 +432,7 @@ class EventController {
             pointsEnabled,
             strokePoints: normalizedStrokePoints,
           };
+          const startsAt = localEventTimeToUtc(e.date, e.startTime, timeZone);
 
           const createdEvent = await tx.event.create({
             data: {
@@ -437,8 +441,8 @@ class EventController {
               courseId: Number(e.courseId),
               teeId: Number(e.teeId),
               name: e.name,
-              date: toEventDateTime(e.date),
-              startTime: e.startTime,
+              startsAt,
+              timeZone,
               startSide: e.startSide,
               interval: e.interval,
               format: forcedFormat,
@@ -460,7 +464,12 @@ class EventController {
 
           const flightGen = new FlightGen(
             league,
-            { ...eventData, format: forcedFormat, scoringFormat: normalizedScoringFormat },
+            {
+              ...eventData,
+              startsAt,
+              format: forcedFormat,
+              scoringFormat: normalizedScoringFormat,
+            },
             createdEvent.id,
             tx,
           );
@@ -546,7 +555,12 @@ class EventController {
 
       // have to delete and recreate flights to update players/teams in flights, which is the main reason for using a transaction here
       await prisma.$transaction(async (tx: any) => {
-        await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+        const timeZone = await validateCourseAndTee(
+          tx,
+          eventData?.courseId,
+          eventData?.teeId,
+        );
+        const startsAt = localEventTimeToUtc(eventData.date, eventData.startTime, timeZone);
 
         const existingFlights = await tx.flight.findMany({
           where: { eventId },
@@ -623,10 +637,10 @@ class EventController {
             courseId: Number(eventData.courseId),
             teeId: Number(eventData.teeId),
             name: eventData.name,
-            date: toEventDateTime(eventData.date),
+            startsAt,
+            timeZone,
             type: eventData.type,
             holes: eventData.holes,
-            startTime: eventData.startTime,
             startSide: eventData.startSide,
             interval: eventData.interval,
             format: forcedFormat,
@@ -660,7 +674,7 @@ class EventController {
         );
         const flightGen = new FlightGen(
           { ...league, teams: teamsForFlights },
-          eventData,
+          { ...eventData, startsAt },
           eventId,
           tx,
         );
@@ -794,27 +808,6 @@ class EventController {
 
 export default EventController;
 
-const toEventDateTime = (input: unknown): Date => {
-  if (input instanceof Date) return input;
-
-  if (typeof input === 'string') {
-    const trimmed = input.trim();
-
-    const dateOnly = dayjs(trimmed, 'YYYY-MM-DD', true);
-    if (dateOnly.isValid()) {
-      // Store date-only payloads at noon UTC so US local rendering does not shift to the prior day.
-      return new Date(`${trimmed}T12:00:00.000Z`);
-    }
-
-    const dt = new Date(trimmed);
-    if (!Number.isNaN(dt.getTime())) {
-      return dt;
-    }
-  }
-
-  throw new Error('Invalid event date. Expected YYYY-MM-DD or ISO-8601 DateTime.');
-};
-
 const toDateOnlyKey = (input: unknown): string => {
   if (input instanceof Date && !Number.isNaN(input.getTime())) {
     return input.toISOString().slice(0, 10);
@@ -860,12 +853,21 @@ const validateCourseAndTee = async (db: any, rawCourseId: unknown, rawTeeId: unk
       deletedAt: null,
       course: { deletedAt: null },
     },
-    select: { id: true },
+    select: {
+      id: true,
+      course: {
+        select: {
+          timeZone: true,
+        },
+      },
+    },
   });
 
   if (!tee) {
     throw new Error('Selected tee does not belong to the selected course.');
   }
+
+  return normalizeTimeZone(tee.course.timeZone);
 };
 
 const normalizeStrokePoints = (

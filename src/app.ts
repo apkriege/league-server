@@ -5,6 +5,7 @@ import session from 'express-session';
 import dotenv from 'dotenv';
 import PgSession from 'connect-pg-simple';
 import pg from 'pg';
+import helmet from 'helmet';
 dotenv.config();
 import Payment from './app/controllers/payment';
 import HealthController from './app/controllers/health';
@@ -12,25 +13,29 @@ import { requireTrustedOrigin } from './app/middleware/security';
 import { logError, logInfo, requestId, requestLogger } from './app/middleware/logging';
 import { getPublicErrorResponse } from './app/utils/error-response';
 import { getConfiguredClientOrigins, isCorsOriginAllowed } from './app/utils/origins';
+import {
+  isProductionRuntime,
+  isRailwayEnvironment,
+  validateRuntimeConfig,
+} from './app/utils/runtime-config';
 
 const app: Express = express();
+validateRuntimeConfig();
 const sessionSecret = process.env.SESSION_SECRET;
-const isRailway =
-  Boolean(process.env.RAILWAY_ENVIRONMENT) ||
-  Boolean(process.env.RAILWAY_PROJECT_ID) ||
-  Boolean(process.env.RAILWAY_SERVICE_ID);
+const isRailway = isRailwayEnvironment();
+const isProduction = isProductionRuntime();
 const useSecureCookies =
-  process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production' || isRailway;
+  process.env.COOKIE_SECURE === 'true' || isProduction;
 const sessionCookieName = process.env.SESSION_COOKIE_NAME || 'connect.sid';
 const configuredClientOrigins = getConfiguredClientOrigins();
 
-app.set('trust proxy', true);
+app.set('trust proxy', 1);
 
 if (!sessionSecret) {
   throw new Error('Missing SESSION_SECRET');
 }
 
-if ((process.env.NODE_ENV === 'production' || isRailway) && configuredClientOrigins.length === 0) {
+if (isProduction && configuredClientOrigins.length === 0) {
   throw new Error('Missing valid CLIENT_URL or CLIENT_URLS');
 }
 
@@ -40,7 +45,7 @@ logInfo('server:config', {
   useSecureCookies,
   sessionCookieName,
   sessionSameSite: useSecureCookies ? 'none' : 'lax',
-  trustProxy: true,
+  trustProxy: 1,
   clientOrigins: configuredClientOrigins,
 });
 
@@ -57,6 +62,7 @@ const corsOptions = {
 
 app.use(requestId);
 app.use(requestLogger);
+app.use(helmet());
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
@@ -71,6 +77,8 @@ const pgSession = PgSession(session);
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
 });
+
+export const closeAppResources = () => pool.end();
 
 app.use(
   session({

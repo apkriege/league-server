@@ -297,9 +297,7 @@ class PaymentController {
       });
     } catch (error: any) {
       console.error('createCheckoutSession error:', error);
-      return res
-        .status(500)
-        .json({ message: error?.message || 'Failed to create checkout session' });
+      return res.status(500).json({ message: 'Failed to create checkout session' });
     }
   }
 
@@ -338,7 +336,7 @@ class PaymentController {
       return res.status(200).json({ stripe: stripeState, billing: billingState });
     } catch (error: any) {
       console.error('getStripeState error:', error);
-      return res.status(500).json({ message: error?.message || 'Failed to read Stripe state' });
+      return res.status(500).json({ message: 'Failed to read Stripe state' });
     }
   }
 
@@ -371,7 +369,7 @@ class PaymentController {
       return res.json({ received: true });
     } catch (error: any) {
       console.error('handleWebhook error:', error);
-      return res.status(500).json({ message: error?.message || 'Webhook handling failed' });
+      return res.status(500).json({ message: 'Webhook handling failed' });
     }
   }
 }

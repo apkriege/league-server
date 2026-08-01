@@ -26,7 +26,6 @@ import Flight from './controllers/flight';
 import Admin from './controllers/admin';
 import Payment from './controllers/payment';
 import Operations from './controllers/operations';
-import TestController from './controllers/test';
 import HealthController from './controllers/health';
 import SeasonSyncController from './controllers/seasonSync';
 import { createRateLimiter } from './middleware/security';
@@ -39,7 +38,6 @@ const paymentRateLimiter = createRateLimiter({
   max: 10,
 });
 
-router.get('/test-handicap', admin, TestController.fullHandicapTest);
 router.get('/health', HealthController.getHealth);
 
 // =====================
@@ -117,6 +115,10 @@ router.put('/clubs/:id', superAdmin, Club.updateClub);
 
 // Courses
 router.get('/courses', Course.getCourses);
+router.get('/courses/import/search', admin, Course.searchCourseDirectory);
+router.get('/courses/import/:externalId', admin, Course.importCourse);
+router.post('/courses/requests', admin, Course.requestCourse);
+router.post('/courses/requests/manual', admin, Course.requestManualCourse);
 router.get('/courses/:id', Course.getCourse);
 router.post('/courses', superAdmin, Course.createCourse);
 router.put('/courses/:id', superAdmin, Course.updateCourse);

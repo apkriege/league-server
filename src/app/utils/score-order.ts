@@ -34,7 +34,7 @@ export const getLeagueScoreOrder = async (leagueId: number) => {
         },
       },
     },
-    orderBy: [{ date: 'asc' }, { id: 'asc' }],
+    orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
   });
 
   const scorableEvents = events.filter((event) => !isCanceledEvent(event));

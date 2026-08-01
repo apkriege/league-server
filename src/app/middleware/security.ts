@@ -35,6 +35,19 @@ type RateLimitEntry = {
 
 export const createRateLimiter = ({ keyPrefix, windowMs, max }: RateLimiterOptions) => {
   const hits = new Map<string, RateLimitEntry>();
+  const maximumTrackedClients = 10_000;
+
+  const pruneExpiredEntries = (now: number) => {
+    for (const [key, entry] of hits) {
+      if (entry.resetAt <= now) hits.delete(key);
+    }
+
+    while (hits.size >= maximumTrackedClients) {
+      const oldestKey = hits.keys().next().value;
+      if (!oldestKey) break;
+      hits.delete(oldestKey);
+    }
+  };
 
   return (req: Request, res: Response, next: NextFunction) => {
     const now = Date.now();
@@ -44,6 +57,7 @@ export const createRateLimiter = ({ keyPrefix, windowMs, max }: RateLimiterOptio
     const current = hits.get(key);
 
     if (!current || current.resetAt <= now) {
+      if (hits.size >= maximumTrackedClients) pruneExpiredEntries(now);
       hits.set(key, { count: 1, resetAt: now + windowMs });
       return next();
     }

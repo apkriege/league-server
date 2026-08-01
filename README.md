@@ -67,22 +67,37 @@ that value and the browser console's request `Origin` to diagnose a mismatch wit
 Build and start commands:
 
 ```bash
-npm run build:railway
-npm run start:railway
+npm run build
+npm start
 ```
 
-The start command runs `prisma migrate deploy` before starting the compiled API. Commit every generated migration. Do not use `prisma db push` in production.
+The committed Railway configuration runs `npm run db:migrate:deploy` before every dev and production
+deployment, starts the compiled API with `npm start`, and verifies `/health` before activating the
+deployment. Each Railway environment migrates its own `DATABASE_URL`; no dashboard migration command
+or manual migration step is required. A migration failure stops the deployment. Destructive database
+commands are blocked in production and on Railway. Railway's `development` environment accepts Stripe
+test credentials; its `production` environment requires live credentials. The process also drains
+HTTP requests and closes its database clients on `SIGTERM`/`SIGINT`.
+
+The initial migration history is one generated baseline intended for a new production database.
+Run `npm run db:full` to reset a non-production database to that baseline and load demo data.
 
 ## Seed Commands
 
-`npm run seed:demo` is for local demo data only, requires `DEMO_SEED_PASSWORD` with at least 10 characters, and exits with an error in production.
+`npm run seed:demo` is for local demo data only, requires `DEMO_SEED_PASSWORD` with at least 8 characters, and exits with an error in production.
 
-`npm run db:seed:users` requires all of these variables and has no credential defaults:
+`npm run db:provision:super` provisions the production super admin and requires:
 
 - `SUPER_ADMIN_EMAIL`
 - `SUPER_ADMIN_PASSWORD`
 - `SUPER_ADMIN_FIRST_NAME`
 - `SUPER_ADMIN_LAST_NAME`
+
+It does not create a test account unless every `TEST_ADMIN_*` variable is supplied, and it refuses
+test-account variables when `NODE_ENV=production`.
+
+For non-production test environments only, the optional variables are:
+
 - `TEST_ADMIN_EMAIL`
 - `TEST_ADMIN_PASSWORD`
 - `TEST_ADMIN_FIRST_NAME`

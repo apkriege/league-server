@@ -1,6 +1,7 @@
 import { prisma } from '../../prisma';
 import { Handicap } from './handicap';
 import { modelTeeForRound } from '../utils/tee-rating';
+import { dateOnlyInTimeZone } from '../utils/time-zone';
 
 export class Round {
   private eventId: number;
@@ -81,7 +82,7 @@ export class Round {
         netBogeys: stats.netBogeys,
         netDoubleBogeys: stats.netDoubleBogeys,
         netTripleBogeys: stats.netTripleBogeys,
-        date: this.event.date,
+        date: dateOnlyInTimeZone(this.event.startsAt, this.event.timeZone),
         scoringFormat: this.event.scoringFormat,
         holesPlayed: this.event.holes,
       },

@@ -22,6 +22,9 @@ describe('API integration', () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ status: 'ok', database: 'ok' });
     expect(Number.isNaN(Date.parse(response.body.timestamp))).toBe(false);
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(response.headers['x-powered-by']).toBeUndefined();
   });
 
   it('allows configured CORS preflights and rejects untrusted browser origins', async () => {
@@ -56,10 +59,11 @@ describe('API integration', () => {
   });
 
   it('serves public course data but protects account data', async () => {
-    const [courses, profile, adminLeagues] = await Promise.all([
+    const [courses, profile, adminLeagues, removedTestRoute] = await Promise.all([
       request(app).get('/api/courses'),
       request(app).get('/api/auth/me'),
       request(app).get('/api/admin/leagues'),
+      request(app).get('/api/test-handicap'),
     ]);
 
     expect(courses.status).toBe(200);
@@ -68,6 +72,25 @@ describe('API integration', () => {
     );
     expect(profile.status).toBe(401);
     expect(adminLeagues.status).toBe(401);
+    expect(removedTestRoute.status).toBe(404);
+  });
+
+  it('stores schedules as UTC instants with the course timezone preserved', async () => {
+    const course = await prisma.course.findFirstOrThrow({
+      where: { name: 'Fortress' },
+    });
+    const event = await prisma.event.findFirstOrThrow({
+      where: { name: 'Week 1 - Team Stroke' },
+      include: { flights: { orderBy: { startsAt: 'asc' } } },
+    });
+
+    expect(course.timeZone).toBe('America/Detroit');
+    expect(event.timeZone).toBe(course.timeZone);
+    expect(event.startsAt.toISOString()).toBe('2026-05-07T21:30:00.000Z');
+    expect(event.flights.map((flight) => flight.startsAt.toISOString())).toEqual([
+      '2026-05-07T21:30:00.000Z',
+      '2026-05-07T21:40:00.000Z',
+    ]);
   });
 
   it('validates credentials and persists an authenticated admin session', async () => {

@@ -42,8 +42,27 @@ async function main() {
     throw new Error('All SUPER_ADMIN_* environment variables are required');
   }
 
-  if (!adminEmail || !adminPassword || !adminFirstName || !adminLastName) {
-    throw new Error('All TEST_ADMIN_* environment variables are required');
+  if (password.length < 8) {
+    throw new Error('SUPER_ADMIN_PASSWORD must be at least 8 characters');
+  }
+
+  const testAdminValues = [adminEmail, adminPassword, adminFirstName, adminLastName];
+  const hasAnyTestAdminValue = testAdminValues.some(Boolean);
+  const hasEveryTestAdminValue = testAdminValues.every(Boolean);
+
+  if (process.env.NODE_ENV === 'production' && hasAnyTestAdminValue) {
+    throw new Error('TEST_ADMIN_* variables must not be configured in production');
+  }
+
+  if (hasAnyTestAdminValue && !hasEveryTestAdminValue) {
+    throw new Error('Either set every TEST_ADMIN_* variable or leave all of them unset');
+  }
+
+  if (hasEveryTestAdminValue && adminPassword.length < 8) {
+    throw new Error('TEST_ADMIN_PASSWORD must be at least 8 characters');
+  }
+  if (hasEveryTestAdminValue && adminEmail === email) {
+    throw new Error('SUPER_ADMIN_EMAIL and TEST_ADMIN_EMAIL must be different');
   }
 
   await upsertUser({
@@ -54,16 +73,18 @@ async function main() {
     role: 'SUPER',
   });
 
-  await upsertUser({
-    email: adminEmail,
-    password: adminPassword,
-    firstName: adminFirstName,
-    lastName: adminLastName,
-    role: 'ADMIN',
-  });
-
   console.log(`Super admin ensured: ${email}`);
-  console.log(`Test admin ensured: ${adminEmail}`);
+
+  if (hasEveryTestAdminValue) {
+    await upsertUser({
+      email: adminEmail,
+      password: adminPassword,
+      firstName: adminFirstName,
+      lastName: adminLastName,
+      role: 'ADMIN',
+    });
+    console.log(`Test admin ensured: ${adminEmail}`);
+  }
 }
 
 main()

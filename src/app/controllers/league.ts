@@ -8,6 +8,7 @@ import {
 } from '../utils/billing';
 import { writeAuditLog } from '../utils/audit';
 import { generateLeagueAccessCode } from './auth';
+import { localDateKey } from '../utils/time-zone';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
@@ -40,7 +41,6 @@ class LeagueController {
   static normalizeLeaguePayload = (payload: any) => {
     const normalizedType = String(payload?.type || '').toLowerCase();
     const normalizedFormat = payload?.format ? String(payload.format).toLowerCase() : null;
-    const normalizedAccess = String(payload?.access || 'public').toLowerCase();
 
     if (!['season', 'tournament'].includes(normalizedType)) {
       throw new Error('League type must be either "season" or "tournament".');
@@ -48,10 +48,6 @@ class LeagueController {
 
     if (normalizedType === 'season' && !['individual', 'team'].includes(normalizedFormat || '')) {
       throw new Error('Season leagues require format to be either "individual" or "team".');
-    }
-
-    if (!['public', 'private'].includes(normalizedAccess)) {
-      throw new Error('League access must be either "public" or "private".');
     }
 
     const requiredTextFields = [
@@ -74,7 +70,6 @@ class LeagueController {
       name: String(payload.name).trim(),
       description: payload.description ? String(payload.description).trim() : null,
       type: normalizedType,
-      access: normalizedAccess,
       format: normalizedType === 'season' ? normalizedFormat : null,
       numPlayers,
       startDate: new Date(payload.startDate),
@@ -119,7 +114,7 @@ class LeagueController {
             },
           },
         },
-        orderBy: { date: 'desc' },
+        orderBy: { startsAt: 'desc' },
       });
 
       const result = {
@@ -127,7 +122,8 @@ class LeagueController {
         lastEvent: {
           id: lastEvent?.id,
           name: lastEvent?.name,
-          date: lastEvent?.date,
+          startsAt: lastEvent?.startsAt,
+          timeZone: lastEvent?.timeZone,
           course: lastEvent?.courseId,
           stats: calculateStats(lastEvent?.rounds || []),
           lowNet: calculateLowNet(lastEvent?.rounds || []),
@@ -333,7 +329,7 @@ class LeagueController {
         },
         orderBy: {
           event: {
-            date: 'asc',
+            startsAt: 'asc',
           },
         },
         take: 5,
@@ -512,7 +508,6 @@ class LeagueController {
       const status =
         message.includes('League type') ||
         message.includes('Season leagues require format') ||
-        message.includes('League access') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
         message.includes('League dates are invalid') ||
@@ -548,7 +543,7 @@ class LeagueController {
         prisma.team.count({ where: { leagueId: id, deletedAt: null } }),
         prisma.event.findMany({
           where: { leagueId: id, isDeleted: false, deletedAt: null },
-          select: { id: true, date: true },
+          select: { id: true, startsAt: true, timeZone: true },
         }),
       ]);
 
@@ -571,9 +566,12 @@ class LeagueController {
         });
       }
 
-      const outsideDateRange = activeEvents.some(
-        (event) => event.date < league.startDate || event.date > league.endDate,
-      );
+      const leagueStartKey = league.startDate.toISOString().slice(0, 10);
+      const leagueEndKey = league.endDate.toISOString().slice(0, 10);
+      const outsideDateRange = activeEvents.some((event) => {
+        const eventDateKey = localDateKey(event.startsAt, event.timeZone);
+        return eventDateKey < leagueStartKey || eventDateKey > leagueEndKey;
+      });
       if (outsideDateRange) {
         return res.status(409).json({
           message: 'League dates must continue to include every existing event.',
@@ -611,7 +609,6 @@ class LeagueController {
       const status =
         message.includes('League type') ||
         message.includes('Season leagues require format') ||
-        message.includes('League access') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
         message.includes('League dates are invalid') ||
@@ -676,7 +673,7 @@ class LeagueController {
         },
         include: {
           player: true,
-          event: { select: { id: true, name: true, date: true } },
+          event: { select: { id: true, name: true, startsAt: true, timeZone: true } },
         },
         orderBy: { date: 'asc' },
       });
@@ -826,22 +823,31 @@ class LeagueController {
       );
 
       // ── Gross trend per event ────────────────────────
-      const eventMap = new Map<number, { name: string; date: Date; grossScores: number[] }>();
+      const eventMap = new Map<
+        number,
+        { name: string; startsAt: Date; timeZone: string; grossScores: number[] }
+      >();
       for (const r of rounds) {
         const eid = r.event.id;
         const existing = eventMap.get(eid);
         if (existing) {
           existing.grossScores.push(r.gross);
         } else {
-          eventMap.set(eid, { name: r.event.name, date: r.event.date, grossScores: [r.gross] });
+          eventMap.set(eid, {
+            name: r.event.name,
+            startsAt: r.event.startsAt,
+            timeZone: r.event.timeZone,
+            grossScores: [r.gross],
+          });
         }
       }
 
       const grossTrend = [...eventMap.values()]
-        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+        .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
         .map((e) => ({
           name: e.name,
-          date: e.date,
+          startsAt: e.startsAt,
+          timeZone: e.timeZone,
           avgGross:
             Math.round((e.grossScores.reduce((s, v) => s + v, 0) / e.grossScores.length) * 10) / 10,
           lowGross: Math.min(...e.grossScores),
@@ -850,7 +856,7 @@ class LeagueController {
       // ── Weekly player trend (avg gross/net by event week) ─────────────
       const weeklyEvents = [
         ...new Map(rounds.map((r) => [Number(r.event.id), r.event])).values(),
-      ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      ].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
 
       const eventIdToIndex = new Map<number, number>();
       const weeklyLabels = weeklyEvents.map((e, idx) => {
@@ -938,7 +944,8 @@ class LeagueController {
           playerName: `${round.player.firstName} ${round.player.lastName}`,
           value: round[scoreKey],
           eventName: round.event.name,
-          eventDate: round.event.date,
+          eventDate: round.event.startsAt,
+          eventTimeZone: round.event.timeZone,
         };
       };
 
@@ -968,7 +975,8 @@ class LeagueController {
               playerName: `${mostPointsRound.player.firstName} ${mostPointsRound.player.lastName}`,
               value: getRoundTotalPoints(mostPointsRound),
               eventName: mostPointsRound.event.name,
-              eventDate: mostPointsRound.event.date,
+              eventDate: mostPointsRound.event.startsAt,
+              eventTimeZone: mostPointsRound.event.timeZone,
             }
           : null,
       };
@@ -1004,7 +1012,8 @@ class LeagueController {
               event: {
                 select: {
                   name: true,
-                  date: true,
+                  startsAt: true,
+                  timeZone: true,
                   format: true,
                   scoringFormat: true,
                 },
@@ -1051,6 +1060,7 @@ class LeagueController {
           teamName: string;
           eventName: string;
           eventDate: Date;
+          eventTimeZone: string;
           grossByHole: Map<number, number>;
           netByHole: Map<number, number>;
         }
@@ -1072,7 +1082,8 @@ class LeagueController {
           teamId,
           teamName: teamNameMap.get(teamId) || `Team ${teamId}`,
           eventName: String(score.round.event?.name || `Event ${eventId}`),
-          eventDate: (score.round.event?.date as Date) || new Date(0),
+          eventDate: (score.round.event?.startsAt as Date) || new Date(0),
+          eventTimeZone: String(score.round.event?.timeZone || 'UTC'),
           grossByHole: new Map<number, number>(),
           netByHole: new Map<number, number>(),
         };
@@ -1103,6 +1114,7 @@ class LeagueController {
         teamName: entry.teamName,
         eventName: entry.eventName,
         eventDate: entry.eventDate,
+        eventTimeZone: entry.eventTimeZone,
         grossTotal: [...entry.grossByHole.values()].reduce((sum, val) => sum + val, 0),
         netTotal: [...entry.netByHole.values()].reduce((sum, val) => sum + val, 0),
       }));
@@ -1122,6 +1134,7 @@ class LeagueController {
           value: lowGrossTeam.grossTotal,
           eventName: lowGrossTeam.eventName,
           eventDate: lowGrossTeam.eventDate,
+          eventTimeZone: lowGrossTeam.eventTimeZone,
         };
       }
 
@@ -1131,6 +1144,7 @@ class LeagueController {
           value: lowNetTeam.netTotal,
           eventName: lowNetTeam.eventName,
           eventDate: lowNetTeam.eventDate,
+          eventTimeZone: lowNetTeam.eventTimeZone,
         };
       }
 
