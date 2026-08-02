@@ -10,6 +10,7 @@ dotenv.config();
 import Payment from './app/controllers/payment';
 import HealthController from './app/controllers/health';
 import { requireTrustedOrigin } from './app/middleware/security';
+import { normalizeErrorResponses } from './app/middleware/error-responses';
 import { logError, logInfo, requestId, requestLogger } from './app/middleware/logging';
 import { getPublicErrorResponse } from './app/utils/error-response';
 import { getConfiguredClientOrigins, isCorsOriginAllowed } from './app/utils/origins';
@@ -61,6 +62,7 @@ const corsOptions = {
 };
 
 app.use(requestId);
+app.use(normalizeErrorResponses);
 app.use(requestLogger);
 app.use(helmet());
 app.use(cors(corsOptions));
@@ -109,8 +111,23 @@ app.use('/api', requireTrustedOrigin, api);
 
 app.get('/health', HealthController.getHealth);
 
+// Keep unmatched routes out of Express's default HTML 404 handler.
+app.use((req: Request, res: Response) => {
+  res.status(404).json({
+    status: 404,
+    name: 'NotFound',
+    message: 'Route not found',
+    path: req.originalUrl,
+    requestId: (req as any).requestId,
+  });
+});
+
 // High-level error handling
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+  if (res.headersSent) {
+    return next(err);
+  }
+
   const errorResponse = getPublicErrorResponse(err);
   const name = err.name || 'Error';
   logError('request:error', {
@@ -122,6 +139,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     stack: process.env.LOG_LEVEL === 'debug' ? err.stack : undefined,
   });
   res.status(errorResponse.status).json({
+    status: errorResponse.status,
     name,
     message: errorResponse.message,
     requestId: (req as any).requestId,

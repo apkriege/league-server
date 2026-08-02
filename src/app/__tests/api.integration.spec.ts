@@ -59,11 +59,12 @@ describe('API integration', () => {
   });
 
   it('serves public course data but protects account data', async () => {
-    const [courses, profile, adminLeagues, removedTestRoute] = await Promise.all([
+    const [courses, profile, adminLeagues, removedTestRoute, missingCourse] = await Promise.all([
       request(app).get('/api/courses'),
       request(app).get('/api/auth/me'),
       request(app).get('/api/admin/leagues'),
       request(app).get('/api/test-handicap'),
+      request(app).get('/api/courses/999999999'),
     ]);
 
     expect(courses.status).toBe(200);
@@ -72,7 +73,47 @@ describe('API integration', () => {
     );
     expect(profile.status).toBe(401);
     expect(adminLeagues.status).toBe(401);
+    expect(adminLeagues.type).toBe('application/json');
+    expect(adminLeagues.body).toMatchObject({ message: 'Not authenticated' });
+    expect(missingCourse.status).toBe(404);
+    expect(missingCourse.type).toBe('application/json');
+    expect(missingCourse.body).toMatchObject({ status: 404 });
     expect(removedTestRoute.status).toBe(404);
+    expect(removedTestRoute.type).toBe('application/json');
+    expect(removedTestRoute.body).toMatchObject({
+      status: 404,
+      name: 'NotFound',
+      message: 'Route not found',
+      path: '/api/test-handicap',
+    });
+    expect(removedTestRoute.body.requestId).toEqual(expect.any(String));
+  });
+
+  it('returns JSON for unmatched routes and malformed request bodies', async () => {
+    const [missingRoute, malformedJson] = await Promise.all([
+      request(app).get('/does-not-exist').set('Accept', 'text/html'),
+      request(app)
+        .post('/api/auth/login')
+        .set('Content-Type', 'application/json')
+        .send('{"email":'),
+    ]);
+
+    expect(missingRoute.status).toBe(404);
+    expect(missingRoute.type).toBe('application/json');
+    expect(missingRoute.body).toMatchObject({
+      status: 404,
+      name: 'NotFound',
+      message: 'Route not found',
+      path: '/does-not-exist',
+    });
+
+    expect(malformedJson.status).toBe(400);
+    expect(malformedJson.type).toBe('application/json');
+    expect(malformedJson.body).toMatchObject({
+      status: 400,
+      name: 'SyntaxError',
+      message: 'Invalid JSON request body.',
+    });
   });
 
   it('stores schedules as UTC instants with the course timezone preserved', async () => {
