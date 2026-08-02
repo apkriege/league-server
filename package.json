@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "engines": {
-    "node": ">=22.22.0 <23"
+    "node": ">=24.12.0 <25"
   },
   "scripts": {
     "dev": "nodemon --exec ts-node --files src/dev.ts",
