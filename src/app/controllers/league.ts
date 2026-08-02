@@ -199,6 +199,32 @@ class LeagueController {
     }
   };
 
+  static rotateViewerAccessCode = async (req: Request, res: Response) => {
+    try {
+      const leagueId = Number(req.params.leagueId);
+      const viewerAccessCode = await LeagueController.createUniqueViewerAccessCode();
+      const league = await prisma.league.update({
+        where: { id: leagueId },
+        data: { viewerAccessCode },
+        select: { id: true, viewerAccessCode: true },
+      });
+
+      await writeAuditLog({
+        userId: Number(req.session.userId),
+        leagueId,
+        entity: 'league',
+        entityId: leagueId,
+        action: 'rotate-viewer-access-code',
+        summary: 'Rotated the view-only league access code.',
+      });
+
+      return res.status(200).json(league);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ message: 'Unable to rotate the league access code' });
+    }
+  };
+
   static getAdminLeagues = async (req: Request, res: Response) => {
     try {
       const leagues = await prisma.league.findMany({
@@ -273,8 +299,12 @@ class LeagueController {
       const leagueAccessIds = Array.isArray(req.session.leagueAccess?.leagueIds)
         ? req.session.leagueAccess.leagueIds.map(Number).filter(Boolean)
         : [];
+      const leagueAccessCodes = req.session.leagueAccess?.accessCodes || {};
+      const validLeagueAccess = leagueAccessIds
+        .map((id) => ({ id, code: leagueAccessCodes[String(id)] }))
+        .filter((entry): entry is { id: number; code: string } => Boolean(entry.code));
 
-      if (!userId && leagueAccessIds.length === 0) {
+      if (!userId && validLeagueAccess.length === 0) {
         return res.status(401).json({ message: 'Not authenticated' });
       }
 
@@ -291,7 +321,10 @@ class LeagueController {
         where: {
           deletedAt: null,
           OR: [
-            ...(leagueAccessIds.length > 0 ? [{ id: { in: leagueAccessIds } }] : []),
+            ...validLeagueAccess.map((entry) => ({
+              id: entry.id,
+              viewerAccessCode: entry.code,
+            })),
             { players: { some: { id: { in: playerIdValues } } } },
             {
               teams: {

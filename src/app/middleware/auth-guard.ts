@@ -9,9 +9,15 @@ const getSessionUser = async (req: Request) => {
   return UserService.findById(userId);
 };
 
-const hasLeagueCodeAccess = (req: Request, leagueId: number) => {
-  const leagueIds = req.session.leagueAccess?.leagueIds;
-  return Array.isArray(leagueIds) && leagueIds.map(Number).includes(Number(leagueId));
+const hasLeagueCodeAccess = async (req: Request, leagueId: number) => {
+  const accessCode = req.session.leagueAccess?.accessCodes?.[String(leagueId)];
+  if (!accessCode) return false;
+
+  const league = await prisma.league.findFirst({
+    where: { id: leagueId, viewerAccessCode: accessCode, deletedAt: null },
+    select: { id: true },
+  });
+  return Boolean(league);
 };
 
 const requireSessionUser = async (req: Request, res: Response, guardName = 'session') => {
@@ -24,6 +30,25 @@ const requireSessionUser = async (req: Request, res: Response, guardName = 'sess
 
   req.user = user;
   return user;
+};
+
+const requireAdminRole = (
+  req: Request,
+  res: Response,
+  user: { id: number; role: string },
+  guard: string,
+) => {
+  const role = String(user.role || '').toUpperCase();
+  if (role === 'ADMIN' || role === 'SUPER') return role;
+
+  logAuthFailure(req, 'auth:forbidden', {
+    guard,
+    reason: 'insufficient-role',
+    userId: user.id,
+    role,
+  });
+  res.status(403).json({ message: 'Admin access is required' });
+  return null;
 };
 
 export const adminGuard = (req: Request, res: Response, next: NextFunction): any => {
@@ -131,7 +156,8 @@ export const leagueAdminGuard = async (req: Request, res: Response, next: NextFu
     const user = await requireSessionUser(req, res, 'league-admin');
     if (!user) return;
 
-    const role = String(user.role).toUpperCase();
+    const role = requireAdminRole(req, res, user, 'league-admin');
+    if (!role) return;
     const leagueId = Number(req.params.leagueId ?? req.params.id);
     if (!Number.isInteger(leagueId) || leagueId <= 0) {
       return res.status(400).json({ message: 'Invalid league id' });
@@ -173,7 +199,7 @@ export const leagueMemberGuard = async (req: Request, res: Response, next: NextF
     }
 
     const user = await getSessionUser(req);
-    if (!user && hasLeagueCodeAccess(req, leagueId)) {
+    if (!user && (await hasLeagueCodeAccess(req, leagueId))) {
       return next();
     }
     if (!user) {
@@ -230,7 +256,8 @@ export const eventAdminGuard = async (req: Request, res: Response, next: NextFun
     const user = await requireSessionUser(req, res, 'event-admin');
     if (!user) return;
 
-    const role = String(user.role).toUpperCase();
+    const role = requireAdminRole(req, res, user, 'event-admin');
+    if (!role) return;
     const eventId = Number(req.params.eventId);
     if (!Number.isInteger(eventId) || eventId <= 0) {
       return res.status(400).json({ message: 'Invalid event id' });
@@ -281,7 +308,7 @@ export const teamMemberGuard = async (req: Request, res: Response, next: NextFun
     }
 
     const user = await getSessionUser(req);
-    if (!user && team.leagueId && hasLeagueCodeAccess(req, Number(team.leagueId))) {
+    if (!user && team.leagueId && (await hasLeagueCodeAccess(req, Number(team.leagueId)))) {
       return next();
     }
     if (!user) {
@@ -343,7 +370,7 @@ export const playerMemberGuard = async (req: Request, res: Response, next: NextF
     }
 
     const user = await getSessionUser(req);
-    if (!user && player.leagueId && hasLeagueCodeAccess(req, Number(player.leagueId))) {
+    if (!user && player.leagueId && (await hasLeagueCodeAccess(req, Number(player.leagueId)))) {
       return next();
     }
     if (!user) {
@@ -397,7 +424,8 @@ export const playerAdminGuard = async (req: Request, res: Response, next: NextFu
     const user = await requireSessionUser(req, res, 'player-admin');
     if (!user) return;
 
-    const role = String(user.role).toUpperCase();
+    const role = requireAdminRole(req, res, user, 'player-admin');
+    if (!role) return;
     const playerId = Number(req.params.id ?? req.params.playerId);
     if (!Number.isInteger(playerId) || playerId <= 0) {
       return res.status(400).json({ message: 'Invalid player id' });
@@ -436,7 +464,8 @@ export const teamAdminGuard = async (req: Request, res: Response, next: NextFunc
     const user = await requireSessionUser(req, res, 'team-admin');
     if (!user) return;
 
-    const role = String(user.role).toUpperCase();
+    const role = requireAdminRole(req, res, user, 'team-admin');
+    if (!role) return;
     const teamId = Number(req.params.id);
     if (!Number.isInteger(teamId) || teamId <= 0) {
       return res.status(400).json({ message: 'Invalid team id' });
@@ -475,7 +504,8 @@ export const flightAdminGuard = async (req: Request, res: Response, next: NextFu
     const user = await requireSessionUser(req, res, 'flight-admin');
     if (!user) return;
 
-    const role = String(user.role).toUpperCase();
+    const role = requireAdminRole(req, res, user, 'flight-admin');
+    if (!role) return;
     const flightId = Number(req.params.flightId);
     if (!Number.isInteger(flightId) || flightId <= 0) {
       return res.status(400).json({ message: 'Invalid flight id' });

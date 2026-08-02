@@ -9,12 +9,14 @@ import { BILLING_CURRENCY, BILLING_MIN_GOLFERS, BILLING_PRICE_PER_GOLFER_CENTS }
 import { logAuth, logAuthFailure } from '../middleware/logging';
 import { sendSignupNotification } from '../services/signupNotification';
 import { isProductionRuntime } from '../utils/runtime-config';
+import { sendPasswordResetEmail } from '../services/passwordResetEmail';
 
 declare module 'express-session' {
   interface SessionData {
     userId?: number;
     leagueAccess?: {
       leagueIds: number[];
+      accessCodes?: Record<string, string>;
     };
   }
 }
@@ -48,10 +50,111 @@ const normalizeAccessCode = (code: unknown) =>
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '');
 
+const hashResetToken = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
+
 class AuthController {
+  static async requestPasswordReset(req: Request, res: Response) {
+    const genericResponse = {
+      message: 'If an account exists for that email, a password reset link has been sent.',
+    };
+
+    try {
+      const email = String(req.body?.email || '').trim().toLowerCase();
+      if (!email) {
+        return res.status(400).json({ message: 'Email is required' });
+      }
+
+      const user = await prisma.user.findFirst({
+        where: { email, deletedAt: null },
+        select: { id: true, email: true, firstName: true },
+      });
+      if (!user) return res.status(200).json(genericResponse);
+
+      const token = crypto.randomBytes(32).toString('hex');
+      const now = new Date();
+      await prisma.$transaction([
+        prisma.password_reset_token.updateMany({
+          where: { userId: user.id, usedAt: null },
+          data: { usedAt: now },
+        }),
+        prisma.password_reset_token.create({
+          data: {
+            userId: user.id,
+            tokenHash: hashResetToken(token),
+            expiresAt: new Date(now.getTime() + PASSWORD_RESET_TTL_MS),
+          },
+        }),
+      ]);
+
+      const emailResult = await sendPasswordResetEmail({
+        userId: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        token,
+      });
+      if (emailResult.status !== 'sent') {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'password-reset-email:failed',
+            userId: user.id,
+            reason: emailResult.reason,
+          }),
+        );
+      }
+
+      return res.status(200).json(genericResponse);
+    } catch (error) {
+      console.error('Password reset request failed:', error);
+      return res.status(200).json(genericResponse);
+    }
+  }
+
+  static async completePasswordReset(req: Request, res: Response) {
+    try {
+      const token = String(req.body?.token || '').trim();
+      const password = String(req.body?.password || '');
+      if (!token) return res.status(400).json({ message: 'Reset token is required' });
+      if (password.length < 8) {
+        return res.status(400).json({ message: 'Password must be at least 8 characters' });
+      }
+
+      const resetToken = await prisma.password_reset_token.findUnique({
+        where: { tokenHash: hashResetToken(token) },
+        include: { user: { select: { id: true, deletedAt: true } } },
+      });
+      if (
+        !resetToken ||
+        resetToken.usedAt ||
+        resetToken.expiresAt <= new Date() ||
+        resetToken.user.deletedAt
+      ) {
+        return res.status(400).json({ message: 'This password reset link is invalid or expired' });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+      await prisma.$transaction([
+        prisma.user.update({
+          where: { id: resetToken.userId },
+          data: { password: hashedPassword },
+        }),
+        prisma.password_reset_token.updateMany({
+          where: { userId: resetToken.userId, usedAt: null },
+          data: { usedAt: new Date() },
+        }),
+      ]);
+
+      return res.status(200).json({ message: 'Password reset successfully' });
+    } catch (error) {
+      console.error('Password reset failed:', error);
+      return res.status(500).json({ message: 'Unable to reset password' });
+    }
+  }
+
   static async register(req: Request, res: Response) {
     try {
-      const { firstName, lastName, email, password } = req.body || {};
+      const { firstName, lastName, email, password, invitationToken } = req.body || {};
       logAuth(req, 'auth:register:start', { emailProvided: Boolean(email) });
 
       if (!firstName || !lastName || !email || !password) {
@@ -66,6 +169,25 @@ class AuthController {
       }
 
       const normalizedEmail = String(email).trim().toLowerCase();
+      let registrationRole = 'ADMIN';
+      if (invitationToken) {
+        const invitation = await prisma.league_invitation.findFirst({
+          where: {
+            token: String(invitationToken),
+            email: normalizedEmail,
+            status: 'pending',
+            deletedAt: null,
+            OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+          },
+          select: { id: true },
+        });
+        if (!invitation) {
+          return res.status(400).json({
+            message: 'This player invitation is invalid, expired, or belongs to another email',
+          });
+        }
+        registrationRole = 'USER';
+      }
       const existingUser = await User.findByEmail(normalizedEmail);
       if (existingUser) {
         logAuthFailure(req, 'auth:register:invalid', {
@@ -82,7 +204,7 @@ class AuthController {
         email: normalizedEmail,
         username: normalizedEmail,
         password: hashedPassword,
-        role: 'ADMIN',
+        role: registrationRole,
         metadata: {
           billing: {
             includedGolfers: 0,
@@ -239,7 +361,10 @@ class AuthController {
           return res.status(500).json({ message: 'Server error' });
         }
 
-        req.session.leagueAccess = { leagueIds: [league.id] };
+        req.session.leagueAccess = {
+          leagueIds: [league.id],
+          accessCodes: { [String(league.id)]: accessCode },
+        };
         req.session.save((saveErr) => {
           if (saveErr) {
             logAuthFailure(req, 'auth:session:save-failed', {
@@ -303,8 +428,19 @@ class AuthController {
         return res.status(404).json({ message: 'User not found' });
       }
 
+      const memberships = await prisma.player.findMany({
+        where: { userId: user.id, deletedAt: null },
+        select: { id: true, leagueId: true },
+      });
       logAuth(req, 'auth:me:success', { userId: user.id });
-      res.json({ user: serializeUser(user) });
+      res.json({
+        user: serializeUser(user, {
+          leagues: memberships.map((membership) => ({
+            id: membership.leagueId,
+            playerId: membership.id,
+          })),
+        }),
+      });
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Server error' });

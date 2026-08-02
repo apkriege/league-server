@@ -49,6 +49,15 @@ describe('authorization guards', async () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it('allows a user to update their own account', async () => {
+    mocks.findUserById.mockResolvedValue({ id: 7, role: 'USER' });
+    const req = { session: { userId: 7 }, params: { id: '7' } } as any;
+    const next = vi.fn();
+
+    await userSelfOrAdminGuard(req, buildRes(), next);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
   it('allows a super admin to manage another user', async () => {
     mocks.findUserById.mockResolvedValue({ id: 1, role: 'SUPER' });
     const req = { session: { userId: 1 }, params: { id: '8' } } as any;
@@ -72,6 +81,21 @@ describe('authorization guards', async () => {
       select: { adminId: true },
     });
     expect(res.status).toHaveBeenCalledWith(404);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('denies a user role even if they are stored as the league owner', async () => {
+    mocks.findUserById.mockResolvedValue({ id: 7, role: 'USER' });
+    mocks.findLeague.mockResolvedValue({ adminId: 7 });
+    const req = { session: { userId: 7 }, params: { id: '12' } } as any;
+    const res = buildRes();
+    const next = vi.fn();
+
+    await leagueAdminGuard(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({ message: 'Admin access is required' });
+    expect(mocks.findLeague).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
   });
 });

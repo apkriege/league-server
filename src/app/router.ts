@@ -46,13 +46,15 @@ router.get('/health', HealthController.getHealth);
 router.post('/auth/login', authRateLimiter, Auth.login);
 router.post('/auth/league-code', authRateLimiter, Auth.loginWithLeagueCode);
 router.post('/auth/register', authRateLimiter, Auth.register);
+router.post('/auth/password-reset/request', authRateLimiter, Auth.requestPasswordReset);
+router.post('/auth/password-reset/complete', authRateLimiter, Auth.completePasswordReset);
 router.post('/auth/logout', Auth.logout);
 router.get('/auth/me', user, Auth.getProfile);
 
 // =====================
 // PAYMENT ROUTES
 // =====================
-router.post('/payments/checkout-session', user, paymentRateLimiter, Payment.createCheckoutSession);
+router.post('/payments/checkout-session', admin, paymentRateLimiter, Payment.createCheckoutSession);
 router.get('/payments/stripe-state', user, paymentRateLimiter, Payment.getStripeState);
 
 // =====================
@@ -127,6 +129,11 @@ router.get('/leagues/:id/metrics', leagueMemberGuard, League.getLeagueMetrics);
 router.post('/leagues', admin, League.createLeague);
 router.put('/leagues/:id', admin, leagueAdminGuard, League.updateLeague);
 router.delete('/leagues/:id', admin, leagueAdminGuard, League.deleteLeague);
+router.post(
+  '/leagues/:leagueId/viewer-access-code/rotate',
+  leagueAdminGuard,
+  League.rotateViewerAccessCode,
+);
 router.post('/leagues/:leagueId/season-sync', leagueAdminGuard, SeasonSyncController.recalculateLeague);
 
 // League Players & Teams

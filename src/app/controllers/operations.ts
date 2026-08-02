@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../../prisma';
 import { writeAuditLog } from '../utils/audit';
+import { sendLeagueInvitationEmail } from '../services/leagueInvitationEmail';
 
 const addDays = (days: number) => {
   const date = new Date();
@@ -206,10 +207,6 @@ class OperationsController {
     const playerIds = Array.isArray(req.body?.playerIds)
       ? req.body.playerIds.map((id: unknown) => Number(id)).filter(Boolean)
       : [];
-    const emails = Array.isArray(req.body?.emails)
-      ? req.body.emails.map((email: unknown) => normalizeEmail(email)).filter(Boolean)
-      : [];
-
     const league = await prisma.league.findUnique({
       where: { id: leagueId },
       select: { id: true, name: true },
@@ -233,11 +230,10 @@ class OperationsController {
         email: normalizeEmail(player.email),
         name: `${player.firstName} ${player.lastName}`.trim(),
       })),
-      ...emails.map((email: string) => ({ playerId: null, email, name: email })),
     ].filter((target) => target.email);
 
     if (inviteTargets.length === 0) {
-      return res.status(400).json({ message: 'Select players or enter emails to invite.' });
+      return res.status(400).json({ message: 'Select at least one roster player with an email address.' });
     }
 
     const created = [];
@@ -280,7 +276,22 @@ class OperationsController {
       metadata: { invitationIds: created.map((invite) => invite.id) },
     });
 
-    res.status(201).json(created);
+    const delivery = await Promise.all(
+      created.map(async (invite) => ({
+        invitationId: invite.id,
+        email: invite.email,
+        result: await sendLeagueInvitationEmail({
+          invitationId: invite.id,
+          token: invite.token,
+          email: invite.email,
+          playerName:
+            inviteTargets.find((target) => target.email === invite.email)?.name || invite.email,
+          leagueName: league.name,
+        }),
+      })),
+    );
+
+    res.status(201).json({ invitations: created, delivery });
   };
 
   static revokeLeagueInvitation = async (req: Request, res: Response) => {

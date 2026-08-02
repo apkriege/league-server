@@ -2,6 +2,8 @@ import request from 'supertest';
 import { afterAll, describe, expect, it } from 'vitest';
 import app from '../../app';
 import { prisma } from '../../prisma';
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 
 const password = 'integration-test-password';
 
@@ -189,22 +191,70 @@ describe('API integration', () => {
 
     const league = await prisma.league.findFirstOrThrow({
       where: { name: 'Seeded Thursday Night League' },
-      include: { events: { include: { flights: true } } },
+      include: {
+        players: true,
+        teams: true,
+        events: { include: { flights: true } },
+      },
     });
     const activeFlight = league.events
       .find((event) => event.status === 'active')
       ?.flights.at(0);
     expect(activeFlight).toBeTruthy();
 
-    const [read, update, adminLeagues, superAdmin] = await Promise.all([
+    const [
+      read,
+      updateFlight,
+      updateLeague,
+      createPlayer,
+      updatePlayer,
+      createTeam,
+      updateTeam,
+      updateEvent,
+      updateScores,
+      createInvitation,
+      createAnnouncement,
+      rotateViewerCode,
+      createCheckout,
+      adminLeagues,
+      superAdmin,
+    ] = await Promise.all([
       member.get(`/api/leagues/${league.id}`),
       member.put(`/api/flights/${activeFlight!.id}/players`).send({ players: [] }),
+      member.put(`/api/leagues/${league.id}`).send({ name: 'Unauthorized change' }),
+      member.post(`/api/leagues/${league.id}/players`).send({}),
+      member.put(`/api/players/${league.players[0].id}`).send({ handicap: 0 }),
+      member.post(`/api/leagues/${league.id}/teams`).send({}),
+      member.put(`/api/teams/${league.teams[0].id}`).send({ name: 'Unauthorized change' }),
+      member
+        .put(`/api/leagues/${league.id}/events/${league.events[0].id}`)
+        .send({ name: 'Unauthorized change' }),
+      member
+        .put(`/api/leagues/${league.id}/events/${league.events[0].id}/scores`)
+        .send({}),
+      member.post(`/api/leagues/${league.id}/invitations`).send({ playerIds: [] }),
+      member.post(`/api/leagues/${league.id}/announcements`).send({ title: 'No access' }),
+      member.post(`/api/leagues/${league.id}/viewer-access-code/rotate`),
+      member.post('/api/payments/checkout-session').send({ purpose: 'registration' }),
       member.get('/api/admin/leagues'),
       member.get('/api/users'),
     ]);
 
     expect(read.status).toBe(200);
-    expect(update.status).toBe(403);
+    expect([
+      updateFlight,
+      updateLeague,
+      createPlayer,
+      updatePlayer,
+      createTeam,
+      updateTeam,
+      updateEvent,
+      updateScores,
+      createInvitation,
+      createAnnouncement,
+      rotateViewerCode,
+      createCheckout,
+    ].map((response) => response.status)).toEqual(Array(12).fill(403));
     expect(adminLeagues.status).toBe(403);
     expect(superAdmin.status).toBe(403);
   });
@@ -417,6 +467,123 @@ describe('API integration', () => {
     );
     expect(updatedUntouched.map((entry) => entry.playerId)).toEqual(untouchedIds);
     expect(audit).toMatchObject({ userId: user.id, leagueId: league.id });
+  });
+
+  it('rotates a viewer code and immediately revokes the previous code', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+    });
+    const oldCode = league.viewerAccessCode;
+    const existingViewer = request.agent(app);
+    expect(
+      (await existingViewer.post('/api/auth/league-code').send({ code: oldCode })).status,
+    ).toBe(200);
+
+    const rotation = await admin.post(
+      `/api/leagues/${league.id}/viewer-access-code/rotate`,
+    );
+    expect(rotation.status).toBe(200);
+    expect(rotation.body.viewerAccessCode).toEqual(expect.any(String));
+    expect(rotation.body.viewerAccessCode).not.toBe(oldCode);
+
+    const [oldLogin, newLogin, existingSession] = await Promise.all([
+      request(app).post('/api/auth/league-code').send({ code: oldCode }),
+      request(app)
+        .post('/api/auth/league-code')
+        .send({ code: rotation.body.viewerAccessCode }),
+      existingViewer.get(`/api/leagues/${league.id}`),
+    ]);
+    expect(oldLogin.status).toBe(400);
+    expect(newLogin.status).toBe(200);
+    expect(existingSession.status).toBe(401);
+  });
+
+  it('emails roster invitations and connects the matching account to its player', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+    });
+    const email = 'invited-player@test.com';
+    const player = await prisma.player.create({
+      data: {
+        firstName: 'Invited',
+        lastName: 'Player',
+        email,
+        handicap: 12,
+        startingHandicap: 12,
+        seasonPoints: 0,
+        type: 'substitute',
+        leagueId: league.id,
+      },
+    });
+
+    const invitationResponse = await admin
+      .post(`/api/leagues/${league.id}/invitations`)
+      .send({ playerIds: [player.id] });
+    expect(invitationResponse.status).toBe(201);
+    expect(invitationResponse.body.invitations).toHaveLength(1);
+    expect(invitationResponse.body.delivery).toHaveLength(1);
+
+    const member = request.agent(app);
+    const registration = await member.post('/api/auth/register').send({
+      firstName: 'Invited',
+      lastName: 'Player',
+      email,
+      password,
+      invitationToken: invitationResponse.body.invitations[0].token,
+    });
+    expect(registration.status).toBe(201);
+    expect(registration.body.user.role).toBe('USER');
+
+    const claim = await member.post(
+      `/api/invitations/${invitationResponse.body.invitations[0].token}/claim`,
+    );
+    expect(claim.status).toBe(200);
+    expect(claim.body).toMatchObject({ leagueId: league.id, playerId: player.id });
+    await expect(prisma.player.findUniqueOrThrow({ where: { id: player.id } })).resolves.toMatchObject({
+      userId: registration.body.user.id,
+    });
+  });
+
+  it('accepts a valid password reset token exactly once', async () => {
+    const email = 'password-reset@test.com';
+    const user = await prisma.user.create({
+      data: {
+        firstName: 'Password',
+        lastName: 'Reset',
+        email,
+        username: email,
+        password: await bcrypt.hash(password, 10),
+        role: 'USER',
+      },
+    });
+    const token = crypto.randomBytes(32).toString('hex');
+    await prisma.password_reset_token.create({
+      data: {
+        userId: user.id,
+        tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const newPassword = 'new-integration-password';
+    const reset = await request(app)
+      .post('/api/auth/password-reset/complete')
+      .send({ token, password: newPassword });
+    expect(reset.status).toBe(200);
+
+    const replay = await request(app)
+      .post('/api/auth/password-reset/complete')
+      .send({ token, password: newPassword });
+    expect(replay.status).toBe(400);
+
+    const loginResponse = await request(app)
+      .post('/api/auth/login')
+      .send({ email, password: newPassword });
+    expect(loginResponse.status).toBe(200);
   });
 
   it('destroys the server session on logout', async () => {

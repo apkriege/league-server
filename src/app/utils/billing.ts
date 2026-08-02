@@ -73,7 +73,6 @@ export const getAllocatedGolfersForAdmin = async (adminId: number, excludeLeague
   const leagues = await prisma.league.findMany({
     where: {
       adminId,
-      deletedAt: null,
       ...(excludeLeagueId ? { id: { not: excludeLeagueId } } : {}),
     },
     select: {

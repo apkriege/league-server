@@ -103,63 +103,62 @@ class EventController {
       const leagueId = Number(req.params.leagueId);
       const eventId = Number(req.params.eventId);
 
-      const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
-        include: {
-          course: true,
-          tee: true,
-          flights: {
-            include: {
-              players: {
-                include: {
-                  player: {
-                    include: {
-                      team: true,
-                      rounds: {
-                        take: 1,
-                        where: { eventId },
-                        include: {
-                          scores: {
-                            select: {
-                              hole: true,
-                              gross: true,
+      const [event, scoreOrder, metrics] = await Promise.all([
+        prisma.event.findFirst({
+          where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+          include: {
+            course: true,
+            tee: true,
+            flights: {
+              include: {
+                players: {
+                  include: {
+                    player: {
+                      include: {
+                        team: true,
+                        rounds: {
+                          take: 1,
+                          where: { eventId, deletedAt: null },
+                          include: {
+                            scores: {
+                              select: {
+                                hole: true,
+                                gross: true,
+                              },
+                              orderBy: { hole: 'asc' },
                             },
-                            orderBy: { hole: 'asc' },
                           },
                         },
                       },
                     },
                   },
                 },
-              },
-              teams: {
-                include: {
-                  team: {
-                    include: {
-                      players: true,
+                teams: {
+                  include: {
+                    team: {
+                      include: {
+                        players: true,
+                      },
                     },
                   },
                 },
               },
             },
           },
-        },
-      });
+        }),
+        getLeagueScoreOrder(leagueId),
+        new EventMetrics(eventId, leagueId).processEvent(),
+      ]);
 
       if (!event) {
         res.status(404).send('Event not found');
         return;
       }
 
-      const scoreOrder = await getLeagueScoreOrder(leagueId);
-
-      const metrics = new EventMetrics(eventId);
-      const x = await metrics.processEvent();
-
       const eventWithMetrics = {
         ...event,
         ...buildEventScoreAccess(Number(event.id), scoreOrder),
-        metrics: x,
+        metrics,
       };
 
       res.status(200).send(eventWithMetrics);
