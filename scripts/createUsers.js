@@ -3,12 +3,14 @@ const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient();
 
-const email = String(process.env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase();
+const email = 'adamkrieger87@gmail.com';
 const password = String(process.env.SUPER_ADMIN_PASSWORD || '');
-const firstName = String(process.env.SUPER_ADMIN_FIRST_NAME || '').trim();
-const lastName = String(process.env.SUPER_ADMIN_LAST_NAME || '').trim();
+const firstName = 'Adam';
+const lastName = 'Krieger';
 
-const adminEmail = String(process.env.TEST_ADMIN_EMAIL || '').trim().toLowerCase();
+const adminEmail = String(process.env.TEST_ADMIN_EMAIL || '')
+  .trim()
+  .toLowerCase();
 const adminPassword = String(process.env.TEST_ADMIN_PASSWORD || '');
 const adminFirstName = String(process.env.TEST_ADMIN_FIRST_NAME || '').trim();
 const adminLastName = String(process.env.TEST_ADMIN_LAST_NAME || '').trim();
