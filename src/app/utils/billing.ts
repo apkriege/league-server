@@ -7,6 +7,13 @@ export const BILLING_PRICE_PER_GOLFER_CENTS = Math.max(
 );
 export const BILLING_CURRENCY = String(process.env.BILLING_CURRENCY || 'usd').toLowerCase();
 
+export const getLeagueBillableGolfers = (players: Array<{ type?: unknown }> = []) => {
+  const regularPlayers = players.filter(
+    (player) => String(player?.type || 'player').trim().toLowerCase() === 'player',
+  ).length;
+  return Math.max(BILLING_MIN_GOLFERS, regularPlayers);
+};
+
 export type BillingState = {
   minimumGolfers: number;
   pricePerGolferCents: number;
@@ -63,16 +70,24 @@ export const mergeBillingMetadata = (metadata: unknown, billingPatch: Record<str
 };
 
 export const getAllocatedGolfersForAdmin = async (adminId: number, excludeLeagueId?: number) => {
-  const aggregate = await prisma.league.aggregate({
+  const leagues = await prisma.league.findMany({
     where: {
       adminId,
       deletedAt: null,
       ...(excludeLeagueId ? { id: { not: excludeLeagueId } } : {}),
     },
-    _sum: {
+    select: {
       numPlayers: true,
+      players: {
+        where: { type: 'player', deletedAt: null },
+        select: { id: true },
+      },
     },
   });
 
-  return Math.max(0, Number(aggregate._sum.numPlayers || 0));
+  return leagues.reduce(
+    (total, league) =>
+      total + Math.max(BILLING_MIN_GOLFERS, league.numPlayers, league.players.length),
+    0,
+  );
 };

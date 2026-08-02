@@ -3,8 +3,10 @@ import LeagueService from '../models/league';
 import { prisma } from '../../prisma';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
 import {
+  BILLING_MIN_GOLFERS,
   getAllocatedGolfersForAdmin,
   getBillingState,
+  getLeagueBillableGolfers,
 } from '../utils/billing';
 import { writeAuditLog } from '../utils/audit';
 import { generateLeagueAccessCode } from './auth';
@@ -19,9 +21,8 @@ const getMissingRequiredPlayerFields = (player: any) => {
 
   if (!String(player?.firstName ?? '').trim()) missing.push('firstName');
   if (!String(player?.lastName ?? '').trim()) missing.push('lastName');
-  if (!String(player?.email ?? '').trim()) missing.push('email');
-  const type = String(player?.type ?? '').trim().toLowerCase();
-  if (!['player', 'substitute', 'captain'].includes(type)) missing.push('type');
+  const type = String(player?.type || 'player').trim().toLowerCase();
+  if (!['player', 'sub', 'substitute', 'captain'].includes(type)) missing.push('type');
   if (!Number.isFinite(handicap) || handicap < -10 || handicap > 54) missing.push('handicap');
 
   return missing;
@@ -362,11 +363,7 @@ class LeagueController {
         return res.status(404).json({ message: 'User not found' });
       }
 
-      const requestedGolfers = Math.max(
-        1,
-        Array.isArray(players) ? players.length : 0,
-        Number(leagueData?.numPlayers ?? 0)
-      );
+      const billableGolfers = getLeagueBillableGolfers(players);
       const invalidPlayerIndex = Array.isArray(players)
         ? players.findIndex((player: any) => getMissingRequiredPlayerFields(player).length > 0)
         : -1;
@@ -379,7 +376,8 @@ class LeagueController {
 
       const normalizedLeagueData = LeagueController.normalizeLeaguePayload({
         ...leagueData,
-        numPlayers: requestedGolfers,
+        // numPlayers is the paid regular-player capacity, not total roster size.
+        numPlayers: billableGolfers,
       });
       LeagueController.validateLeagueDates(normalizedLeagueData);
 
@@ -412,13 +410,13 @@ class LeagueController {
         });
       }
 
-      if (billingState.includedGolfers < allocatedGolfers + requestedGolfers) {
+      if (billingState.includedGolfers < allocatedGolfers + billableGolfers) {
         return res.status(402).json({
-          message: `This league needs ${requestedGolfers} golfer slots, but your account only has ${billingState.availableGolfers} available.`,
+          message: `This league requires payment for ${billableGolfers} golfers.`,
           billing: billingState,
-          requiredGolfers: requestedGolfers,
+          requiredGolfers: billableGolfers,
           additionalGolfersRequired:
-            allocatedGolfers + requestedGolfers - billingState.includedGolfers,
+            allocatedGolfers + billableGolfers - billingState.includedGolfers,
         });
       }
 
@@ -442,9 +440,12 @@ class LeagueController {
               data: {
                 firstName: String(player.firstName).trim(),
                 lastName: String(player.lastName).trim(),
-                email: String(player.email).trim().toLowerCase(),
+                email: String(player.email || '').trim().toLowerCase() || null,
                 phone: player.phone ? String(player.phone).trim() : null,
-                type: String(player.type).trim().toLowerCase(),
+                type:
+                  String(player.type || 'player').trim().toLowerCase() === 'sub'
+                    ? 'substitute'
+                    : String(player.type || 'player').trim().toLowerCase(),
                 handicap: Number(player.handicap),
                 startingHandicap: Number(player.handicap),
                 seasonPoints: 0,
@@ -585,13 +586,14 @@ class LeagueController {
       const allocatedGolfers = await getAllocatedGolfersForAdmin(existingLeague.adminId, id);
       const billingState = getBillingState(adminUser?.metadata, allocatedGolfers);
 
-      if (billingState.includedGolfers < allocatedGolfers + nextNumPlayers) {
+      const billableGolfers = Math.max(BILLING_MIN_GOLFERS, nextNumPlayers);
+      if (billingState.includedGolfers < allocatedGolfers + billableGolfers) {
         return res.status(402).json({
-          message: `This change needs ${nextNumPlayers} golfer slots, but your account only has ${billingState.availableGolfers} available.`,
+          message: `This change requires payment for ${billableGolfers} golfers in this league.`,
           billing: billingState,
-          requiredGolfers: nextNumPlayers,
+          requiredGolfers: billableGolfers,
           additionalGolfersRequired:
-            allocatedGolfers + nextNumPlayers - billingState.includedGolfers,
+            allocatedGolfers + billableGolfers - billingState.includedGolfers,
         });
       }
 

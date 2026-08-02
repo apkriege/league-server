@@ -20,6 +20,11 @@ const hasValue = (env: RuntimeEnvironment, name: string) => Boolean(String(env[n
 
 export const validateRuntimeConfig = (env: RuntimeEnvironment = process.env) => {
   const missing = ['DATABASE_URL', 'SESSION_SECRET'].filter((name) => !hasValue(env, name));
+  const stripeProductTaxCode = String(env.STRIPE_PRODUCT_TAX_CODE || '').trim();
+
+  if (stripeProductTaxCode && !/^txcd_\d{8}$/.test(stripeProductTaxCode)) {
+    throw new Error('STRIPE_PRODUCT_TAX_CODE must be a valid Stripe tax code');
+  }
 
   if (isProductionRuntime(env)) {
     const sessionSecret = String(env.SESSION_SECRET || '');

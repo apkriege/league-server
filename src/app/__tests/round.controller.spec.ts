@@ -20,7 +20,6 @@ vi.mock('../services/round', () => ({
   },
 }));
 vi.mock('../utils/audit', () => ({ writeAuditLog: vi.fn() }));
-vi.mock('../utils/notifications', () => ({ notifyLeagueAdmins: vi.fn() }));
 
 const eventFixture = {
   id: 99,

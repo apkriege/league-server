@@ -12,11 +12,23 @@ const getMissingRequiredPlayerFields = (payload: any) => {
 
   if (!String(payload.firstName ?? '').trim()) missing.push('firstName');
   if (!String(payload.lastName ?? '').trim()) missing.push('lastName');
-  if (!String(payload.email ?? '').trim()) missing.push('email');
-  if (!String(payload.type ?? '').trim()) missing.push('type');
   if (!Number.isFinite(handicap)) missing.push('handicap');
 
   return missing;
+};
+
+type BatchPlayerData = {
+  leagueId: number;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+  handicap: number;
+  startingHandicap: number;
+  seasonPoints: number;
+  seasonRank: null;
+  type: string;
+  teamId: null;
 };
 
 export default class PlayerController {
@@ -139,13 +151,16 @@ export default class PlayerController {
         }
       }
 
-      const activePlayers = await prisma.player.count({
-        where: { leagueId: Number(leagueId), deletedAt: null },
-      });
+      const activePlayers =
+        playerType === 'player'
+          ? await prisma.player.count({
+              where: { leagueId: Number(leagueId), type: 'player', deletedAt: null },
+            })
+          : 0;
 
-      if (activePlayers >= Number(league.numPlayers || 0)) {
+      if (playerType === 'player' && activePlayers >= Number(league.numPlayers || 0)) {
         return res.status(402).json({
-          message: `This league is currently capped at ${league.numPlayers} golfers. Increase your paid golfer count before adding more players.`,
+          message: `This league is currently paid for ${league.numPlayers} regular golfers. Increase its paid golfer count before adding another regular player.`,
           currentGolfers: activePlayers,
           maxGolfers: league.numPlayers,
         });
@@ -155,7 +170,7 @@ export default class PlayerController {
         leagueId: Number(leagueId),
         firstName: String(payload.firstName).trim(),
         lastName: String(payload.lastName).trim(),
-        email: String(payload.email).trim().toLowerCase(),
+        email: String(payload.email || '').trim().toLowerCase() || null,
         phone: payload.phone ? String(payload.phone).trim() : null,
         handicap,
         startingHandicap: handicap,
@@ -181,6 +196,89 @@ export default class PlayerController {
     }
   };
 
+  static createPlayers = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const leagueId = Number(req.params.leagueId);
+      const players = Array.isArray(req.body?.players) ? req.body.players : [];
+      if (!Number.isInteger(leagueId) || leagueId <= 0) {
+        return res.status(400).json({ message: 'leagueId is required' });
+      }
+      if (players.length < 1 || players.length > 250) {
+        return res.status(400).json({ message: 'Add between 1 and 250 players at a time' });
+      }
+
+      const normalizedPlayers: BatchPlayerData[] = players.map((payload: any, index: number) => {
+        const missing = getMissingRequiredPlayerFields(payload);
+        if (missing.length > 0) {
+          throw new Error(`Player ${index + 1} is missing required fields: ${missing.join(', ')}`);
+        }
+        const handicap = Number(payload.handicap);
+        if (handicap < -10 || handicap > 54) {
+          throw new Error(`Player ${index + 1} handicap must be between -10 and 54`);
+        }
+        const rawType = String(payload.type || 'player').trim().toLowerCase();
+        const type = rawType === 'sub' ? 'substitute' : rawType;
+        if (!['player', 'substitute', 'captain'].includes(type)) {
+          throw new Error(`Player ${index + 1} type is invalid`);
+        }
+        return {
+          leagueId,
+          firstName: String(payload.firstName).trim(),
+          lastName: String(payload.lastName).trim(),
+          email: String(payload.email || '').trim().toLowerCase() || null,
+          phone: payload.phone ? String(payload.phone).trim() : null,
+          handicap,
+          startingHandicap: handicap,
+          seasonPoints: 0,
+          seasonRank: null,
+          type,
+          teamId: null,
+        };
+      });
+
+      const league = await prisma.league.findFirst({
+        where: { id: leagueId, deletedAt: null },
+        select: { id: true, numPlayers: true },
+      });
+      if (!league) return res.status(404).json({ message: 'League not found' });
+
+      const [regularPlayerCount, incomingRegularPlayers] = [
+        await prisma.player.count({
+          where: { leagueId, type: 'player', deletedAt: null },
+        }),
+        normalizedPlayers.filter((player) => player.type === 'player').length,
+      ];
+      if (regularPlayerCount + incomingRegularPlayers > league.numPlayers) {
+        const additionalGolfersRequired =
+          regularPlayerCount + incomingRegularPlayers - league.numPlayers;
+        return res.status(402).json({
+          message: `Payment is required for ${additionalGolfersRequired} additional regular ${additionalGolfersRequired === 1 ? 'player' : 'players'}.`,
+          currentGolfers: regularPlayerCount,
+          maxGolfers: league.numPlayers,
+          additionalGolfersRequired,
+        });
+      }
+
+      const created = await prisma.$transaction(
+        normalizedPlayers.map((player) => prisma.player.create({ data: player })),
+      );
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'player',
+        entityId: null,
+        action: 'create_batch',
+        summary: `Added ${created.length} players to the league.`,
+      });
+      return res.status(201).json(created);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      const status = message.startsWith('Player ') ? 400 : 500;
+      if (status === 500) console.error(error);
+      return res.status(status).json({ message });
+    }
+  };
+
   static updatePlayer = async (req: Request, res: Response): Promise<any> => {
     try {
       const { id } = req.params;
@@ -199,7 +297,7 @@ export default class PlayerController {
 
       const existingPlayer = await prisma.player.findFirst({
         where: { id: Number(id), deletedAt: null },
-        select: { id: true, leagueId: true },
+        select: { id: true, leagueId: true, type: true },
       });
       if (!existingPlayer) {
         return res.status(404).json({ message: 'Player not found' });
@@ -212,6 +310,33 @@ export default class PlayerController {
       const playerType = String(payload.type || 'player').trim().toLowerCase();
       if (!['player', 'substitute', 'captain'].includes(playerType)) {
         return res.status(400).json({ message: 'Player type is invalid' });
+      }
+
+      if (
+        playerType === 'player' &&
+        existingPlayer.type !== 'player' &&
+        existingPlayer.leagueId
+      ) {
+        const [league, regularPlayerCount] = await Promise.all([
+          prisma.league.findFirst({
+            where: { id: existingPlayer.leagueId, deletedAt: null },
+            select: { numPlayers: true },
+          }),
+          prisma.player.count({
+            where: {
+              leagueId: existingPlayer.leagueId,
+              type: 'player',
+              deletedAt: null,
+            },
+          }),
+        ]);
+        if (league && regularPlayerCount >= league.numPlayers) {
+          return res.status(402).json({
+            message: `This league is currently paid for ${league.numPlayers} regular golfers. Increase its paid golfer count before changing this golfer to a regular player.`,
+            currentGolfers: regularPlayerCount,
+            maxGolfers: league.numPlayers,
+          });
+        }
       }
 
       const teamId = payload.teamId === undefined || payload.teamId == null
@@ -233,7 +358,9 @@ export default class PlayerController {
       const data: any = {
         ...(payload.firstName != null ? { firstName: String(payload.firstName).trim() } : {}),
         ...(payload.lastName != null ? { lastName: String(payload.lastName).trim() } : {}),
-        ...(payload.email != null ? { email: String(payload.email).trim().toLowerCase() } : {}),
+        ...(payload.email !== undefined
+          ? { email: String(payload.email || '').trim().toLowerCase() || null }
+          : {}),
         ...(payload.phone !== undefined
           ? { phone: payload.phone ? String(payload.phone).trim() : null }
           : {}),

@@ -32,6 +32,7 @@ Required configuration includes:
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
 - `STRIPE_PRICE_ID` or a valid per-golfer price configuration
+- `STRIPE_PRODUCT_TAX_CODE` (defaults to `txcd_10103000`, SaaS for personal use)
 
 ### Railway CORS and cookies
 

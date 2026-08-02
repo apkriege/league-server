@@ -23,12 +23,17 @@ const DEFAULT_CANCEL_URL =
   process.env.STRIPE_CHECKOUT_CANCEL_URL ||
   `${defaultClientOrigin}/?checkout=registration_cancel#register`;
 const DEFAULT_PRICE_ID = process.env.STRIPE_PRICE_ID || '';
+const PRODUCT_TAX_CODE = process.env.STRIPE_PRODUCT_TAX_CODE || 'txcd_10103000';
 
-type CheckoutPurpose = 'registration' | 'seat_upgrade';
+type CheckoutPurpose = 'registration' | 'seat_upgrade' | 'league_capacity';
 
 const getProductName = (purpose: CheckoutPurpose, quantity: number) => {
   if (purpose === 'registration') {
     return `League Admin Registration (${quantity} golfers included)`;
+  }
+
+  if (purpose === 'league_capacity') {
+    return `Additional league golfer capacity (${quantity})`;
   }
 
   return `Additional golfer seats (${quantity})`;
@@ -37,6 +42,40 @@ const getProductName = (purpose: CheckoutPurpose, quantity: number) => {
 const getCheckoutRedirectUrl = (value: unknown, fallback: string) => {
   if (typeof value !== 'string' || !value.trim()) return fallback;
   return isTrustedClientOrigin(value.trim()) ? value.trim() : fallback;
+};
+
+const isMissingStripeResource = (error: unknown) => {
+  const stripeError = error as { code?: unknown; statusCode?: unknown };
+  return stripeError?.code === 'resource_missing' || stripeError?.statusCode === 404;
+};
+
+const createStripeCustomer = (user: {
+  id: number;
+  email: string;
+  firstName: string;
+  lastName: string;
+}) =>
+  stripe.customers.create({
+    email: user.email,
+    name: `${user.firstName} ${user.lastName}`,
+    metadata: { userId: String(user.id) },
+  });
+
+const resolveStripeCustomerId = async (
+  customerId: string | undefined,
+  user: { id: number; email: string; firstName: string; lastName: string },
+) => {
+  if (customerId) {
+    try {
+      const customer = await stripe.customers.retrieve(customerId);
+      if (!customer.deleted) return customer.id;
+    } catch (error) {
+      if (!isMissingStripeResource(error)) throw error;
+    }
+  }
+
+  const customer = await createStripeCustomer(user);
+  return customer.id;
 };
 
 export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Session) => {
@@ -49,6 +88,7 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
 
   const completedQuantity = Math.max(0, Number(session.metadata?.quantity || 0));
   const requestedTargetGolfers = Math.max(0, Number(session.metadata?.targetGolfers || 0));
+  const leagueId = Math.max(0, Number(session.metadata?.leagueId || 0));
   const completedPurpose = String(session.metadata?.purpose || 'seat_upgrade');
   if (!Number.isInteger(completedQuantity) || completedQuantity <= 0) return null;
 
@@ -79,11 +119,27 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
             0,
             Number(currentBillingMetadata.includedGolfers || 0),
           );
-          const nextIncludedGolfers = Math.max(
-            currentIncludedGolfers + completedQuantity,
-            requestedTargetGolfers,
-            currentIncludedGolfers,
-          );
+          const nextIncludedGolfers =
+            completedPurpose === 'league_capacity'
+              ? currentIncludedGolfers + completedQuantity
+              : Math.max(
+                  currentIncludedGolfers + completedQuantity,
+                  requestedTargetGolfers,
+                  currentIncludedGolfers,
+                );
+
+          if (completedPurpose === 'league_capacity' && leagueId > 0) {
+            const league = await tx.league.findFirst({
+              where: { id: leagueId, adminId: user.id, deletedAt: null },
+              select: { id: true, numPlayers: true },
+            });
+            if (league) {
+              await tx.league.update({
+                where: { id: league.id },
+                data: { numPlayers: Math.max(league.numPlayers, requestedTargetGolfers) },
+              });
+            }
+          }
 
           const updatedUser = await tx.user.update({
             where: { id: user.id },
@@ -165,6 +221,7 @@ class PaymentController {
       }
 
       const purpose = String(req.body?.purpose || 'seat_upgrade') as CheckoutPurpose;
+      const leagueId = Number(req.body?.leagueId || 0);
       const requestedGolfers = Math.max(
         0,
         Number(req.body?.requestedGolfers ?? req.body?.quantity ?? BILLING_MIN_GOLFERS)
@@ -172,7 +229,7 @@ class PaymentController {
       const successUrl = getCheckoutRedirectUrl(req.body?.successUrl, DEFAULT_SUCCESS_URL);
       const cancelUrl = getCheckoutRedirectUrl(req.body?.cancelUrl, DEFAULT_CANCEL_URL);
 
-      if (!['registration', 'seat_upgrade'].includes(purpose)) {
+      if (!['registration', 'seat_upgrade', 'league_capacity'].includes(purpose)) {
         return res.status(400).json({ message: 'Invalid checkout purpose' });
       }
       if (!Number.isInteger(requestedGolfers) || requestedGolfers < 1 || requestedGolfers > 10000) {
@@ -196,15 +253,31 @@ class PaymentController {
       const currentBillingMetadata = getBillingMetadata(currentMetadata);
       const currentIncludedGolfers = Math.max(0, Number(currentBillingMetadata.includedGolfers || 0));
 
+      let capacityLeague: { id: number; numPlayers: number } | null = null;
+      if (purpose === 'league_capacity') {
+        if (!Number.isInteger(leagueId) || leagueId <= 0) {
+          return res.status(400).json({ message: 'League ID is required for a capacity upgrade' });
+        }
+        capacityLeague = await prisma.league.findFirst({
+          where: { id: leagueId, adminId: user.id, deletedAt: null },
+          select: { id: true, numPlayers: true },
+        });
+        if (!capacityLeague) {
+          return res.status(404).json({ message: 'League not found' });
+        }
+      }
+
       const targetGolfers =
-        purpose === 'registration'
+        purpose === 'league_capacity' && capacityLeague
+          ? Math.max(capacityLeague.numPlayers, requestedGolfers)
+          : purpose === 'registration'
           ? Math.max(BILLING_MIN_GOLFERS, requestedGolfers || BILLING_MIN_GOLFERS)
           : Math.max(currentIncludedGolfers, requestedGolfers);
       const quantity = Math.max(
         0,
-        purpose === 'registration'
-          ? targetGolfers - currentIncludedGolfers
-          : targetGolfers - currentIncludedGolfers
+        purpose === 'league_capacity' && capacityLeague
+          ? targetGolfers - capacityLeague.numPlayers
+          : targetGolfers - currentIncludedGolfers,
       );
 
       if (quantity <= 0) {
@@ -219,16 +292,12 @@ class PaymentController {
         });
       }
 
-      let customerId: string | undefined = currentStripeMetadata.customerId;
-
-      if (!customerId) {
-        const customer = await stripe.customers.create({
-          email: user.email,
-          name: `${user.firstName} ${user.lastName}`,
-          metadata: { userId: String(user.id) },
-        });
-        customerId = customer.id;
-      }
+      const customerId = await resolveStripeCustomerId(
+        typeof currentStripeMetadata.customerId === 'string'
+          ? currentStripeMetadata.customerId
+          : undefined,
+        user,
+      );
 
       const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = DEFAULT_PRICE_ID
         ? {
@@ -241,6 +310,7 @@ class PaymentController {
               unit_amount: BILLING_PRICE_PER_GOLFER_CENTS,
               product_data: {
                 name: getProductName(purpose, quantity),
+                tax_code: PRODUCT_TAX_CODE,
               },
             },
             quantity,
@@ -257,6 +327,7 @@ class PaymentController {
           purpose,
           quantity: String(quantity),
           targetGolfers: String(targetGolfers),
+          ...(capacityLeague ? { leagueId: String(capacityLeague.id) } : {}),
         },
       });
 
@@ -296,7 +367,17 @@ class PaymentController {
         targetGolfers,
       });
     } catch (error: any) {
-      console.error('createCheckoutSession error:', error);
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'stripe:checkout-session-failed',
+          requestId: (req as Request & { requestId?: string }).requestId ?? null,
+          type: error?.type ?? null,
+          code: error?.code ?? null,
+          statusCode: error?.statusCode ?? null,
+          message: error?.message || 'Unknown Stripe checkout error',
+        }),
+      );
       return res.status(500).json({ message: 'Failed to create checkout session' });
     }
   }

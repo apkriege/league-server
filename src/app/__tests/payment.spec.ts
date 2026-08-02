@@ -11,6 +11,10 @@ const mockTx: any = {
     findFirst: vi.fn(),
     update: vi.fn(),
   },
+  league: {
+    findFirst: vi.fn(),
+    update: vi.fn(),
+  },
 };
 const transactionMock = vi.fn(async (callback: any) => callback(mockTx));
 
@@ -75,5 +79,37 @@ describe('Stripe checkout completion', async () => {
 
     expect(mockTx.user.update).not.toHaveBeenCalled();
     expect(mockTx.stripe_checkout_completion.create).not.toHaveBeenCalled();
+  });
+
+  it('applies an additional-player payment only to its league capacity', async () => {
+    mockTx.stripe_checkout_completion.findUnique.mockResolvedValue(null);
+    mockTx.league.findFirst.mockResolvedValue({ id: 3, numPlayers: 8 });
+    mockTx.league.update.mockResolvedValue({ id: 3, numPlayers: 9 });
+
+    await applyCompletedCheckoutSession({
+      ...session,
+      id: 'cs_league_capacity',
+      metadata: {
+        purpose: 'league_capacity',
+        quantity: '1',
+        targetGolfers: '9',
+        leagueId: '3',
+      },
+    });
+
+    expect(mockTx.league.update).toHaveBeenCalledWith({
+      where: { id: 3 },
+      data: { numPlayers: 9 },
+    });
+    expect(mockTx.user.update.mock.calls[0][0].data.metadata.billing.includedGolfers).toBe(11);
+    expect(mockTx.stripe_checkout_completion.create).toHaveBeenCalledWith({
+      data: {
+        sessionId: 'cs_league_capacity',
+        userId: 7,
+        purpose: 'league_capacity',
+        quantity: 1,
+        targetGolfers: 9,
+      },
+    });
   });
 });

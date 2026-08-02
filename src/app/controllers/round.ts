@@ -4,7 +4,6 @@ import { Round } from '../services/round';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
 import { getLeagueScoreOrder } from '../utils/score-order';
 import { writeAuditLog } from '../utils/audit';
-import { notifyLeagueAdmins } from '../utils/notifications';
 import { getPublicErrorResponse } from '../utils/error-response';
 
 type TeamPointsRow = { teamId: number; points: number };
@@ -619,13 +618,6 @@ export default class ScoreController {
         entityId: eventId,
         action: 'create_scores',
         summary: `Entered scores for event ${event.name}.`,
-      });
-
-      await notifyLeagueAdmins(leagueId, {
-        type: 'scores_entered',
-        title: 'Scores entered',
-        body: `Scores were entered for ${event.name}.`,
-        metadata: { eventId, flightId },
       });
 
       return res.status(201).json({ message: 'Scores created successfully' });

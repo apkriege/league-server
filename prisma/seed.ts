@@ -35,7 +35,6 @@ async function clearData() {
   await prisma.flight.deleteMany();
   await prisma.team_event_points.deleteMany();
   await prisma.league_invitation.deleteMany();
-  await prisma.notification.deleteMany();
   await prisma.league_announcement.deleteMany();
   await prisma.audit_log.deleteMany();
   await prisma.league_onboarding.deleteMany();
@@ -481,16 +480,6 @@ async function main() {
       data: { seasonPoints: Number(pointsByPlayer.get(player.id) || 0) },
     });
   }
-
-  await prisma.notification.create({
-    data: {
-      userId: adminUser.id,
-      leagueId: league.id,
-      type: 'seed',
-      title: 'Seed league ready',
-      body: 'Your seeded Thursday Night League is ready for testing.',
-    },
-  });
 
   await prisma.audit_log.create({
     data: {

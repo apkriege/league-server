@@ -16,16 +16,20 @@ describe('deployment configuration', () => {
     expect(railway.deploy.preDeployCommand.join(' ')).not.toMatch(/reset|db push|seed/i);
   });
 
-  it('keeps a single initial migration baseline', () => {
+  it('keeps an initial baseline followed by valid incremental migrations', () => {
     const migrationsRoot = path.join(serverRoot, 'prisma', 'migrations');
     const migrationDirectories = fs
       .readdirSync(migrationsRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
+      .map((entry) => entry.name)
+      .sort();
 
-    expect(migrationDirectories).toEqual(['20260801000000_init']);
-    expect(
-      fs.existsSync(path.join(migrationsRoot, migrationDirectories[0], 'migration.sql')),
-    ).toBe(true);
+    expect(migrationDirectories[0]).toMatch(/^\d+_init$/);
+    expect(migrationDirectories).toEqual([...migrationDirectories].sort());
+    for (const migrationDirectory of migrationDirectories) {
+      expect(
+        fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql')),
+      ).toBe(true);
+    }
   });
 });

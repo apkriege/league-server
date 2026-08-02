@@ -2,7 +2,6 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../../prisma';
 import { writeAuditLog } from '../utils/audit';
-import { createNotification } from '../utils/notifications';
 
 const addDays = (days: number) => {
   const date = new Date();
@@ -394,15 +393,6 @@ class OperationsController {
       },
     });
 
-    await createNotification({
-      userId: invitation.league.adminId,
-      leagueId: invitation.leagueId,
-      type: 'invitation_claimed',
-      title: 'Player claimed invitation',
-      body: `${user.firstName} ${user.lastName} joined ${invitation.league.name}.`,
-      metadata: { invitationId: invitation.id, playerId: player?.id ?? null },
-    });
-
     await writeAuditLog({
       userId,
       leagueId: invitation.leagueId,
@@ -517,101 +507,6 @@ class OperationsController {
     res.status(200).json(logs);
   };
 
-  static createLeagueNotification = async (req: Request, res: Response) => {
-    const leagueId = Number(req.params.leagueId);
-    const userId = Number(req.session.userId);
-    const title = String(req.body?.title || '').trim();
-    const body = String(req.body?.body || '').trim();
-    const includeAdmin = Boolean(req.body?.includeAdmin ?? true);
-
-    if (!title || !body) {
-      return res.status(400).json({ message: 'Title and body are required.' });
-    }
-
-    const league = await prisma.league.findUnique({
-      where: { id: leagueId },
-      select: { id: true, name: true, adminId: true },
-    });
-
-    if (!league) {
-      return res.status(404).json({ message: 'League not found' });
-    }
-
-    const players = await prisma.player.findMany({
-      where: { leagueId, deletedAt: null, userId: { not: null } },
-      select: { userId: true },
-    });
-
-    const recipientIds = new Set<number>();
-    players.forEach((player) => {
-      if (player.userId) recipientIds.add(player.userId);
-    });
-    if (includeAdmin) recipientIds.add(league.adminId);
-
-    if (recipientIds.size === 0) {
-      return res.status(400).json({
-        message: 'No claimed league users found. Invite players before sending notifications.',
-      });
-    }
-
-    await prisma.notification.createMany({
-      data: [...recipientIds].map((recipientId) => ({
-        userId: recipientId,
-        leagueId,
-        type: 'league_announcement',
-        title,
-        body,
-        metadata: {
-          leagueId,
-          sentByUserId: userId,
-        },
-      })),
-    });
-
-    await writeAuditLog({
-      userId,
-      leagueId,
-      entity: 'notification',
-      action: 'create',
-      summary: `Sent league notification "${title}" to ${recipientIds.size} user${recipientIds.size === 1 ? '' : 's'}.`,
-      metadata: { title, recipientCount: recipientIds.size },
-    });
-
-    res.status(201).json({ message: 'Notification sent.', recipientCount: recipientIds.size });
-  };
-
-  static getNotifications = async (req: Request, res: Response) => {
-    const userId = Number(req.session.userId);
-    const notifications = await prisma.notification.findMany({
-      where: { userId, deletedAt: null },
-      orderBy: { createdAt: 'desc' },
-      take: 30,
-    });
-
-    res.status(200).json(notifications);
-  };
-
-  static markNotificationRead = async (req: Request, res: Response) => {
-    const userId = Number(req.session.userId);
-    const id = Number(req.params.id);
-    const notification = await prisma.notification.updateMany({
-      where: { id, userId },
-      data: { readAt: new Date() },
-    });
-
-    res.status(200).json(notification);
-  };
-
-  static clearNotification = async (req: Request, res: Response) => {
-    const userId = Number(req.session.userId);
-    const id = Number(req.params.id);
-    const notification = await prisma.notification.updateMany({
-      where: { id, userId, deletedAt: null },
-      data: { deletedAt: new Date() },
-    });
-
-    res.status(200).json(notification);
-  };
 }
 
 export default OperationsController;

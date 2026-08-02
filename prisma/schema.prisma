@@ -45,7 +45,6 @@ model user {
   players player[]
   sentLeagueInvitations league_invitation[] @relation("league_invitation_invited_by")
   claimedLeagueInvitations league_invitation[] @relation("league_invitation_claimed_by")
-  notifications notification[]
   leagueAnnouncements league_announcement[]
   leagueAnnouncementDismissals league_announcement_dismissal[]
   auditLogs audit_log[]
@@ -169,7 +168,6 @@ model league {
   teams           team[]
   teamEventPoints team_event_points[]
   invitations     league_invitation[]
-  notifications   notification[]
   announcements   league_announcement[]
   auditLogs       audit_log[]
   onboarding      league_onboarding?
@@ -184,7 +182,7 @@ model player {
   userId           Int?      @map("user_id")
   firstName        String    @map("first_name")
   lastName         String    @map("last_name")
-  email            String
+  email            String?
   phone            String?
   handicap         Float
   startingHandicap Float     @map("starting_handicap")
@@ -463,27 +461,6 @@ model league_invitation {
   @@index([playerId])
   @@index([email])
   @@index([status])
-  @@index([deletedAt])
-}
-
-model notification {
-  id        Int       @id @default(autoincrement())
-  userId    Int       @map("user_id")
-  leagueId  Int?      @map("league_id")
-  type      String
-  title     String
-  body      String
-  metadata  Json?
-  readAt    DateTime? @map("read_at") @db.Timestamptz(3)
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
-
-  user   user    @relation(fields: [userId], references: [id])
-  league league? @relation(fields: [leagueId], references: [id])
-
-  @@index([userId])
-  @@index([leagueId])
-  @@index([readAt])
   @@index([deletedAt])
 }
 
