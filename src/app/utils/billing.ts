@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma';
 
 export const BILLING_MIN_GOLFERS = Math.max(1, Number(process.env.BILLING_MIN_GOLFERS || 8));
@@ -69,10 +70,15 @@ export const mergeBillingMetadata = (metadata: unknown, billingPatch: Record<str
   };
 };
 
-export const getAllocatedGolfersForAdmin = async (adminId: number, excludeLeagueId?: number) => {
-  const leagues = await prisma.league.findMany({
+export const getAllocatedGolfersForAdmin = async (
+  adminId: number,
+  excludeLeagueId?: number,
+  db: typeof prisma | Prisma.TransactionClient = prisma,
+) => {
+  const leagues = await db.league.findMany({
     where: {
       adminId,
+      deletedAt: null,
       ...(excludeLeagueId ? { id: { not: excludeLeagueId } } : {}),
     },
     select: {

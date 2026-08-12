@@ -143,6 +143,14 @@ class AuthController {
           where: { userId: resetToken.userId, usedAt: null },
           data: { usedAt: new Date() },
         }),
+        prisma.session.deleteMany({
+          where: {
+            sess: {
+              path: ['userId'],
+              equals: resetToken.userId,
+            },
+          },
+        }),
       ]);
 
       return res.status(200).json({ message: 'Password reset successfully' });

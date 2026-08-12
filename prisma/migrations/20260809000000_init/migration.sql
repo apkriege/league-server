@@ -1,5 +1,8 @@
+-- CreateSchema
+CREATE SCHEMA IF NOT EXISTS "public";
+
 -- CreateEnum
-CREATE TYPE "Role" AS ENUM ('user', 'admin');
+CREATE TYPE "Gender" AS ENUM ('male', 'female');
 
 -- CreateTable
 CREATE TABLE "session" (
@@ -30,13 +33,29 @@ CREATE TABLE "user" (
 );
 
 -- CreateTable
+CREATE TABLE "password_reset_token" (
+    "id" SERIAL NOT NULL,
+    "user_id" INTEGER NOT NULL,
+    "token_hash" TEXT NOT NULL,
+    "expires_at" TIMESTAMPTZ(3) NOT NULL,
+    "used_at" TIMESTAMPTZ(3),
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "password_reset_token_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "stripe_checkout_completion" (
     "id" SERIAL NOT NULL,
     "session_id" TEXT NOT NULL,
+    "payment_intent_id" TEXT,
     "user_id" INTEGER NOT NULL,
+    "league_id" INTEGER,
     "purpose" TEXT NOT NULL,
     "quantity" INTEGER NOT NULL,
     "target_golfers" INTEGER NOT NULL,
+    "refunded_quantity" INTEGER NOT NULL DEFAULT 0,
+    "refunded_at" TIMESTAMPTZ(3),
     "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "stripe_checkout_completion_pkey" PRIMARY KEY ("id")
@@ -137,8 +156,9 @@ CREATE TABLE "player" (
     "user_id" INTEGER,
     "first_name" TEXT NOT NULL,
     "last_name" TEXT NOT NULL,
-    "email" TEXT NOT NULL,
+    "email" TEXT,
     "phone" TEXT,
+    "gender" "Gender" NOT NULL DEFAULT 'male',
     "handicap" DOUBLE PRECISION NOT NULL,
     "starting_handicap" DOUBLE PRECISION NOT NULL,
     "season_points" DOUBLE PRECISION NOT NULL,
@@ -269,6 +289,7 @@ CREATE TABLE "round" (
     "putts" INTEGER NOT NULL,
     "course_rating" DOUBLE PRECISION NOT NULL,
     "course_slope" DOUBLE PRECISION NOT NULL,
+    "course_handicap" INTEGER,
     "differential" DOUBLE PRECISION,
     "pre_handicap" DOUBLE PRECISION,
     "post_handicap" DOUBLE PRECISION,
@@ -336,22 +357,6 @@ CREATE TABLE "league_invitation" (
     "deleted_at" TIMESTAMPTZ(3),
 
     CONSTRAINT "league_invitation_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
-CREATE TABLE "notification" (
-    "id" SERIAL NOT NULL,
-    "user_id" INTEGER NOT NULL,
-    "league_id" INTEGER,
-    "type" TEXT NOT NULL,
-    "title" TEXT NOT NULL,
-    "body" TEXT NOT NULL,
-    "metadata" JSONB,
-    "read_at" TIMESTAMPTZ(3),
-    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "deleted_at" TIMESTAMPTZ(3),
-
-    CONSTRAINT "notification_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -428,10 +433,25 @@ CREATE INDEX "user_email_idx" ON "user"("email");
 CREATE INDEX "user_deleted_at_idx" ON "user"("deleted_at");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "password_reset_token_token_hash_key" ON "password_reset_token"("token_hash");
+
+-- CreateIndex
+CREATE INDEX "password_reset_token_user_id_idx" ON "password_reset_token"("user_id");
+
+-- CreateIndex
+CREATE INDEX "password_reset_token_expires_at_idx" ON "password_reset_token"("expires_at");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "stripe_checkout_completion_session_id_key" ON "stripe_checkout_completion"("session_id");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "stripe_checkout_completion_payment_intent_id_key" ON "stripe_checkout_completion"("payment_intent_id");
+
+-- CreateIndex
 CREATE INDEX "stripe_checkout_completion_user_id_idx" ON "stripe_checkout_completion"("user_id");
+
+-- CreateIndex
+CREATE INDEX "stripe_checkout_completion_league_id_idx" ON "stripe_checkout_completion"("league_id");
 
 -- CreateIndex
 CREATE INDEX "club_deleted_at_idx" ON "club"("deleted_at");
@@ -602,18 +622,6 @@ CREATE INDEX "league_invitation_status_idx" ON "league_invitation"("status");
 CREATE INDEX "league_invitation_deleted_at_idx" ON "league_invitation"("deleted_at");
 
 -- CreateIndex
-CREATE INDEX "notification_user_id_idx" ON "notification"("user_id");
-
--- CreateIndex
-CREATE INDEX "notification_league_id_idx" ON "notification"("league_id");
-
--- CreateIndex
-CREATE INDEX "notification_read_at_idx" ON "notification"("read_at");
-
--- CreateIndex
-CREATE INDEX "notification_deleted_at_idx" ON "notification"("deleted_at");
-
--- CreateIndex
 CREATE INDEX "league_announcement_league_id_idx" ON "league_announcement"("league_id");
 
 -- CreateIndex
@@ -648,6 +656,9 @@ CREATE INDEX "audit_log_created_at_idx" ON "audit_log"("created_at");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "league_onboarding_league_id_key" ON "league_onboarding"("league_id");
+
+-- AddForeignKey
+ALTER TABLE "password_reset_token" ADD CONSTRAINT "password_reset_token_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "course" ADD CONSTRAINT "course_club_id_fkey" FOREIGN KEY ("club_id") REFERENCES "club"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -744,12 +755,6 @@ ALTER TABLE "league_invitation" ADD CONSTRAINT "league_invitation_invited_by_id_
 
 -- AddForeignKey
 ALTER TABLE "league_invitation" ADD CONSTRAINT "league_invitation_claimed_by_id_fkey" FOREIGN KEY ("claimed_by_id") REFERENCES "user"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "notification" ADD CONSTRAINT "notification_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "notification" ADD CONSTRAINT "notification_league_id_fkey" FOREIGN KEY ("league_id") REFERENCES "league"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "league_announcement" ADD CONSTRAINT "league_announcement_league_id_fkey" FOREIGN KEY ("league_id") REFERENCES "league"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

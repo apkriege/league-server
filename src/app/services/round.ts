@@ -1,7 +1,12 @@
 import { prisma } from '../../prisma';
-import { Handicap } from './handicap';
-import { modelTeeForRound } from '../utils/tee-rating';
+import {
+  calculateCourseHandicap,
+  calculateRoundDifferential,
+  calculateStrokePops,
+  modelTeeForRound,
+} from '../utils/tee-rating';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
+import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
 
 export class Round {
   private eventId: number;
@@ -9,6 +14,7 @@ export class Round {
   private event: any;
   private tee: any;
   private player: any;
+  private courseHandicap = 0;
   private isEdit = false;
   private round?: any;
   private db: any;
@@ -68,6 +74,7 @@ export class Round {
         putts: 0,
         courseRating: this.tee.rating,
         courseSlope: this.tee.slope,
+        courseHandicap: this.courseHandicap,
         pointsEarned: this.playerRound.points || 0,
         matchPoints: this.playerRound.matchPoints || 0,
         eagles: stats.eagles,
@@ -130,6 +137,7 @@ export class Round {
         adjusted: stats.totalAdjusted,
         courseRating: this.tee.rating,
         courseSlope: this.tee.slope,
+        courseHandicap: this.courseHandicap,
         pointsEarned: this.playerRound.points || 0,
         matchPoints: this.playerRound.matchPoints || 0,
         eagles: stats.eagles,
@@ -179,7 +187,7 @@ export class Round {
   }
 
   private calculateScores(playerRound: any) {
-    const hcp = this.isEdit ? Math.round(this.round.preHandicap) : Math.round(this.player.handicap);
+    const hcp = this.courseHandicap;
     const grossScores = playerRound.scores;
     if (!grossScores || Array.isArray(grossScores) || typeof grossScores !== 'object') {
       throw new Error('Scores must include a value for every hole.');
@@ -235,11 +243,11 @@ export class Round {
   // TODO: ADJUST LATER IF NEEDED
   private calulateEquitableStrokeControl(playerHcp: number, scores: any) {
     const adjustedHoles: Record<number, number> = {};
+    const pops = this.getPops(playerHcp);
 
     for (const [hole, score] of Object.entries(scores)) {
       const par = this.tee.holes.find((h: any) => Number(h.num) === Number(hole))?.par || 0;
-      const maxAllowed =
-        this.event.holes === 9 ? this.get9Ecs(playerHcp, par) : this.get18Ecs(playerHcp, par);
+      const maxAllowed = par + 2 + Math.max(0, pops.get(Number(hole)) || 0);
 
       adjustedHoles[Number(hole)] = Math.min(score as number, maxAllowed);
     }
@@ -247,54 +255,8 @@ export class Round {
     return adjustedHoles;
   }
 
-  private get9Ecs(hcp: number, par: number) {
-    hcp = Math.round(hcp);
-    let maxAllowed = par + 2; // Default to Double Bogey
-
-    if (hcp >= 5 && hcp <= 9) {
-      maxAllowed = 7;
-    } else if (hcp >= 10 && hcp <= 14) {
-      maxAllowed = 8;
-    } else if (hcp >= 15 && hcp <= 19) {
-      maxAllowed = 9;
-    } else if (hcp >= 20) {
-      maxAllowed = 10;
-    }
-
-    return maxAllowed;
-  }
-
-  private get18Ecs(hcp: number, par: number) {
-    hcp = Math.round(hcp);
-    let maxAllowed = par + 2; // Default to Double Bogey
-
-    if (hcp >= 10 && hcp <= 19) {
-      maxAllowed = 7;
-    } else if (hcp >= 20 && hcp <= 29) {
-      maxAllowed = 8;
-    } else if (hcp >= 30 && hcp <= 39) {
-      maxAllowed = 9;
-    } else if (hcp >= 40) {
-      maxAllowed = 10;
-    }
-
-    return maxAllowed;
-  }
-
   private getPops(playerHcp: number): Map<number, number> {
-    const sortedHoles = [...this.tee.holes].sort((a: any, b: any) => a.hcp - b.hcp);
-
-    const popsMap = new Map<number, number>();
-
-    while (playerHcp > 0) {
-      for (const hole of sortedHoles) {
-        if (playerHcp <= 0) break;
-        popsMap.set(hole.num, (popsMap.get(hole.num) || 0) + 1);
-        playerHcp--;
-      }
-    }
-
-    return popsMap;
+    return calculateStrokePops(playerHcp, this.tee.holes);
   }
 
   private calculateStats(scores: any) {
@@ -371,11 +333,27 @@ export class Round {
     }
 
     this.event = event;
-    this.tee = this.modelTee(event?.tee, event.holes, event.startSide);
+    this.tee = this.modelTee(
+      event?.tee,
+      event?.course?.numHoles,
+      event.holes,
+      event.startSide,
+      this.player.gender,
+    );
+    const handicapIndex = Number(
+      this.isEdit ? this.round?.preHandicap : this.player.handicap,
+    );
+    this.courseHandicap = calculateCourseHandicap(handicapIndex, this.tee);
   }
 
-  private modelTee(tee: any, numHoles: number, startSide: string) {
-    return modelTeeForRound(tee, numHoles, startSide);
+  private modelTee(
+    tee: any,
+    courseHoles: number,
+    numHoles: number,
+    startSide: string,
+    gender: string,
+  ) {
+    return modelTeeForRound(tee, numHoles, startSide, { courseHoles, gender });
   }
 
   private async processHandicap(round: any) {
@@ -392,6 +370,7 @@ export class Round {
         differential: handicapData.differential,
         courseRating: this.tee.rating,
         courseSlope: this.tee.slope,
+        courseHandicap: this.courseHandicap,
       },
     });
 
@@ -406,9 +385,6 @@ export class Round {
     playerId: number,
     adjustedScore: number,
   ): Promise<{ handicap: number; differential: number }> {
-    // last number of rounds to use
-    const roundsToUse = 5;
-
     const roundsWhere =
       this.isEdit && this.round?.id
         ? { id: { not: this.round.id } } // Exclude current round if editing
@@ -419,8 +395,8 @@ export class Round {
       include: {
         rounds: {
           where: roundsWhere,
-          select: { gross: true, differential: true },
-          take: 5,
+          select: { differential: true },
+          take: 19,
           orderBy: { createdAt: 'desc' },
         },
       },
@@ -438,36 +414,11 @@ export class Round {
       );
 
     // Add current differential
-    const differential = Number(
-      (((adjustedScore - this.tee.rating) * 113) / this.tee.slope).toFixed(2),
-    );
+    const hcpToUse = Number(this.isEdit ? this.round.preHandicap : player.handicap);
+    const differential = calculateRoundDifferential(adjustedScore, this.tee, hcpToUse);
     differentials.push(differential);
-
-    // Sort to find lowest scores
-    const sorted = [...differentials].sort((a, b) => a - b);
-
-    let newHandicap: number;
-    const hcpTpUse = this.isEdit ? this.round.preHandicap : player.handicap;
-
-    // First time player
-    if (!player.handicap) {
-      newHandicap = Number((differential * 0.96).toFixed(2));
-    }
-    // Blend in player handicap when less than roundsToUse
-    else if (sorted.length < roundsToUse) {
-      const sum = sorted.reduce((a, b) => a + b, 0) + hcpTpUse;
-      const avg = sum / (sorted.length + 1); // Include handicap in count
-      newHandicap = Number((avg * 0.96).toFixed(2));
-    }
-    // 5+ rounds: use average of lowest 5
-    else {
-      const lowest5 = sorted.slice(0, roundsToUse);
-      const avg = lowest5.reduce((a, b) => a + b, 0) / roundsToUse;
-      newHandicap = Number((avg * 0.96).toFixed(2));
-    }
-
-    const teeAdjustment = this.tee.rating - this.tee.par || 0;
-    newHandicap = Number((newHandicap + teeAdjustment).toFixed(2));
+    const calculated = calculateHandicapIndexFromDifferentials(differentials, hcpToUse);
+    const newHandicap = calculated ?? hcpToUse;
 
     return {
       handicap: newHandicap,

@@ -38,7 +38,7 @@ describe('league billing', () => {
     ).toBe(10);
   });
 
-  it('keeps deleted leagues allocated so paid league capacity cannot be reused', async () => {
+  it('only allocates capacity from active leagues', async () => {
     findManyMock.mockResolvedValue([
       { numPlayers: 8, players: [] },
       { numPlayers: 10, players: [] },
@@ -46,7 +46,7 @@ describe('league billing', () => {
 
     await expect(getAllocatedGolfersForAdmin(7)).resolves.toBe(18);
     expect(findManyMock).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { adminId: 7 } }),
+      expect.objectContaining({ where: { adminId: 7, deletedAt: null } }),
     );
   });
 });

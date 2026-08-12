@@ -10,6 +10,9 @@ const mockPrisma: any = {
     update: vi.fn(),
     findUnique: vi.fn(),
   },
+  event: {
+    findFirst: vi.fn(),
+  },
   tee: {
     findMany: vi.fn(),
     updateMany: vi.fn(),
@@ -53,6 +56,7 @@ describe('CourseController tee removal', async () => {
     mockPrisma.tee.findMany.mockResolvedValue([{ id: 101 }, { id: 102 }]);
     mockPrisma.tee.update.mockResolvedValue({});
     mockPrisma.tee.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.event.findFirst.mockResolvedValue(null);
     loadCourseMock.mockResolvedValue({
       club: { name: 'Test Club', location: 'Saginaw, MI' },
       course: { name: 'Test Course', location: 'Saginaw, MI' },

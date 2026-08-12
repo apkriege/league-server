@@ -114,6 +114,30 @@ export function calculateHandicapIndex(state: HandicapState): number | null {
   return roundToOneDecimal(index);
 }
 
+export function calculateHandicapIndexFromDifferentials(
+  differentials: number[],
+  previousIndex?: number,
+): number | null {
+  const validDifferentials = differentials.filter(Number.isFinite).slice(-20);
+  const rule = getRoundsToUse(validDifferentials.length);
+  if (!rule) return null;
+
+  const lowestDifferentials = [...validDifferentials]
+    .sort((left, right) => left - right)
+    .slice(0, rule.count);
+  let index =
+    lowestDifferentials.reduce((total, differential) => total + differential, 0) /
+      lowestDifferentials.length +
+    rule.adjustment;
+
+  index = roundToOneDecimal(index);
+  index = applyExceptionalScoreAdjustment(index, lowestDifferentials);
+  if (previousIndex !== undefined && Number.isFinite(previousIndex)) {
+    index = applyCaps(index, previousIndex);
+  }
+  return roundToOneDecimal(index);
+}
+
 /* ---------- Course Handicap ---------- */
 export function calculateCourseHandicap(
   handicapIndex: number,

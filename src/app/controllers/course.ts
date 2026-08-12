@@ -320,6 +320,19 @@ class CourseController {
         // 4. Hide tees removed from the form while preserving historical event and score relations.
         const removedTeeIds = existingTeeIds.filter((existingId) => !incomingIds.has(existingId));
         if (removedTeeIds.length > 0) {
+          const scheduledEvent = await tx.event.findFirst({
+            where: {
+              teeId: { in: removedTeeIds },
+              isDeleted: false,
+              deletedAt: null,
+              isComplete: false,
+              status: { notIn: ['completed', 'canceled'] },
+            },
+            select: { id: true },
+          });
+          if (scheduledEvent) {
+            throw new Error('A selected tee is assigned to an upcoming event. Update that event first.');
+          }
           await tx.tee.updateMany({
             where: { id: { in: removedTeeIds }, courseId: id, deletedAt: null },
             data: { deletedAt: new Date() },
@@ -359,6 +372,9 @@ class CourseController {
       ) {
         return res.status(400).json({ message: error.message });
       }
+      if (error instanceof Error && error.message.includes('upcoming event')) {
+        return res.status(409).json({ message: error.message });
+      }
       res.status(500).json({ message: 'Internal server error' });
     }
   };
@@ -366,6 +382,21 @@ class CourseController {
   static deleteCourse = async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
+      const scheduledEvent = await prisma.event.findFirst({
+        where: {
+          courseId: id,
+          isDeleted: false,
+          deletedAt: null,
+          isComplete: false,
+          status: { notIn: ['completed', 'canceled'] },
+        },
+        select: { id: true },
+      });
+      if (scheduledEvent) {
+        return res.status(409).json({
+          message: 'This course is assigned to an upcoming event. Update that event first.',
+        });
+      }
       const deletedCourse = await CourseService.delete(id);
       res.status(200).json(deletedCourse);
     } catch (error) {

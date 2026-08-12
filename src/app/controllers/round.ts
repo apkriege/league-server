@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
 import { prisma } from '../../prisma';
 import { Round } from '../services/round';
+import { SeasonSync } from '../services/seasonSync';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
-import { getLeagueScoreOrder } from '../utils/score-order';
 import { writeAuditLog } from '../utils/audit';
 import { getPublicErrorResponse } from '../utils/error-response';
 
@@ -547,13 +547,6 @@ export default class ScoreController {
         return res.status(409).json({ message: 'Completed events cannot receive new scores.' });
       }
 
-      const scoreOrder = await getLeagueScoreOrder(leagueId);
-      if (scoreOrder.nextScorableEventId !== eventId) {
-        return res.status(409).json({
-          message: 'Scores must be entered in event order. Complete earlier events first.',
-        });
-      }
-
       const eventFormat = normalizeEventFormat(event.format, 'individual');
       const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
       const pointsEnabled = event.pointsEnabled !== false;
@@ -609,6 +602,14 @@ export default class ScoreController {
           create: { leagueId, firstScoresEnteredAt: new Date() },
           update: { firstScoresEnteredAt: new Date() },
         });
+
+        const completedEvent = await tx.event.findUnique({
+          where: { id: eventId },
+          select: { isComplete: true },
+        });
+        if (completedEvent?.isComplete) {
+          await SeasonSync.recalculateLeague(leagueId, tx);
+        }
       });
 
       await writeAuditLog({
@@ -646,13 +647,6 @@ export default class ScoreController {
       }
       if (String(event.status || '').toLowerCase() === 'canceled') {
         return res.status(409).json({ message: 'Canceled events cannot be updated.' });
-      }
-
-      const scoreOrder = await getLeagueScoreOrder(leagueId);
-      if (scoreOrder.latestScoredEventId !== eventId) {
-        return res.status(409).json({
-          message: 'Only the latest scored event can be updated.',
-        });
       }
 
       const eventFormat = normalizeEventFormat(event.format, 'individual');
@@ -715,6 +709,8 @@ export default class ScoreController {
             data: { status: 'completed', isComplete: true },
           });
         }
+
+        await SeasonSync.recalculateLeague(leagueId, tx);
       });
 
       await writeAuditLog({

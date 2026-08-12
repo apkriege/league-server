@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 process.env.STRIPE_SECRET_KEY = 'sk_test_unit_test_only';
 
 const mockTx: any = {
+  $queryRaw: vi.fn(),
   stripe_checkout_completion: {
     findUnique: vi.fn(),
     create: vi.fn(),
+    update: vi.fn(),
   },
   user: {
     findFirst: vi.fn(),
@@ -14,6 +16,9 @@ const mockTx: any = {
   league: {
     findFirst: vi.fn(),
     update: vi.fn(),
+  },
+  player: {
+    count: vi.fn(),
   },
 };
 const transactionMock = vi.fn(async (callback: any) => callback(mockTx));
@@ -40,7 +45,7 @@ const session = {
 } as any;
 
 describe('Stripe checkout completion', async () => {
-  const { applyCompletedCheckoutSession } = await import('../controllers/payment');
+  const { applyCompletedCheckoutSession, applyRefundedCharge } = await import('../controllers/payment');
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -63,7 +68,9 @@ describe('Stripe checkout completion', async () => {
     expect(mockTx.stripe_checkout_completion.create).toHaveBeenCalledWith({
       data: {
         sessionId: 'cs_paid_once',
+        paymentIntentId: 'pi_1',
         userId: 7,
+        leagueId: null,
         purpose: 'seat_upgrade',
         quantity: 2,
         targetGolfers: 12,
@@ -105,10 +112,57 @@ describe('Stripe checkout completion', async () => {
     expect(mockTx.stripe_checkout_completion.create).toHaveBeenCalledWith({
       data: {
         sessionId: 'cs_league_capacity',
+        paymentIntentId: 'pi_1',
         userId: 7,
+        leagueId: 3,
         purpose: 'league_capacity',
         quantity: 1,
         targetGolfers: 9,
+      },
+    });
+  });
+
+  it('does not grant seats for a completed but unpaid checkout', async () => {
+    await applyCompletedCheckoutSession({
+      ...session,
+      id: 'cs_unpaid',
+      payment_status: 'unpaid',
+      status: 'complete',
+    });
+
+    expect(transactionMock).not.toHaveBeenCalled();
+    expect(mockTx.user.update).not.toHaveBeenCalled();
+  });
+
+  it('revokes refunded league capacity once without removing active golfers', async () => {
+    mockTx.stripe_checkout_completion.findUnique.mockResolvedValue({
+      id: 12,
+      userId: 7,
+      leagueId: 3,
+      purpose: 'league_capacity',
+      quantity: 2,
+      refundedQuantity: 0,
+    });
+    mockTx.league.findFirst.mockResolvedValue({ id: 3, numPlayers: 10 });
+    mockTx.player.count.mockResolvedValue(9);
+    mockTx.stripe_checkout_completion.update.mockResolvedValue({ id: 12 });
+
+    await applyRefundedCharge({
+      payment_intent: 'pi_1',
+      amount_refunded: 2000,
+      refunded: true,
+    } as any);
+
+    expect(mockTx.user.update.mock.calls[0][0].data.metadata.billing.includedGolfers).toBe(8);
+    expect(mockTx.league.update).toHaveBeenCalledWith({
+      where: { id: 3 },
+      data: { numPlayers: 9 },
+    });
+    expect(mockTx.stripe_checkout_completion.update).toHaveBeenCalledWith({
+      where: { id: 12 },
+      data: {
+        refundedQuantity: 2,
+        refundedAt: expect.any(Date),
       },
     });
   });

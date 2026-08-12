@@ -21,9 +21,9 @@ model session {
   @@index([expire])
 }
 
-enum Role {
-  user
-  admin
+enum Gender {
+  male
+  female
 }
 
 model user {
@@ -41,14 +41,14 @@ model user {
   updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  manager league[]
-  players player[]
-  sentLeagueInvitations league_invitation[] @relation("league_invitation_invited_by")
-  claimedLeagueInvitations league_invitation[] @relation("league_invitation_claimed_by")
-  passwordResetTokens password_reset_token[]
-  leagueAnnouncements league_announcement[]
+  manager                      league[]
+  players                      player[]
+  sentLeagueInvitations        league_invitation[]             @relation("league_invitation_invited_by")
+  claimedLeagueInvitations     league_invitation[]             @relation("league_invitation_claimed_by")
+  passwordResetTokens          password_reset_token[]
+  leagueAnnouncements          league_announcement[]
   leagueAnnouncementDismissals league_announcement_dismissal[]
-  auditLogs audit_log[]
+  auditLogs                    audit_log[]
 
   @@index([email])
   @@index([deletedAt])
@@ -69,15 +69,20 @@ model password_reset_token {
 }
 
 model stripe_checkout_completion {
-  id            Int      @id @default(autoincrement())
-  sessionId     String   @unique @map("session_id")
-  userId        Int      @map("user_id")
-  purpose       String
-  quantity      Int
-  targetGolfers Int      @map("target_golfers")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  id               Int       @id @default(autoincrement())
+  sessionId        String    @unique @map("session_id")
+  paymentIntentId  String?   @unique @map("payment_intent_id")
+  userId           Int       @map("user_id")
+  leagueId         Int?      @map("league_id")
+  purpose          String
+  quantity         Int
+  targetGolfers    Int       @map("target_golfers")
+  refundedQuantity Int       @default(0) @map("refunded_quantity")
+  refundedAt       DateTime? @map("refunded_at") @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@index([userId])
+  @@index([leagueId])
 }
 
 model club {
@@ -177,7 +182,7 @@ model league {
   updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  admin           user                @relation(fields: [adminId], references: [id])
+  admin           user                  @relation(fields: [adminId], references: [id])
   events          event[]
   players         player[]
   teams           team[]
@@ -199,6 +204,7 @@ model player {
   lastName         String    @map("last_name")
   email            String?
   phone            String?
+  gender           Gender    @default(male)
   handicap         Float
   startingHandicap Float     @map("starting_handicap")
   seasonPoints     Float     @map("season_points")
@@ -211,13 +217,13 @@ model player {
   updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  league        league?         @relation(fields: [leagueId], references: [id])
-  event         event?          @relation("event_players", fields: [eventId], references: [id])
-  team          team?           @relation(fields: [teamId], references: [id])
+  league        league?             @relation(fields: [leagueId], references: [id])
+  event         event?              @relation("event_players", fields: [eventId], references: [id])
+  team          team?               @relation(fields: [teamId], references: [id])
   flightPlayers flight_player[]
-  rounds        round[]         @relation("round_playerId")
-  opponentOf    round[]         @relation("round_opponentId")
-  user          user?           @relation(fields: [userId], references: [id])
+  rounds        round[]             @relation("round_playerId")
+  opponentOf    round[]             @relation("round_opponentId")
+  user          user?               @relation(fields: [userId], references: [id])
   invitations   league_invitation[]
 
   @@index([leagueId])
@@ -328,14 +334,14 @@ model flight {
 }
 
 model flight_player {
-  id         Int       @id @default(autoincrement())
-  flightId   Int       @map("flight_id")
-  playerId   Int       @map("player_id")
-  teamId     Int?      @map("team_id")
-  opponentId Int?      @map("opponent_id")
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
-  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz(3)
+  id                  Int       @id @default(autoincrement())
+  flightId            Int       @map("flight_id")
+  playerId            Int       @map("player_id")
+  teamId              Int?      @map("team_id")
+  opponentId          Int?      @map("opponent_id")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt           DateTime? @map("deleted_at") @db.Timestamptz(3)
 
   flight flight @relation(fields: [flightId], references: [id])
   player player @relation(fields: [playerId], references: [id])
@@ -380,6 +386,7 @@ model round {
   putts           Int
   courseRating    Float     @map("course_rating")
   courseSlope     Float     @map("course_slope")
+  courseHandicap  Int?      @map("course_handicap")
   differential    Float?
   preHandicap     Float?    @map("pre_handicap")
   postHandicap    Float?    @map("post_handicap")
@@ -489,8 +496,8 @@ model league_announcement {
   updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
   deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  league     league                            @relation(fields: [leagueId], references: [id])
-  author     user                              @relation(fields: [authorUserId], references: [id])
+  league     league                          @relation(fields: [leagueId], references: [id])
+  author     user                            @relation(fields: [authorUserId], references: [id])
   dismissals league_announcement_dismissal[]
 
   @@index([leagueId])
@@ -534,16 +541,16 @@ model audit_log {
 }
 
 model league_onboarding {
-  id                    Int      @id @default(autoincrement())
-  leagueId              Int      @unique @map("league_id")
-  dismissed             Boolean  @default(false)
-  playersReviewedAt     DateTime? @map("players_reviewed_at") @db.Timestamptz(3)
-  teamsReviewedAt       DateTime? @map("teams_reviewed_at") @db.Timestamptz(3)
-  firstEventCreatedAt   DateTime? @map("first_event_created_at") @db.Timestamptz(3)
-  scorecardsPrintedAt   DateTime? @map("scorecards_printed_at") @db.Timestamptz(3)
-  firstScoresEnteredAt  DateTime? @map("first_scores_entered_at") @db.Timestamptz(3)
-  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                   Int       @id @default(autoincrement())
+  leagueId             Int       @unique @map("league_id")
+  dismissed            Boolean   @default(false)
+  playersReviewedAt    DateTime? @map("players_reviewed_at") @db.Timestamptz(3)
+  teamsReviewedAt      DateTime? @map("teams_reviewed_at") @db.Timestamptz(3)
+  firstEventCreatedAt  DateTime? @map("first_event_created_at") @db.Timestamptz(3)
+  scorecardsPrintedAt  DateTime? @map("scorecards_printed_at") @db.Timestamptz(3)
+  firstScoresEnteredAt DateTime? @map("first_scores_entered_at") @db.Timestamptz(3)
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   league league @relation(fields: [leagueId], references: [id])
 }

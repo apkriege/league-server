@@ -91,6 +91,7 @@ router.get('/leagues/:leagueId/audit-logs', leagueAdminGuard, Operations.getLeag
 const adminRoutes = express.Router();
 router.get('/admin/leagues', admin, Admin.getLeagues);
 router.get('/admin/leagues/:id', admin, Admin.getLeague);
+adminRoutes.get('/billing', Admin.getBilling);
 router.use('/admin', superAdmin, adminRoutes);
 
 // =====================
@@ -133,6 +134,11 @@ router.post(
   '/leagues/:leagueId/viewer-access-code/rotate',
   leagueAdminGuard,
   League.rotateViewerAccessCode,
+);
+router.patch(
+  '/leagues/:leagueId/owner',
+  leagueAdminGuard,
+  League.transferLeagueOwnership,
 );
 router.post('/leagues/:leagueId/season-sync', leagueAdminGuard, SeasonSyncController.recalculateLeague);
 

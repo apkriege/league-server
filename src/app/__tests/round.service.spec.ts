@@ -15,6 +15,7 @@ const event = {
   startSide: 'front',
   startsAt: new Date('2026-04-16T12:00:00.000Z'),
   timeZone: 'America/Detroit',
+  course: { numHoles: 18 },
   scoringFormat: 'match',
   isDeleted: false,
   deletedAt: null,
@@ -38,8 +39,8 @@ const buildDb = () => {
   const db: any = {
     event: { findFirst: vi.fn().mockResolvedValue(event) },
     player: {
-      findFirst: vi.fn().mockResolvedValue({ id: 1, handicap: 10, deletedAt: null }),
-      findUnique: vi.fn().mockResolvedValue({ id: 1, handicap: 10, rounds: [] }),
+      findFirst: vi.fn().mockResolvedValue({ id: 1, handicap: 10, gender: 'male', deletedAt: null }),
+      findUnique: vi.fn().mockResolvedValue({ id: 1, handicap: 10, gender: 'male', rounds: [] }),
       update: vi.fn().mockResolvedValue({}),
     },
     round: {
@@ -67,7 +68,7 @@ describe('Round service', () => {
 
     expect(db.round.create).toHaveBeenCalledTimes(1);
     const createdScores = db.score.createMany.mock.calls[0][0].data;
-    expect(createdScores.find((score: any) => score.hole === 1).net).toBe(2);
+    expect(createdScores.find((score: any) => score.hole === 1).net).toBe(3);
     expect(db.round.update).toHaveBeenCalledWith({
       where: { id: 11 },
       data: expect.objectContaining({ preHandicap: 10 }),

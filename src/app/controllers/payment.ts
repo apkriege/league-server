@@ -11,6 +11,7 @@ import {
   getBillingState,
   mergeBillingMetadata,
 } from '../utils/billing';
+import { lockAdminBilling, lockLeagueCapacity } from '../services/billingLock';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
@@ -82,7 +83,7 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
   const userIdFromReference = Number(session.client_reference_id);
   if (!userIdFromReference) return null;
 
-  if (session.payment_status !== 'paid' && session.status !== 'complete') {
+  if (session.payment_status !== 'paid' && session.payment_status !== 'no_payment_required') {
     return null;
   }
 
@@ -96,6 +97,10 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
     try {
       return await prisma.$transaction(
         async (tx) => {
+          await lockAdminBilling(tx, userIdFromReference);
+          if (completedPurpose === 'league_capacity' && leagueId > 0) {
+            await lockLeagueCapacity(tx, leagueId);
+          }
           const processed = await tx.stripe_checkout_completion.findUnique({
             where: { sessionId: session.id },
           });
@@ -181,7 +186,10 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
           await tx.stripe_checkout_completion.create({
             data: {
               sessionId: session.id,
+              paymentIntentId:
+                typeof session.payment_intent === 'string' ? session.payment_intent : null,
               userId: user.id,
+              leagueId: leagueId > 0 ? leagueId : null,
               purpose: completedPurpose,
               quantity: completedQuantity,
               targetGolfers: requestedTargetGolfers,
@@ -201,6 +209,106 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
   }
 
   return null;
+};
+
+export const applyRefundedCharge = async (charge: Stripe.Charge) => {
+  const paymentIntentId =
+    typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id;
+  if (!paymentIntentId || Number(charge.amount_refunded || 0) <= 0) return null;
+
+  return prisma.$transaction(
+    async (tx) => {
+      const completion = await tx.stripe_checkout_completion.findUnique({
+        where: { paymentIntentId },
+      });
+      if (!completion) return null;
+
+      await lockAdminBilling(tx, completion.userId);
+      if (completion.purpose === 'league_capacity' && completion.leagueId) {
+        await lockLeagueCapacity(tx, completion.leagueId);
+      }
+
+      const totalRefundedQuantity = charge.refunded
+        ? completion.quantity
+        : Math.min(
+            completion.quantity,
+            Math.floor(
+              Number(charge.amount_refunded || 0) /
+                Math.max(1, BILLING_PRICE_PER_GOLFER_CENTS),
+            ),
+          );
+      const quantityToRevoke = Math.max(
+        0,
+        totalRefundedQuantity - Number(completion.refundedQuantity || 0),
+      );
+      if (quantityToRevoke === 0) return completion;
+
+      const user = await tx.user.findFirst({
+        where: { id: completion.userId, deletedAt: null },
+        select: { metadata: true },
+      });
+      if (!user) return null;
+
+      const billing = getBillingMetadata(user.metadata);
+      const includedGolfers = Math.max(0, Number(billing.includedGolfers || 0));
+      await tx.user.update({
+        where: { id: completion.userId },
+        data: {
+          metadata: mergeBillingMetadata(user.metadata, {
+            includedGolfers: Math.max(0, includedGolfers - quantityToRevoke),
+            lastRefundedAt: new Date().toISOString(),
+            lastRefundedSeatQuantity: quantityToRevoke,
+          }),
+        },
+      });
+
+      if (completion.purpose === 'league_capacity' && completion.leagueId) {
+        const league = await tx.league.findFirst({
+          where: { id: completion.leagueId, adminId: completion.userId, deletedAt: null },
+          select: { id: true, numPlayers: true },
+        });
+        if (league) {
+          const activeRegularPlayers = await tx.player.count({
+            where: { leagueId: league.id, type: 'player', deletedAt: null },
+          });
+          await tx.league.update({
+            where: { id: league.id },
+            data: {
+              numPlayers: Math.max(
+                BILLING_MIN_GOLFERS,
+                activeRegularPlayers,
+                league.numPlayers - quantityToRevoke,
+              ),
+            },
+          });
+        }
+      }
+
+      return tx.stripe_checkout_completion.update({
+        where: { id: completion.id },
+        data: {
+          refundedQuantity: totalRefundedQuantity,
+          refundedAt: new Date(),
+        },
+      });
+    },
+    { isolationLevel: 'Serializable' },
+  );
+};
+
+export const applyLostDispute = async (dispute: Stripe.Dispute) => {
+  if (dispute.status !== 'lost') return null;
+  const paymentIntentId =
+    typeof dispute.payment_intent === 'string'
+      ? dispute.payment_intent
+      : dispute.payment_intent?.id;
+  if (!paymentIntentId) return null;
+
+  return applyRefundedCharge({
+    payment_intent: paymentIntentId,
+    amount_refunded: dispute.amount,
+    refunded: false,
+  } as Stripe.Charge);
 };
 
 class PaymentController {
@@ -442,9 +550,16 @@ class PaymentController {
     }
 
     try {
-      if (event.type === 'checkout.session.completed') {
+      if (
+        event.type === 'checkout.session.completed' ||
+        event.type === 'checkout.session.async_payment_succeeded'
+      ) {
         const session = event.data.object as Stripe.Checkout.Session;
         await applyCompletedCheckoutSession(session);
+      } else if (event.type === 'charge.refunded') {
+        await applyRefundedCharge(event.data.object as Stripe.Charge);
+      } else if (event.type === 'charge.dispute.closed') {
+        await applyLostDispute(event.data.object as Stripe.Dispute);
       }
 
       return res.json({ received: true });

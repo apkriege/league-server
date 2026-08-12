@@ -382,26 +382,36 @@ class OperationsController {
     }
 
     let player = invitation.player;
-    if (!player) {
+    if (!player || player.deletedAt) {
       player = await prisma.player.findFirst({
         where: { leagueId: invitation.leagueId, email: normalizedUserEmail, deletedAt: null },
       });
     }
 
-    if (player) {
-      await prisma.player.update({
-        where: { id: player.id },
-        data: { userId },
+    if (!player) {
+      return res.status(409).json({
+        message: 'The roster player for this invitation is no longer available.',
+      });
+    }
+    if (player.userId && player.userId !== userId) {
+      return res.status(409).json({
+        message: 'This roster player is already connected to another account.',
       });
     }
 
-    const claimed = await prisma.league_invitation.update({
-      where: { id: invitation.id },
-      data: {
-        status: 'claimed',
-        claimedById: userId,
-        claimedAt: new Date(),
-      },
+    const claimed = await prisma.$transaction(async (tx) => {
+      await tx.player.update({
+        where: { id: player.id },
+        data: { userId },
+      });
+      return tx.league_invitation.update({
+        where: { id: invitation.id },
+        data: {
+          status: 'claimed',
+          claimedById: userId,
+          claimedAt: new Date(),
+        },
+      });
     });
 
     await writeAuditLog({

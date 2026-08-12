@@ -80,7 +80,7 @@ commands are blocked in production and on Railway. Railway's `development` envir
 test credentials; its `production` environment requires live credentials. The process also drains
 HTTP requests and closes its database clients on `SIGTERM`/`SIGINT`.
 
-The initial migration history is one generated baseline intended for a new production database.
+The migration history is one generated baseline intended for a new production database.
 Run `npm run db:full` to reset a non-production database to that baseline and load demo data.
 
 ## Seed Commands
@@ -106,4 +106,8 @@ For non-production test environments only, the optional variables are:
 
 ## Stripe
 
-Configure Stripe to send `checkout.session.completed` to `POST /api/payments/webhook`. Checkout completion is recorded by unique Stripe session ID, so webhook retries are idempotent. Checkout success and cancel redirects are limited to configured client origins.
+Configure Stripe to send `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+`charge.refunded`, and `charge.dispute.closed` to `POST /api/payments/webhook`. Seats are granted only after Stripe reports
+the payment as paid, and checkout/refund processing is idempotent. Checkout success and cancel
+redirects are limited to configured client origins. The application does not expose customer
+self-service refunds.

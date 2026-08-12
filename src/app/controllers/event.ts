@@ -12,11 +12,28 @@ import {
   normalizeScoringFormat,
   validateEventMode,
 } from '../utils/event-mode';
-import { buildEventScoreAccess, getLeagueScoreOrder } from '../utils/score-order';
+import { buildEventScoreAccess } from '../utils/score-order';
 import { writeAuditLog } from '../utils/audit';
 import { getPublicErrorResponse } from '../utils/error-response';
 import { EventMetrics } from '../services/eventMetrics';
 import { localEventTimeToUtc, normalizeTimeZone } from '../utils/time-zone';
+import {
+  calculateCourseHandicap,
+  modelTeeForRound,
+  selectRoundHoles,
+} from '../utils/tee-rating';
+
+const canManageLeagueScores = async (req: Request, leagueId: number) => {
+  const role = String(req.user?.role || '').toUpperCase();
+  if (role === 'SUPER') return true;
+  if (role !== 'ADMIN' || !req.session.userId) return false;
+
+  const league = await prisma.league.findFirst({
+    where: { id: leagueId, adminId: req.session.userId, deletedAt: null },
+    select: { id: true },
+  });
+  return Boolean(league);
+};
 
 class EventController {
   static getAdminEvent = async (req: Request, res: Response) => {
@@ -53,6 +70,7 @@ class EventController {
       const events = await prisma.event.findMany({
         where: { leagueId, isDeleted: false, deletedAt: null },
         include: {
+          _count: { select: { rounds: true } },
           course: true,
           tee: {
             select: {
@@ -82,12 +100,13 @@ class EventController {
         },
         orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
       });
-      const scoreOrder = await getLeagueScoreOrder(leagueId);
-
+      const canManageScores = await canManageLeagueScores(req, leagueId);
       res.status(200).send(
         events.map((event: any) => ({
           ...event,
-          ...buildEventScoreAccess(Number(event.id), scoreOrder),
+          ...(canManageScores
+            ? buildEventScoreAccess(event)
+            : { canEnterScores: false, canEditScores: false }),
         })),
       );
     } catch (error) {
@@ -103,10 +122,11 @@ class EventController {
       const leagueId = Number(req.params.leagueId);
       const eventId = Number(req.params.eventId);
 
-      const [event, scoreOrder, metrics] = await Promise.all([
+      const [event, metrics, canManageScores] = await Promise.all([
         prisma.event.findFirst({
           where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
           include: {
+            _count: { select: { rounds: true } },
             course: true,
             tee: true,
             flights: {
@@ -146,8 +166,8 @@ class EventController {
             },
           },
         }),
-        getLeagueScoreOrder(leagueId),
         new EventMetrics(eventId, leagueId).processEvent(),
+        canManageLeagueScores(req, leagueId),
       ]);
 
       if (!event) {
@@ -156,8 +176,10 @@ class EventController {
       }
 
       const eventWithMetrics = {
-        ...event,
-        ...buildEventScoreAccess(Number(event.id), scoreOrder),
+        ...addEventRoundSetup(event),
+        ...(canManageScores
+          ? buildEventScoreAccess(event)
+          : { canEnterScores: false, canEditScores: false }),
         metrics,
       };
 
@@ -279,7 +301,14 @@ class EventController {
       validateEventDateWithinLeague(eventData?.date, league);
 
       const newEvent = await prisma.$transaction(async (tx: any) => {
-        const timeZone = await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+        const roundConfig = await validateCourseAndTee(
+          tx,
+          eventData?.courseId,
+          eventData?.teeId,
+          eventData?.holes,
+          eventData?.startSide,
+        );
+        const timeZone = roundConfig.timeZone;
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
         const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
         const pointsEnabled = eventData?.pointsEnabled !== false;
@@ -315,7 +344,7 @@ class EventController {
             name: e.name,
             startsAt,
             timeZone,
-            startSide: e.startSide,
+            startSide: roundConfig.startSide,
             interval: e.interval,
             format: forcedFormat,
             scoringFormat: normalizedScoringFormat,
@@ -330,7 +359,7 @@ class EventController {
               pointsEnabled,
             ),
             type: e.type,
-            holes: e.holes,
+            holes: roundConfig.holes,
             ...(createdLeagueTeams.length > 0
               ? {
                   teams: {
@@ -346,7 +375,12 @@ class EventController {
 
         const flightGen = new FlightGen(
           leagueForFlights,
-          { ...normalizedEventData, startsAt },
+          {
+            ...normalizedEventData,
+            startsAt,
+            holes: roundConfig.holes,
+            startSide: roundConfig.startSide,
+          },
           created.id,
           tx,
         );
@@ -413,7 +447,14 @@ class EventController {
       const createdEvents = await prisma.$transaction(async (tx: any) => {
         const createdEventsInTransaction = [];
         for (const eventData of eventsData) {
-          const timeZone = await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+          const roundConfig = await validateCourseAndTee(
+            tx,
+            eventData?.courseId,
+            eventData?.teeId,
+            eventData?.holes,
+            eventData?.startSide,
+          );
+          const timeZone = roundConfig.timeZone;
           const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
           const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
           const pointsEnabled = eventData?.pointsEnabled !== false;
@@ -442,7 +483,7 @@ class EventController {
               name: e.name,
               startsAt,
               timeZone,
-              startSide: e.startSide,
+              startSide: roundConfig.startSide,
               interval: e.interval,
               format: forcedFormat,
               scoringFormat: normalizedScoringFormat,
@@ -457,7 +498,7 @@ class EventController {
                 pointsEnabled,
               ),
               type: e.type,
-              holes: e.holes,
+              holes: roundConfig.holes,
             },
           });
 
@@ -466,6 +507,8 @@ class EventController {
             {
               ...eventData,
               startsAt,
+              holes: roundConfig.holes,
+              startSide: roundConfig.startSide,
               format: forcedFormat,
               scoringFormat: normalizedScoringFormat,
             },
@@ -554,11 +597,16 @@ class EventController {
 
       // have to delete and recreate flights to update players/teams in flights, which is the main reason for using a transaction here
       await prisma.$transaction(async (tx: any) => {
-        const timeZone = await validateCourseAndTee(
+        const roundConfig = await validateCourseAndTee(
           tx,
           eventData?.courseId,
           eventData?.teeId,
+          eventData?.holes,
+          eventData?.startSide,
         );
+        const timeZone = roundConfig.timeZone;
+        eventData.holes = roundConfig.holes;
+        eventData.startSide = roundConfig.startSide;
         const startsAt = localEventTimeToUtc(eventData.date, eventData.startTime, timeZone);
 
         const existingFlights = await tx.flight.findMany({
@@ -838,7 +886,13 @@ const validateEventDateWithinLeague = (eventDate: unknown, league: any) => {
   }
 };
 
-const validateCourseAndTee = async (db: any, rawCourseId: unknown, rawTeeId: unknown) => {
+const validateCourseAndTee = async (
+  db: any,
+  rawCourseId: unknown,
+  rawTeeId: unknown,
+  rawHoles: unknown,
+  rawStartSide: unknown,
+) => {
   const courseId = Number(rawCourseId);
   const teeId = Number(rawTeeId);
   if (!Number.isInteger(courseId) || courseId <= 0 || !Number.isInteger(teeId) || teeId <= 0) {
@@ -854,9 +908,11 @@ const validateCourseAndTee = async (db: any, rawCourseId: unknown, rawTeeId: unk
     },
     select: {
       id: true,
+      holes: true,
       course: {
         select: {
           timeZone: true,
+          numHoles: true,
         },
       },
     },
@@ -866,7 +922,43 @@ const validateCourseAndTee = async (db: any, rawCourseId: unknown, rawTeeId: unk
     throw new Error('Selected tee does not belong to the selected course.');
   }
 
-  return normalizeTimeZone(tee.course.timeZone);
+  const selection = selectRoundHoles(tee, tee.course.numHoles, rawHoles, rawStartSide);
+  return {
+    timeZone: normalizeTimeZone(tee.course.timeZone),
+    holes: selection.holesPlayed,
+    startSide: selection.side,
+  };
+};
+
+const addEventRoundSetup = (event: any) => {
+  const selection = selectRoundHoles(
+    event.tee,
+    event.course?.numHoles,
+    event.holes,
+    event.startSide,
+  );
+
+  return {
+    ...event,
+    scoringHoles: selection.holes,
+    startSide: selection.side,
+    flights: (event.flights || []).map((flight: any) => ({
+      ...flight,
+      players: (flight.players || []).map((entry: any) => {
+        const player = entry.player;
+        const existingRound = player?.rounds?.[0];
+        const handicapIndex = Number(existingRound?.preHandicap ?? player?.handicap);
+        const tee = modelTeeForRound(event.tee, Number(event.holes), selection.side, {
+          courseHoles: event.course?.numHoles,
+          gender: player?.gender,
+        });
+        return {
+          ...entry,
+          courseHandicap: calculateCourseHandicap(handicapIndex, tee),
+        };
+      }),
+    })),
+  };
 };
 
 const normalizeStrokePoints = (

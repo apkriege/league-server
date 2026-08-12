@@ -11,6 +11,8 @@ import {
 import { writeAuditLog } from '../utils/audit';
 import { generateLeagueAccessCode } from './auth';
 import { localDateKey } from '../utils/time-zone';
+import { normalizeGender } from '../utils/tee-rating';
+import { lockAdminBilling } from '../services/billingLock';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
@@ -21,6 +23,11 @@ const getMissingRequiredPlayerFields = (player: any) => {
 
   if (!String(player?.firstName ?? '').trim()) missing.push('firstName');
   if (!String(player?.lastName ?? '').trim()) missing.push('lastName');
+  try {
+    normalizeGender(player?.gender);
+  } catch {
+    missing.push('gender');
+  }
   const type = String(player?.type || 'player').trim().toLowerCase();
   if (!['player', 'sub', 'substitute', 'captain'].includes(type)) missing.push('type');
   if (!Number.isFinite(handicap) || handicap < -10 || handicap > 54) missing.push('handicap');
@@ -310,7 +317,7 @@ class LeagueController {
 
       const playerIds = userId
         ? await prisma.player.findMany({
-            where: { userId },
+            where: { userId, deletedAt: null },
             select: { id: true },
           })
         : [];
@@ -406,6 +413,14 @@ class LeagueController {
           message: `Player ${invalidPlayerIndex + 1} is missing required fields: ${missingFields.join(', ')}`,
         });
       }
+      const playerEmails = players
+        .map((player: any) => String(player?.email || '').trim().toLowerCase())
+        .filter(Boolean);
+      if (new Set(playerEmails).size !== playerEmails.length) {
+        return res.status(409).json({
+          message: 'Every player email in a league must be unique.',
+        });
+      }
 
       const normalizedLeagueData = LeagueController.normalizeLeaguePayload({
         ...leagueData,
@@ -455,6 +470,27 @@ class LeagueController {
 
       const viewerAccessCode = await LeagueController.createUniqueViewerAccessCode();
       const newLeague = await prisma.$transaction(async (tx) => {
+        await lockAdminBilling(tx, adminId);
+        const lockedAdmin = await tx.user.findFirst({
+          where: { id: adminId, deletedAt: null },
+          select: { metadata: true },
+        });
+        if (!lockedAdmin) throw new Error('User not found');
+        const lockedAllocatedGolfers = await getAllocatedGolfersForAdmin(adminId, undefined, tx);
+        const lockedBillingState = getBillingState(
+          lockedAdmin.metadata,
+          lockedAllocatedGolfers,
+        );
+        if (!lockedBillingState.hasCompletedRegistration) {
+          throw new Error('Registration payment is required.');
+        }
+        if (
+          lockedBillingState.includedGolfers <
+          lockedAllocatedGolfers + billableGolfers
+        ) {
+          throw new Error(`Payment is required for ${billableGolfers} golfers.`);
+        }
+
         const createdLeague = await tx.league.create({
           data: {
             ...normalizedLeagueData,
@@ -475,6 +511,7 @@ class LeagueController {
                 lastName: String(player.lastName).trim(),
                 email: String(player.email || '').trim().toLowerCase() || null,
                 phone: player.phone ? String(player.phone).trim() : null,
+                gender: normalizeGender(player.gender),
                 type:
                   String(player.type || 'player').trim().toLowerCase() === 'sub'
                     ? 'substitute'
@@ -539,8 +576,10 @@ class LeagueController {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : 'Internal server error';
-      const status =
-        message.includes('League type') ||
+      const paymentRequired = message.toLowerCase().includes('payment is required');
+      const status = paymentRequired
+        ? 402
+        : message.includes('League type') ||
         message.includes('Season leagues require format') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
@@ -573,7 +612,7 @@ class LeagueController {
       LeagueController.validateLeagueDates(league);
 
       const [activePlayerCount, activeTeamCount, activeEvents] = await Promise.all([
-        prisma.player.count({ where: { leagueId: id, deletedAt: null } }),
+        prisma.player.count({ where: { leagueId: id, type: 'player', deletedAt: null } }),
         prisma.team.count({ where: { leagueId: id, deletedAt: null } }),
         prisma.event.findMany({
           where: { leagueId: id, isDeleted: false, deletedAt: null },
@@ -630,7 +669,28 @@ class LeagueController {
         });
       }
 
-      const updatedLeague = await LeagueService.update(id, league);
+      const updatedLeague = await prisma.$transaction(async (tx) => {
+        await lockAdminBilling(tx, existingLeague.adminId);
+        const [lockedAdmin, lockedAllocatedGolfers] = await Promise.all([
+          tx.user.findFirst({
+            where: { id: existingLeague.adminId, deletedAt: null },
+            select: { metadata: true },
+          }),
+          getAllocatedGolfersForAdmin(existingLeague.adminId, id, tx),
+        ]);
+        const lockedBillingState = getBillingState(
+          lockedAdmin?.metadata,
+          lockedAllocatedGolfers,
+        );
+        if (
+          lockedBillingState.includedGolfers <
+          lockedAllocatedGolfers + billableGolfers
+        ) {
+          throw new Error('Payment is required for this capacity change.');
+        }
+
+        return tx.league.update({ where: { id }, data: league });
+      });
 
       if (!updatedLeague) {
         res.status(404).send('League not found');
@@ -641,8 +701,9 @@ class LeagueController {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : 'Internal server error';
-      const status =
-        message.includes('League type') ||
+      const status = message.toLowerCase().includes('payment is required')
+        ? 402
+        : message.includes('League type') ||
         message.includes('Season leagues require format') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
@@ -657,11 +718,99 @@ class LeagueController {
   static deleteLeague = async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
+      const completedEvent = await prisma.event.findFirst({
+        where: {
+          leagueId: id,
+          isDeleted: false,
+          deletedAt: null,
+          OR: [{ isComplete: true }, { status: 'completed' }, { rounds: { some: {} } }],
+        },
+        select: { id: true },
+      });
+      if (completedEvent) {
+        return res.status(409).json({
+          message: 'A league with completed scoring cannot be deleted or reused.',
+        });
+      }
       await LeagueService.delete(id);
       res.status(204).json('League deleted');
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });
+    }
+  };
+
+  static transferLeagueOwnership = async (req: Request, res: Response) => {
+    try {
+      const leagueId = Number(req.params.leagueId);
+      const newAdminEmail = String(req.body?.newAdminEmail || '').trim().toLowerCase();
+      if (!newAdminEmail) {
+        return res.status(400).json({ message: 'New admin email is required.' });
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const league = await tx.league.findFirst({
+          where: { id: leagueId, deletedAt: null },
+          select: { id: true, name: true, adminId: true, numPlayers: true },
+        });
+        if (!league) throw new Error('League not found');
+
+        const nextAdmin = await tx.user.findFirst({
+          where: { email: newAdminEmail, deletedAt: null },
+          select: { id: true, email: true, role: true, metadata: true },
+        });
+        if (!nextAdmin || !['ADMIN', 'SUPER'].includes(String(nextAdmin.role).toUpperCase())) {
+          throw new Error('The new owner must have an active admin account.');
+        }
+        if (nextAdmin.id === league.adminId) return { league, nextAdmin };
+
+        for (const adminId of [league.adminId, nextAdmin.id].sort((a, b) => a - b)) {
+          await lockAdminBilling(tx, adminId);
+        }
+
+        if (String(nextAdmin.role).toUpperCase() !== 'SUPER') {
+          const allocatedGolfers = await getAllocatedGolfersForAdmin(
+            nextAdmin.id,
+            undefined,
+            tx,
+          );
+          const billingState = getBillingState(nextAdmin.metadata, allocatedGolfers);
+          if (
+            !billingState.hasCompletedRegistration ||
+            billingState.includedGolfers < allocatedGolfers + league.numPlayers
+          ) {
+            throw new Error(
+              `The new owner needs paid capacity for ${league.numPlayers} golfers before this league can be transferred.`,
+            );
+          }
+        }
+
+        const updatedLeague = await tx.league.update({
+          where: { id: league.id },
+          data: { adminId: nextAdmin.id },
+          select: { id: true, name: true, adminId: true, numPlayers: true },
+        });
+        return { league: updatedLeague, nextAdmin };
+      });
+
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'league',
+        entityId: leagueId,
+        action: 'transfer_ownership',
+        summary: `Transferred ${result.league.name} to ${result.nextAdmin.email}.`,
+        metadata: { newAdminId: result.nextAdmin.id },
+      });
+
+      return res.status(200).json(result.league);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      if (message === 'League not found') return res.status(404).json({ message });
+      if (message.includes('active admin account')) return res.status(400).json({ message });
+      if (message.includes('paid capacity')) return res.status(402).json({ message });
+      console.error(error);
+      return res.status(500).json({ message: 'Internal server error' });
     }
   };
 

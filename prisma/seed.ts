@@ -46,6 +46,7 @@ async function clearData() {
   await prisma.course.deleteMany();
   await prisma.club.deleteMany();
   await prisma.session.deleteMany();
+  await prisma.stripe_checkout_completion.deleteMany();
   await prisma.user.deleteMany();
 }
 
@@ -171,6 +172,13 @@ async function main() {
       password: hashedPassword,
       role: 'ADMIN',
       metadata: {
+        stripe: {
+          customerId: 'cus_demo_admin',
+          lastCheckoutSessionId: 'cs_demo_registration',
+          lastCheckoutStatus: 'completed',
+          lastCheckoutPurpose: 'registration',
+          lastPaymentIntentId: 'pi_demo_registration',
+        },
         billing: {
           includedGolfers: 8,
           minimumGolfers: 8,
@@ -179,6 +187,17 @@ async function main() {
           registrationCompletedAt: new Date().toISOString(),
         },
       },
+    },
+  });
+
+  await prisma.stripe_checkout_completion.create({
+    data: {
+      sessionId: 'cs_demo_registration',
+      paymentIntentId: 'pi_demo_registration',
+      userId: adminUser.id,
+      purpose: 'registration',
+      quantity: 8,
+      targetGolfers: 8,
     },
   });
 
@@ -238,6 +257,7 @@ async function main() {
         lastName,
         email,
         phone: `555-02${String(index).padStart(2, '0')}`,
+        gender: index % 4 === 3 ? 'female' : 'male',
         handicap,
         startingHandicap: handicap,
         seasonPoints: 0,

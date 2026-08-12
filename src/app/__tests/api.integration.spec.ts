@@ -217,6 +217,7 @@ describe('API integration', () => {
       rotateViewerCode,
       createCheckout,
       adminLeagues,
+      adminBilling,
       superAdmin,
     ] = await Promise.all([
       member.get(`/api/leagues/${league.id}`),
@@ -237,6 +238,7 @@ describe('API integration', () => {
       member.post(`/api/leagues/${league.id}/viewer-access-code/rotate`),
       member.post('/api/payments/checkout-session').send({ purpose: 'registration' }),
       member.get('/api/admin/leagues'),
+      member.get('/api/admin/billing'),
       member.get('/api/users'),
     ]);
 
@@ -254,7 +256,8 @@ describe('API integration', () => {
       createAnnouncement,
       rotateViewerCode,
       createCheckout,
-    ].map((response) => response.status)).toEqual(Array(12).fill(403));
+      adminBilling,
+    ].map((response) => response.status)).toEqual(Array(13).fill(403));
     expect(adminLeagues.status).toBe(403);
     expect(superAdmin.status).toBe(403);
   });
@@ -291,9 +294,10 @@ describe('API integration', () => {
     const superAdmin = request.agent(app);
     await login(superAdmin, 'super@test.com');
 
-    const [leagues, users] = await Promise.all([
+    const [leagues, users, billing] = await Promise.all([
       superAdmin.get('/api/admin/leagues'),
       superAdmin.get('/api/users'),
+      superAdmin.get('/api/admin/billing'),
     ]);
     expect(leagues.status).toBe(200);
     expect(leagues.body).toEqual(
@@ -305,6 +309,32 @@ describe('API integration', () => {
     expect(users.body).toEqual(
       expect.arrayContaining([expect.objectContaining({ email: 'admin@test.com' })]),
     );
+    expect(billing.status).toBe(200);
+    expect(billing.body).toMatchObject({
+      summary: {
+        completedPayments: expect.any(Number),
+        purchasedSeats: expect.any(Number),
+        refundedSeats: expect.any(Number),
+        netRevenueCents: expect.any(Number),
+        currency: expect.any(String),
+      },
+      accounts: expect.arrayContaining([
+        expect.objectContaining({
+          email: 'admin@test.com',
+          includedGolfers: expect.any(Number),
+          allocatedGolfers: expect.any(Number),
+        }),
+      ]),
+      transactions: expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: 'cs_demo_registration',
+          status: 'paid',
+          quantity: 8,
+          userEmail: 'admin@test.com',
+        }),
+      ]),
+      transactionLimit: 250,
+    });
   });
 
   it('creates and edits scores without changing other events or flights', async () => {
