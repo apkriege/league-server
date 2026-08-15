@@ -5,6 +5,7 @@ import { prisma } from '../../prisma';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { localDateKey, localTimeKey } from '../utils/time-zone';
+import { lockAdminBilling, lockLeagueCapacity } from '../services/billingLock';
 
 const password = 'integration-test-password';
 
@@ -28,6 +29,15 @@ describe('API integration', () => {
     expect(response.headers['x-content-type-options']).toBe('nosniff');
     expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
     expect(response.headers['x-powered-by']).toBeUndefined();
+  });
+
+  it('locks billing rows during capacity transactions', async () => {
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await lockAdminBilling(tx, 1);
+        await lockLeagueCapacity(tx, 1);
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('allows configured CORS preflights and rejects untrusted browser origins', async () => {
