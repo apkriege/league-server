@@ -4,6 +4,7 @@ import app from '../../app';
 import { prisma } from '../../prisma';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import { localDateKey, localTimeKey } from '../utils/time-zone';
 
 const password = 'integration-test-password';
 
@@ -335,6 +336,81 @@ describe('API integration', () => {
       ]),
       transactionLimit: 250,
     });
+  });
+
+  it('updates an event while preserving reordered match flights and opponent pairs', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const event = await prisma.event.findFirstOrThrow({
+      where: {
+        format: 'individual',
+        scoringFormat: 'match',
+        status: 'upcoming',
+        isComplete: false,
+        rounds: { none: {} },
+      },
+      include: {
+        flights: {
+          orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+          include: { players: { orderBy: { id: 'asc' } } },
+        },
+      },
+    });
+    expect(event.flights.length).toBeGreaterThan(1);
+
+    const reorderedFlights = [...event.flights].reverse().map((flight) => {
+      const playerIds = flight.players.map((entry) => entry.playerId);
+      return Array.from(
+        { length: playerIds.length / 2 },
+        (_, matchupIndex) => playerIds.slice(matchupIndex * 2, matchupIndex * 2 + 2),
+      );
+    });
+
+    const response = await admin
+      .put(`/api/leagues/${event.leagueId}/events/${event.id}`)
+      .send({
+        name: `${event.name} Updated`,
+        type: event.type,
+        date: localDateKey(event.startsAt, event.timeZone),
+        startTime: localTimeKey(event.startsAt, event.timeZone),
+        interval: event.interval,
+        courseId: event.courseId,
+        teeId: event.teeId,
+        startSide: event.startSide,
+        holes: event.holes,
+        format: event.format,
+        scoringFormat: event.scoringFormat,
+        pointsEnabled: event.pointsEnabled,
+        ptsPerHole: event.ptsPerHole,
+        ptsPerMatch: event.ptsPerMatch,
+        ptsPerTeamWin: event.ptsPerTeamWin,
+        strokePoints: event.strokePoints,
+        teams: [],
+        flights: reorderedFlights,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.name).toBe(`${event.name} Updated`);
+
+    const updatedFlights = await prisma.flight.findMany({
+      where: { eventId: event.id },
+      orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+      include: { players: { orderBy: { id: 'asc' } } },
+    });
+    expect(updatedFlights.map((flight) => flight.players.map((entry) => entry.playerId))).toEqual(
+      reorderedFlights.map((matchups) => matchups.flat()),
+    );
+    for (const flight of updatedFlights) {
+      expect(flight.players.every((entry) => Number(entry.opponentId) > 0)).toBe(true);
+      expect(
+        flight.players.every((entry) =>
+          flight.players.some(
+            (opponent) =>
+              opponent.playerId === entry.opponentId && opponent.opponentId === entry.playerId,
+          ),
+        ),
+      ).toBe(true);
+    }
   });
 
   it('creates and edits scores without changing other events or flights', async () => {

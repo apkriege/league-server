@@ -29,4 +29,18 @@ describe('deployment configuration', () => {
       fs.existsSync(path.join(migrationsRoot, migrationDirectories[0], 'migration.sql')),
     ).toBe(true);
   });
+
+  it('pins Node 24 and runs repository-owned CI verification', () => {
+    const nodeVersion = fs.readFileSync(path.join(serverRoot, '.nvmrc'), 'utf8').trim();
+    const workflow = fs.readFileSync(
+      path.join(serverRoot, '.github/workflows/verify.yml'),
+      'utf8',
+    );
+
+    expect(nodeVersion).toMatch(/^24\./);
+    expect(workflow).toContain('node-version-file: .nvmrc');
+    expect(workflow).toContain('npm run verify');
+    expect(workflow).toContain('npm run test:integration');
+    expect(workflow).toContain('npm run audit:prod');
+  });
 });

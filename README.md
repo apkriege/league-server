@@ -19,6 +19,8 @@ npm run verify
 ```
 
 This runs strict TypeScript checking, source-only Vitest tests, Prisma generation, and the production compile.
+The repository GitHub Actions workflow runs this verification plus the disposable PostgreSQL
+integration suite on every push and pull request. Weekly Dependabot updates are also configured.
 
 ## Production
 
@@ -33,6 +35,10 @@ Required configuration includes:
 - `STRIPE_WEBHOOK_SECRET`
 - `STRIPE_PRICE_ID` or a valid per-golfer price configuration
 - `STRIPE_PRODUCT_TAX_CODE` (defaults to `txcd_10103000`, SaaS for personal use)
+
+The production process exits during startup when billing values, Stripe identifiers, Resend keys, or
+notification email addresses are malformed. This prevents a deployment with known-broken checkout
+or email configuration from receiving traffic.
 
 ### Railway CORS and cookies
 

@@ -80,13 +80,16 @@ class EventController {
             },
           },
           flights: {
+            orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
             include: {
               players: {
+                orderBy: { id: 'asc' },
                 include: {
                   player: true,
                 },
               },
               teams: {
+                orderBy: { id: 'asc' },
                 include: {
                   team: {
                     include: {
@@ -130,8 +133,10 @@ class EventController {
             course: true,
             tee: true,
             flights: {
+              orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
               include: {
                 players: {
+                  orderBy: { id: 'asc' },
                   include: {
                     player: {
                       include: {
@@ -154,6 +159,7 @@ class EventController {
                   },
                 },
                 teams: {
+                  orderBy: { id: 'asc' },
                   include: {
                     team: {
                       include: {
@@ -561,6 +567,7 @@ class EventController {
         return res.status(404).json({ message: 'League not found' });
       }
       validateEventDateWithinLeague(eventData?.date, eventLeague);
+      validateEditableEventDetails(eventData);
 
       const existingEvent = await prisma.event.findFirst({
         where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
@@ -628,20 +635,6 @@ class EventController {
           },
         });
         const existingFlightTeams = existingFlights.flatMap((flight: any) => flight.teams);
-        eventData.flights = normalizeEventFlightTeamIds(
-          eventData.flights,
-          existingFlightTeams,
-          eventData.teams,
-        );
-        const flightIds = existingFlights.map((flight: any) => flight.id);
-        await tx.flight_player.deleteMany({
-          where: { flightId: { in: flightIds } },
-        });
-        await tx.flight_team.deleteMany({
-          where: { flightId: { in: flightIds } },
-        });
-        await tx.flight.deleteMany({ where: { eventId } });
-
         const league = await LeagueService.query().findFirst({
           where: { id: leagueId, deletedAt: null },
           include: {
@@ -664,6 +657,22 @@ class EventController {
         }
 
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
+        if (forcedFormat === 'team') {
+          eventData.flights = normalizeEventFlightTeamIds(
+            eventData.flights,
+            existingFlightTeams,
+            eventData.teams,
+          );
+        }
+        const flightIds = existingFlights.map((flight: any) => flight.id);
+        await tx.flight_player.deleteMany({
+          where: { flightId: { in: flightIds } },
+        });
+        await tx.flight_team.deleteMany({
+          where: { flightId: { in: flightIds } },
+        });
+        await tx.flight.deleteMany({ where: { eventId } });
+
         const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
         const pointsEnabled = eventData?.pointsEnabled !== false;
         const normalizedStrokePoints = normalizeStrokePoints(
@@ -689,7 +698,7 @@ class EventController {
             type: eventData.type,
             holes: eventData.holes,
             startSide: eventData.startSide,
-            interval: eventData.interval,
+            interval: Number(eventData.interval),
             format: forcedFormat,
             scoringFormat: normalizedScoringFormat,
             pointsEnabled,
@@ -883,6 +892,21 @@ const validateEventDateWithinLeague = (eventDate: unknown, league: any) => {
     throw new Error(
       `Event date must be within the league date range (${leagueStartKey} to ${leagueEndKey}).`,
     );
+  }
+};
+
+const validateEditableEventDetails = (eventData: any) => {
+  if (!String(eventData?.name || '').trim()) {
+    throw new Error('Event name is required.');
+  }
+
+  const interval = Number(eventData?.interval);
+  if (!Number.isInteger(interval) || interval < 1 || interval > 180) {
+    throw new Error('Event interval must be a whole number from 1 to 180 minutes.');
+  }
+
+  if (!String(eventData?.type || '').trim()) {
+    throw new Error('Event type is required.');
   }
 };
 

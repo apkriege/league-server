@@ -59,6 +59,52 @@ describe('runtime configuration validation', () => {
     ).toThrow(/verified sending domain/);
   });
 
+  it('rejects invalid production integration identifiers and email addresses', () => {
+    expect(() =>
+      validateRuntimeConfig({
+        ...productionEnvironment,
+        STRIPE_WEBHOOK_SECRET: 'invalid',
+      }),
+    ).toThrow(/valid Stripe webhook secret/);
+
+    expect(() =>
+      validateRuntimeConfig({
+        ...productionEnvironment,
+        RESEND_API_KEY: 'invalid',
+      }),
+    ).toThrow(/valid Resend API key/);
+
+    expect(() =>
+      validateRuntimeConfig({
+        ...productionEnvironment,
+        SIGNUP_NOTIFICATION_TO: 'not-an-email',
+      }),
+    ).toThrow(/valid email addresses/);
+  });
+
+  it('rejects invalid billing configuration', () => {
+    expect(() =>
+      validateRuntimeConfig({
+        ...productionEnvironment,
+        BILLING_MIN_GOLFERS: '8.5',
+      }),
+    ).toThrow(/BILLING_MIN_GOLFERS must be a positive whole number/);
+
+    expect(() =>
+      validateRuntimeConfig({
+        ...productionEnvironment,
+        BILLING_PRICE_PER_GOLFER_CENTS: 'free',
+      }),
+    ).toThrow(/BILLING_PRICE_PER_GOLFER_CENTS must be a positive whole number/);
+
+    expect(() =>
+      validateRuntimeConfig({
+        ...productionEnvironment,
+        BILLING_CURRENCY: 'dollars',
+      }),
+    ).toThrow(/three-letter currency code/);
+  });
+
   it('allows optional integrations to be unconfigured in Railway development', () => {
     expect(() =>
       validateRuntimeConfig({

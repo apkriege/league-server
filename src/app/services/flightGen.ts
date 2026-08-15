@@ -30,6 +30,102 @@ export const extractTeamId = (value: any): number | null => {
   return null;
 };
 
+const extractPlayerId = (value: any): number | null => {
+  const raw =
+    value && typeof value === 'object'
+      ? value.playerId ?? value.player?.id ?? value.id
+      : value;
+  const playerId = Number(raw);
+  return Number.isInteger(playerId) && playerId > 0 ? playerId : null;
+};
+
+export const validateFlightConfiguration = (league: any, event: any) => {
+  const flights = Array.isArray(event?.flights) ? event.flights : [];
+  if (flights.length === 0) throw new Error('Event requires at least one flight.');
+
+  const format = String(event?.format || '').toLowerCase();
+  const scoringFormat = String(event?.scoringFormat || '').toLowerCase();
+  const assignedIds = new Set<number>();
+
+  if (format === 'individual') {
+    const leaguePlayerIds = new Set(
+      (Array.isArray(league?.players) ? league.players : [])
+        .map(extractPlayerId)
+        .filter((id: number | null): id is number => id !== null),
+    );
+
+    flights.forEach((flight: any, flightIndex: number) => {
+      let playerIds: number[] = [];
+      if (scoringFormat === 'stroke') {
+        if (!Array.isArray(flight) || flight.length < 1 || flight.length > 4) {
+          throw new Error(`Invalid individual stroke flight at index ${flightIndex}.`);
+        }
+        playerIds = flight.map(extractPlayerId).filter((id): id is number => id !== null);
+        if (playerIds.length !== flight.length) {
+          throw new Error(`Invalid player ID in flight index ${flightIndex}.`);
+        }
+      } else if (scoringFormat === 'match') {
+        const matchups = Array.isArray(flight?.[0]) ? flight : [flight];
+        if (matchups.length < 1 || matchups.length > 2) {
+          throw new Error(`Invalid individual match flight at index ${flightIndex}.`);
+        }
+        for (const matchup of matchups) {
+          if (!Array.isArray(matchup) || matchup.length !== 2) {
+            throw new Error(`Invalid individual match flight at index ${flightIndex}.`);
+          }
+          const pair = matchup.map(extractPlayerId);
+          if (pair.some((id) => id === null) || pair[0] === pair[1]) {
+            throw new Error(`Invalid individual match flight at index ${flightIndex}.`);
+          }
+          playerIds.push(pair[0] as number, pair[1] as number);
+        }
+      }
+
+      for (const playerId of playerIds) {
+        if (!leaguePlayerIds.has(playerId)) {
+          throw new Error(`Player ${playerId} does not belong to this league.`);
+        }
+        if (assignedIds.has(playerId)) {
+          throw new Error(`Player ${playerId} is assigned to more than one flight.`);
+        }
+        assignedIds.add(playerId);
+      }
+    });
+    return;
+  }
+
+  if (format === 'team') {
+    const teamsById = new Map<number, any>();
+    for (const team of Array.isArray(league?.teams) ? league.teams : []) {
+      const teamId = extractTeamId(team);
+      if (teamId !== null) teamsById.set(teamId, team);
+    }
+
+    flights.forEach((flight: any, flightIndex: number) => {
+      if (!Array.isArray(flight) || flight.length !== 2) {
+        throw new Error(`Invalid team matchup at flight index ${flightIndex}.`);
+      }
+      const teamIds = flight.map(extractTeamId);
+      if (teamIds.some((id) => id === null) || teamIds[0] === teamIds[1]) {
+        throw new Error(`Invalid team matchup at flight index ${flightIndex}.`);
+      }
+
+      for (const teamId of teamIds as number[]) {
+        const team = teamsById.get(teamId);
+        if (!team) throw new Error(`Unable to resolve team IDs for flight index ${flightIndex}.`);
+        if (assignedIds.has(teamId)) {
+          throw new Error(`Team ${teamId} is assigned to more than one flight.`);
+        }
+        const rosterSize = Array.isArray(team.players) ? team.players.length : 0;
+        if (rosterSize < (scoringFormat === 'match' ? 2 : 1)) {
+          throw new Error(`Team ${teamId} does not have enough active players for this event.`);
+        }
+        assignedIds.add(teamId);
+      }
+    });
+  }
+};
+
 export class FlightGen {
   constructor(
     private league: any,
@@ -43,6 +139,7 @@ export class FlightGen {
   }
 
   saveFlights() {
+    validateFlightConfiguration(this.league, this.event);
     if (this.event.format === 'individual' && this.event.scoringFormat === 'stroke') {
       return this.individualStroke();
     } else if (this.event.format === 'individual' && this.event.scoringFormat === 'match') {
@@ -101,13 +198,21 @@ export class FlightGen {
       }
 
       const startsAt = getFlightStartsAt(this.event.startsAt, this.event.interval, Number(i));
+      const playerAssignments = matchups.flatMap((pair: any) => {
+        const leftPlayerId = Number(pair[0]);
+        const rightPlayerId = Number(pair[1]);
+        return [
+          { playerId: leftPlayerId, opponentId: rightPlayerId },
+          { playerId: rightPlayerId, opponentId: leftPlayerId },
+        ];
+      });
 
       await this.prismaClient.flight.create({
         data: {
           eventId: this.eventId,
           startsAt,
           players: {
-            create: playerIds.map((playerId: number) => ({ playerId })),
+            create: playerAssignments,
           },
         },
       });

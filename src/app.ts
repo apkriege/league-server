@@ -118,7 +118,7 @@ app.use((req: Request, res: Response) => {
     name: 'NotFound',
     message: 'Route not found',
     path: req.originalUrl,
-    requestId: (req as any).requestId,
+    requestId: req.requestId,
   });
 });
 
@@ -131,7 +131,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   const errorResponse = getPublicErrorResponse(err);
   const name = err.name || 'Error';
   logError('request:error', {
-    requestId: (req as any).requestId,
+    requestId: req.requestId,
     method: req.method,
     path: req.originalUrl,
     name,
@@ -142,7 +142,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     status: errorResponse.status,
     name,
     message: errorResponse.message,
-    requestId: (req as any).requestId,
+    requestId: req.requestId,
   });
 });
 
