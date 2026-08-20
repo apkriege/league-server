@@ -3,17 +3,15 @@ const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient();
 
-const email = 'adamkrieger87@gmail.com';
+const email = 'super@leaguenightpro.com';
 const password = String(process.env.SUPER_ADMIN_PASSWORD || '');
 const firstName = 'Adam';
 const lastName = 'Krieger';
 
-const adminEmail = String(process.env.TEST_ADMIN_EMAIL || '')
-  .trim()
-  .toLowerCase();
-const adminPassword = String(process.env.TEST_ADMIN_PASSWORD || '');
-const adminFirstName = String(process.env.TEST_ADMIN_FIRST_NAME || '').trim();
-const adminLastName = String(process.env.TEST_ADMIN_LAST_NAME || '').trim();
+const adminEmail = 'admin@leaguenightpro.com';
+const adminPassword = String(process.env.SUPER_ADMIN_PASSWORD || '');
+const adminFirstName = 'Test';
+const adminLastName = 'Admin';
 
 async function upsertUser({ email, password, firstName, lastName, role }) {
   const hashedPassword = await bcrypt.hash(password, 10);

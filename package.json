@@ -19,7 +19,7 @@
     "db:migrate:deploy": "npx prisma migrate deploy --schema=./prisma/schema.prisma",
     "db:provision:super": "node scripts/createUsers.js",
     "db:migrate:reset": "node scripts/ensureNonProduction.js && npx prisma migrate reset --force --schema=./prisma/schema.prisma",
-    "db:full": "npm run db:migrate:reset && npm run seed:demo",
+    "db:full": "npm run db:migrate:reset && npm run seed:demo && npm run db:provision:super",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down -v",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
