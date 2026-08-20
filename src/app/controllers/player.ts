@@ -2,9 +2,14 @@ import { Request, Response } from 'express';
 import PlayerService from '../models/player';
 import { prisma } from '../../prisma';
 import { writeAuditLog } from '../utils/audit';
+import { getHandicapHoleBasis } from '../utils/league-hole-format';
 import { normalizeGender, type Gender } from '../utils/tee-rating';
 import { lockLeagueCapacity } from '../services/billingLock';
-import { getAllocatedGolfersForAdmin, getBillingState } from '../utils/billing';
+import {
+  getAllocatedGolfersForAdmin,
+  getBillingState,
+  isBillingCapacityCovered,
+} from '../utils/billing';
 
 const getMissingRequiredPlayerFields = (payload: any) => {
   const missing: string[] = [];
@@ -190,8 +195,10 @@ export default class PlayerController {
             }),
             getAllocatedGolfersForAdmin(league.adminId, undefined, tx),
           ]);
-          const includedGolfers = getBillingState(admin?.metadata, allocatedGolfers).includedGolfers;
-          if (includedGolfers < allocatedGolfers) throw new Error(accountBillingMessage);
+          const billingState = getBillingState(admin?.metadata, allocatedGolfers);
+          if (!isBillingCapacityCovered(billingState, allocatedGolfers)) {
+            throw new Error(accountBillingMessage);
+          }
         }
         if (playerType === 'player' && activePlayers >= league.numPlayers) {
           return { ok: false, currentGolfers: activePlayers, maxGolfers: league.numPlayers };
@@ -325,7 +332,10 @@ export default class PlayerController {
             }),
             getAllocatedGolfersForAdmin(league.adminId, undefined, tx),
           ]);
-          if (getBillingState(admin?.metadata, allocatedGolfers).includedGolfers < allocatedGolfers) {
+          if (!isBillingCapacityCovered(
+            getBillingState(admin?.metadata, allocatedGolfers),
+            allocatedGolfers,
+          )) {
             throw new Error(accountBillingMessage);
           }
         }
@@ -491,7 +501,10 @@ export default class PlayerController {
               }),
               getAllocatedGolfersForAdmin(league.adminId, undefined, tx),
             ]);
-            if (getBillingState(admin?.metadata, allocatedGolfers).includedGolfers < allocatedGolfers) {
+            if (!isBillingCapacityCovered(
+              getBillingState(admin?.metadata, allocatedGolfers),
+              allocatedGolfers,
+            )) {
               throw new Error(accountBillingMessage);
             }
           }
@@ -596,6 +609,7 @@ export default class PlayerController {
         where: { id: Number(playerId) },
         include: {
           team: true,
+          league: { select: { holeFormat: true } },
           rounds: {
             where: {
               event: { leagueId: Number(leagueId), isDeleted: false },
@@ -631,6 +645,7 @@ export default class PlayerController {
       }
 
       const rounds = player.rounds;
+      const handicapHoleBasis = getHandicapHoleBasis(player.league?.holeFormat);
 
       if (rounds.length === 0) {
         return res.status(200).json({
@@ -647,6 +662,7 @@ export default class PlayerController {
           },
           stats: null,
           rounds: [],
+          handicapHoleBasis,
         });
       }
 
@@ -760,6 +776,7 @@ export default class PlayerController {
         },
         stats,
         rounds: roundSummaries,
+        handicapHoleBasis,
       });
     } catch (error) {
       console.error(error);

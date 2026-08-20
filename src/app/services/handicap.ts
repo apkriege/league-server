@@ -5,6 +5,7 @@ import {
   modelTeeForRound,
 } from '../utils/tee-rating';
 import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
+import { getHandicapHoleBasis } from '../utils/league-hole-format';
 
 interface ProcessedRound {
   roundId: number;
@@ -68,6 +69,7 @@ export class Handicap {
         : this.processedRounds[this.processedRounds.length - 1].postHandicap;
     const diffs = this.processedRounds.map((r) => r.differential);
     const event = round.event;
+    const handicapHoleBasis = getHandicapHoleBasis(this.player.league?.holeFormat);
     const tee = this.modelTee(
       event.tee,
       event.course?.numHoles,
@@ -75,9 +77,9 @@ export class Handicap {
       event.startSide,
       this.player.gender,
     );
-    const courseHandicap = calculateCourseHandicap(hcp, tee);
+    const courseHandicap = calculateCourseHandicap(hcp, tee, handicapHoleBasis);
 
-    const diff = calculateRoundDifferential(round.adjusted, tee, hcp);
+    const diff = calculateRoundDifferential(round.adjusted, tee, hcp, handicapHoleBasis);
     diffs.push(diff);
 
     const newHandicap = calculateHandicapIndexFromDifferentials(diffs, hcp) ?? hcp;
@@ -99,6 +101,7 @@ export class Handicap {
     const player = await prisma.player.findUnique({
       where: { id: this.playerId },
       include: {
+        league: { select: { holeFormat: true } },
         rounds: {
           include: { event: { include: { tee: true, course: true } } },
           orderBy: { createdAt: 'asc' },

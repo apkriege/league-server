@@ -225,6 +225,7 @@ async function main() {
       name: 'Seeded Thursday Night League',
       description: 'Complete test league with players, teams, events, flights, and scores.',
       type: 'season',
+      holeFormat: 'mixed',
       viewerAccessCode: 'TESTCODE',
       format: 'team',
       numPlayers: 8,

@@ -7,12 +7,14 @@ import {
   getAllocatedGolfersForAdmin,
   getBillingState,
   getLeagueBillableGolfers,
+  isBillingCapacityCovered,
 } from '../utils/billing';
 import { writeAuditLog } from '../utils/audit';
 import { generateLeagueAccessCode } from './auth';
 import { localDateKey } from '../utils/time-zone';
 import { normalizeGender } from '../utils/tee-rating';
 import { lockAdminBilling } from '../services/billingLock';
+import { normalizeLeagueHoleFormat } from '../utils/league-hole-format';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
@@ -49,6 +51,7 @@ class LeagueController {
   static normalizeLeaguePayload = (payload: any) => {
     const normalizedType = String(payload?.type || '').toLowerCase();
     const normalizedFormat = payload?.format ? String(payload.format).toLowerCase() : null;
+    const holeFormat = normalizeLeagueHoleFormat(payload?.holeFormat);
 
     if (!['season', 'tournament'].includes(normalizedType)) {
       throw new Error('League type must be either "season" or "tournament".');
@@ -78,6 +81,7 @@ class LeagueController {
       name: String(payload.name).trim(),
       description: payload.description ? String(payload.description).trim() : null,
       type: normalizedType,
+      holeFormat,
       format: normalizedType === 'season' ? normalizedFormat : null,
       numPlayers,
       startDate: new Date(payload.startDate),
@@ -458,7 +462,7 @@ class LeagueController {
         });
       }
 
-      if (billingState.includedGolfers < allocatedGolfers + billableGolfers) {
+      if (!isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)) {
         return res.status(402).json({
           message: `This league requires payment for ${billableGolfers} golfers.`,
           billing: billingState,
@@ -484,10 +488,10 @@ class LeagueController {
         if (!lockedBillingState.hasCompletedRegistration) {
           throw new Error('Registration payment is required.');
         }
-        if (
-          lockedBillingState.includedGolfers <
-          lockedAllocatedGolfers + billableGolfers
-        ) {
+        if (!isBillingCapacityCovered(
+          lockedBillingState,
+          lockedAllocatedGolfers + billableGolfers,
+        )) {
           throw new Error(`Payment is required for ${billableGolfers} golfers.`);
         }
 
@@ -580,6 +584,7 @@ class LeagueController {
       const status = paymentRequired
         ? 402
         : message.includes('League type') ||
+        message.includes('League hole format') ||
         message.includes('Season leagues require format') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
@@ -627,10 +632,12 @@ class LeagueController {
       }
 
       const structureChanged =
-        league.type !== existingLeague.type || league.format !== existingLeague.format;
+        league.type !== existingLeague.type ||
+        league.format !== existingLeague.format ||
+        league.holeFormat !== existingLeague.holeFormat;
       if (structureChanged && activeEvents.length > 0) {
         return res.status(409).json({
-          message: 'League type and format cannot change after events have been created.',
+          message: 'League type, format, and hole format cannot change after events have been created.',
         });
       }
       if (structureChanged && activeTeamCount > 0 && league.format !== 'team') {
@@ -659,7 +666,7 @@ class LeagueController {
       const billingState = getBillingState(adminUser?.metadata, allocatedGolfers);
 
       const billableGolfers = Math.max(BILLING_MIN_GOLFERS, nextNumPlayers);
-      if (billingState.includedGolfers < allocatedGolfers + billableGolfers) {
+      if (!isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)) {
         return res.status(402).json({
           message: `This change requires payment for ${billableGolfers} golfers in this league.`,
           billing: billingState,
@@ -682,10 +689,10 @@ class LeagueController {
           lockedAdmin?.metadata,
           lockedAllocatedGolfers,
         );
-        if (
-          lockedBillingState.includedGolfers <
-          lockedAllocatedGolfers + billableGolfers
-        ) {
+        if (!isBillingCapacityCovered(
+          lockedBillingState,
+          lockedAllocatedGolfers + billableGolfers,
+        )) {
           throw new Error('Payment is required for this capacity change.');
         }
 
@@ -704,6 +711,7 @@ class LeagueController {
       const status = message.toLowerCase().includes('payment is required')
         ? 402
         : message.includes('League type') ||
+        message.includes('League hole format') ||
         message.includes('Season leagues require format') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
@@ -775,10 +783,7 @@ class LeagueController {
             tx,
           );
           const billingState = getBillingState(nextAdmin.metadata, allocatedGolfers);
-          if (
-            !billingState.hasCompletedRegistration ||
-            billingState.includedGolfers < allocatedGolfers + league.numPlayers
-          ) {
+          if (!isBillingCapacityCovered(billingState, allocatedGolfers + league.numPlayers)) {
             throw new Error(
               `The new owner needs paid capacity for ${league.numPlayers} golfers before this league can be transferred.`,
             );

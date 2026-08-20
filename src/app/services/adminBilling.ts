@@ -112,7 +112,9 @@ export const getAdminBillingDashboard = async () => {
       leagueCount: user.manager.length,
       ...billing,
       capacityStatus:
-        billing.allocatedGolfers > billing.includedGolfers
+        billing.paymentExempt
+          ? ('exempt' as const)
+          : billing.allocatedGolfers > billing.includedGolfers
           ? ('over_allocated' as const)
           : billing.hasCompletedRegistration
             ? ('active' as const)

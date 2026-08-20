@@ -10,6 +10,7 @@ import {
 } from '../utils/tee-rating';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
 import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
+import { getHandicapHoleBasis, type HandicapHoleBasis } from '../utils/league-hole-format';
 
 type PrismaTx = any;
 
@@ -189,15 +190,18 @@ const calculateNextHandicap = ({
   state,
   adjustedScore,
   tee,
+  handicapHoleBasis,
 }: {
   state: PlayerSeasonState;
   adjustedScore: number;
   tee: any;
+  handicapHoleBasis: HandicapHoleBasis;
 }) => {
   const differential = calculateRoundDifferential(
     adjustedScore,
     tee,
     state.currentHandicap,
+    handicapHoleBasis,
   );
   const previousDifferentials = state.differentials.slice(-19);
   const differentials = [...previousDifferentials, differential];
@@ -651,11 +655,13 @@ const recalculateEvent = async ({
   event,
   playerStates,
   teamPoints,
+  handicapHoleBasis,
 }: {
   tx: PrismaTx;
   event: any;
   playerStates: Map<number, PlayerSeasonState>;
   teamPoints: TeamEventPointsAccumulator;
+  handicapHoleBasis: HandicapHoleBasis;
 }) => {
   const holes = normalizeHoles(
     selectRoundHoles(
@@ -679,7 +685,7 @@ const recalculateEvent = async ({
       courseHoles: event.course?.numHoles,
       gender: round.player?.gender,
     });
-    const courseHandicap = calculateCourseHandicap(preHandicap, tee);
+    const courseHandicap = calculateCourseHandicap(preHandicap, tee, handicapHoleBasis);
     const scores = buildModeledScores({
       scoreRows,
       holes,
@@ -693,6 +699,7 @@ const recalculateEvent = async ({
       state: playerState,
       adjustedScore: stats.totalAdjusted,
       tee,
+      handicapHoleBasis,
     });
     const flightPlayer = flightPlayerLookup.get(Number(round.playerId));
     const opponentId = toNumber(round.opponentId ?? flightPlayer?.opponentId, 0) || null;
@@ -928,6 +935,7 @@ export class SeasonSync {
         }
 
         const teamPoints: TeamEventPointsAccumulator = new Map();
+        const handicapHoleBasis = getHandicapHoleBasis(league.holeFormat);
         const skippedEvents: SeasonSyncResult['skippedEvents'] = [];
 
         await tx.team_event_points.deleteMany({
@@ -964,6 +972,7 @@ export class SeasonSync {
             event,
             playerStates,
             teamPoints,
+            handicapHoleBasis,
           });
 
           if (eventResult.roundsUpdated === 0) {

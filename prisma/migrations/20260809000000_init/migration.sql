@@ -62,6 +62,22 @@ CREATE TABLE "stripe_checkout_completion" (
 );
 
 -- CreateTable
+CREATE TABLE "payment_bypass_code" (
+    "id" SERIAL NOT NULL,
+    "code_hash" TEXT NOT NULL,
+    "code_hint" TEXT NOT NULL,
+    "label" TEXT,
+    "created_by_id" INTEGER NOT NULL,
+    "redeemed_by_id" INTEGER,
+    "expires_at" TIMESTAMPTZ(3),
+    "redeemed_at" TIMESTAMPTZ(3),
+    "revoked_at" TIMESTAMPTZ(3),
+    "created_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "payment_bypass_code_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "club" (
     "id" SERIAL NOT NULL,
     "name" TEXT NOT NULL,
@@ -133,6 +149,7 @@ CREATE TABLE "league" (
     "name" TEXT NOT NULL,
     "description" TEXT,
     "type" TEXT NOT NULL,
+    "hole_format" TEXT NOT NULL DEFAULT '18',
     "viewer_access_code" TEXT,
     "format" TEXT,
     "num_players" INTEGER NOT NULL,
@@ -147,7 +164,8 @@ CREATE TABLE "league" (
     "updated_at" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "deleted_at" TIMESTAMPTZ(3),
 
-    CONSTRAINT "league_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "league_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "league_hole_format_check" CHECK ("hole_format" IN ('9', '18', 'mixed'))
 );
 
 -- CreateTable
@@ -454,6 +472,24 @@ CREATE INDEX "stripe_checkout_completion_user_id_idx" ON "stripe_checkout_comple
 CREATE INDEX "stripe_checkout_completion_league_id_idx" ON "stripe_checkout_completion"("league_id");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "payment_bypass_code_code_hash_key" ON "payment_bypass_code"("code_hash");
+
+-- CreateIndex
+CREATE INDEX "payment_bypass_code_created_by_id_idx" ON "payment_bypass_code"("created_by_id");
+
+-- CreateIndex
+CREATE INDEX "payment_bypass_code_redeemed_by_id_idx" ON "payment_bypass_code"("redeemed_by_id");
+
+-- CreateIndex
+CREATE INDEX "payment_bypass_code_expires_at_idx" ON "payment_bypass_code"("expires_at");
+
+-- CreateIndex
+CREATE INDEX "payment_bypass_code_redeemed_at_idx" ON "payment_bypass_code"("redeemed_at");
+
+-- CreateIndex
+CREATE INDEX "payment_bypass_code_revoked_at_idx" ON "payment_bypass_code"("revoked_at");
+
+-- CreateIndex
 CREATE INDEX "club_deleted_at_idx" ON "club"("deleted_at");
 
 -- CreateIndex
@@ -659,6 +695,12 @@ CREATE UNIQUE INDEX "league_onboarding_league_id_key" ON "league_onboarding"("le
 
 -- AddForeignKey
 ALTER TABLE "password_reset_token" ADD CONSTRAINT "password_reset_token_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "payment_bypass_code" ADD CONSTRAINT "payment_bypass_code_created_by_id_fkey" FOREIGN KEY ("created_by_id") REFERENCES "user"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "payment_bypass_code" ADD CONSTRAINT "payment_bypass_code_redeemed_by_id_fkey" FOREIGN KEY ("redeemed_by_id") REFERENCES "user"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "course" ADD CONSTRAINT "course_club_id_fkey" FOREIGN KEY ("club_id") REFERENCES "club"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

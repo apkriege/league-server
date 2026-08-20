@@ -75,6 +75,18 @@ describe('Round service', () => {
     });
   });
 
+  it('does not halve a stored 9-hole handicap for a 9-hole league', async () => {
+    db.event.findFirst.mockResolvedValue({
+      ...event,
+      league: { holeFormat: '9' },
+    });
+
+    await new Round(99, { playerId: 1, opponentId: 2, scores, points: 3 }, undefined, db).process();
+
+    const createdScores = db.score.createMany.mock.calls[0][0].data;
+    expect(createdScores.find((score: any) => score.hole === 1).net).toBe(2);
+  });
+
   it('uses the original pre-handicap when editing a round', async () => {
     const existingRound = { id: 12, adjusted: 36, preHandicap: 0 };
     db.round.findUnique.mockResolvedValue(existingRound);

@@ -22,6 +22,11 @@ import {
   modelTeeForRound,
   selectRoundHoles,
 } from '../utils/tee-rating';
+import {
+  getHandicapHoleBasis,
+  normalizeLeagueHoleFormat,
+  validateEventHolesForLeague,
+} from '../utils/league-hole-format';
 
 const canManageLeagueScores = async (req: Request, leagueId: number) => {
   const role = String(req.user?.role || '').toUpperCase();
@@ -130,6 +135,7 @@ class EventController {
           where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
           include: {
             _count: { select: { rounds: true } },
+            league: { select: { holeFormat: true } },
             course: true,
             tee: true,
             flights: {
@@ -305,13 +311,14 @@ class EventController {
       }
 
       validateEventDateWithinLeague(eventData?.date, league);
+      const eventHoles = validateEventHolesForLeague(league.holeFormat, eventData?.holes);
 
       const newEvent = await prisma.$transaction(async (tx: any) => {
         const roundConfig = await validateCourseAndTee(
           tx,
           eventData?.courseId,
           eventData?.teeId,
-          eventData?.holes,
+          eventHoles,
           eventData?.startSide,
         );
         const timeZone = roundConfig.timeZone;
@@ -446,18 +453,26 @@ class EventController {
         return;
       }
 
+      if (normalizeLeagueHoleFormat(league.holeFormat) === 'mixed') {
+        throw new Error(
+          'Invalid schedule generation: mixed 9/18-hole leagues require events to be created individually.',
+        );
+      }
+
       for (const eventData of eventsData) {
         validateEventDateWithinLeague(eventData?.date, league);
+        validateEventHolesForLeague(league.holeFormat, eventData?.holes);
       }
 
       const createdEvents = await prisma.$transaction(async (tx: any) => {
         const createdEventsInTransaction = [];
         for (const eventData of eventsData) {
+          const eventHoles = validateEventHolesForLeague(league.holeFormat, eventData?.holes);
           const roundConfig = await validateCourseAndTee(
             tx,
             eventData?.courseId,
             eventData?.teeId,
-            eventData?.holes,
+            eventHoles,
             eventData?.startSide,
           );
           const timeZone = roundConfig.timeZone;
@@ -561,12 +576,16 @@ class EventController {
 
       const eventLeague = await prisma.league.findFirst({
         where: { id: leagueId, deletedAt: null },
-        select: { startDate: true, endDate: true },
+        select: { startDate: true, endDate: true, holeFormat: true },
       });
       if (!eventLeague) {
         return res.status(404).json({ message: 'League not found' });
       }
       validateEventDateWithinLeague(eventData?.date, eventLeague);
+      const eventHoles = validateEventHolesForLeague(
+        eventLeague.holeFormat,
+        eventData?.holes,
+      );
       validateEditableEventDetails(eventData);
 
       const existingEvent = await prisma.event.findFirst({
@@ -608,7 +627,7 @@ class EventController {
           tx,
           eventData?.courseId,
           eventData?.teeId,
-          eventData?.holes,
+          eventHoles,
           eventData?.startSide,
         );
         const timeZone = roundConfig.timeZone;
@@ -978,7 +997,11 @@ const addEventRoundSetup = (event: any) => {
         });
         return {
           ...entry,
-          courseHandicap: calculateCourseHandicap(handicapIndex, tee),
+          courseHandicap: calculateCourseHandicap(
+            handicapIndex,
+            tee,
+            getHandicapHoleBasis(event.league?.holeFormat),
+          ),
         };
       }),
     })),

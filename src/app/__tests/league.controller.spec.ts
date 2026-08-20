@@ -24,5 +24,15 @@ describe('league payload normalization', () => {
 
     expect(normalized).not.toHaveProperty('access');
     expect(normalized.contactEmail).toBe('admin@test.com');
+    expect(normalized.holeFormat).toBe('18');
+  });
+
+  it('accepts a mixed league hole format', () => {
+    const normalized = LeagueController.normalizeLeaguePayload({
+      ...validLeaguePayload,
+      holeFormat: 'mixed',
+    });
+
+    expect(normalized.holeFormat).toBe('mixed');
   });
 });

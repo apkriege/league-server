@@ -273,6 +273,7 @@ export async function seedLeagueScenarioMatrix({
         name: scenario.name,
         description: `Comprehensive local test fixture for ${scenario.key}.`,
         type: scenario.type,
+        holeFormat: 'mixed',
         format: scenario.format,
         viewerAccessCode: `MATRIX${scenarioIndex + 1}`,
         numPlayers: tournamentPlayerCount,

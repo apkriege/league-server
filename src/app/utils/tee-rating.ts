@@ -184,10 +184,18 @@ const roundHalfUp = (value: number) =>
 
 const roundToOneDecimal = (value: number) => roundHalfUp(value * 10) / 10;
 
-export const calculateCourseHandicap = (handicapIndex: number, tee: RoundTee) => {
+export const calculateCourseHandicap = (
+  handicapIndex: number,
+  tee: RoundTee,
+  handicapHoleBasis: 9 | 18 = 18,
+) => {
   const index = Number(handicapIndex);
   if (!Number.isFinite(index)) throw new Error('A valid Handicap Index is required.');
-  const adjustedIndex = tee.holesPlayed === 9 ? roundToOneDecimal(index / 2) : index;
+  if (handicapHoleBasis === 9 && tee.holesPlayed !== 9) {
+    throw new Error('A 9-hole handicap can only be used for a 9-hole round.');
+  }
+  const adjustedIndex =
+    tee.holesPlayed === 9 && handicapHoleBasis === 18 ? roundToOneDecimal(index / 2) : index;
   return roundHalfUp(adjustedIndex * (tee.slope / 113) + (tee.rating - tee.par));
 };
 
@@ -229,10 +237,14 @@ export const calculateRoundDifferential = (
   adjustedScore: number,
   tee: RoundTee,
   handicapIndex: number,
+  handicapHoleBasis: 9 | 18 = 18,
 ) => {
+  if (handicapHoleBasis === 9 && tee.holesPlayed !== 9) {
+    throw new Error('A 9-hole handicap can only be calculated from a 9-hole round.');
+  }
   const playedDifferential = ((Number(adjustedScore) - tee.rating) * 113) / tee.slope;
   const normalized =
-    tee.holesPlayed === 9
+    tee.holesPlayed === 9 && handicapHoleBasis === 18
       ? playedDifferential + calculateExpectedNineHoleDifferential(handicapIndex)
       : playedDifferential;
   return Number(normalized.toFixed(2));

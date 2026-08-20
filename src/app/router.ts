@@ -55,6 +55,13 @@ router.get('/auth/me', user, Auth.getProfile);
 // PAYMENT ROUTES
 // =====================
 router.post('/payments/checkout-session', admin, paymentRateLimiter, Payment.createCheckoutSession);
+router.post('/payments/bypass-code', admin, paymentRateLimiter, Payment.redeemPaymentBypassCode);
+router.get(
+  '/payments/checkout-session/:sessionId',
+  user,
+  paymentRateLimiter,
+  Payment.confirmCheckoutSession,
+);
 router.get('/payments/stripe-state', user, paymentRateLimiter, Payment.getStripeState);
 
 // =====================
@@ -92,6 +99,9 @@ const adminRoutes = express.Router();
 router.get('/admin/leagues', admin, Admin.getLeagues);
 router.get('/admin/leagues/:id', admin, Admin.getLeague);
 adminRoutes.get('/billing', Admin.getBilling);
+adminRoutes.get('/payment-bypass-codes', Admin.getPaymentBypassCodes);
+adminRoutes.post('/payment-bypass-codes', Admin.createPaymentBypassCode);
+adminRoutes.delete('/payment-bypass-codes/:id', Admin.revokePaymentBypassCode);
 router.use('/admin', superAdmin, adminRoutes);
 
 // =====================

@@ -7,6 +7,7 @@ import {
 } from '../utils/tee-rating';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
 import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
+import { getHandicapHoleBasis, type HandicapHoleBasis } from '../utils/league-hole-format';
 
 export class Round {
   private eventId: number;
@@ -15,6 +16,7 @@ export class Round {
   private tee: any;
   private player: any;
   private courseHandicap = 0;
+  private handicapHoleBasis: HandicapHoleBasis = 18;
   private isEdit = false;
   private round?: any;
   private db: any;
@@ -325,6 +327,7 @@ export class Round {
       include: {
         course: true,
         tee: true,
+        league: { select: { holeFormat: true } },
       },
     });
 
@@ -333,6 +336,7 @@ export class Round {
     }
 
     this.event = event;
+    this.handicapHoleBasis = getHandicapHoleBasis(event.league?.holeFormat);
     this.tee = this.modelTee(
       event?.tee,
       event?.course?.numHoles,
@@ -343,7 +347,11 @@ export class Round {
     const handicapIndex = Number(
       this.isEdit ? this.round?.preHandicap : this.player.handicap,
     );
-    this.courseHandicap = calculateCourseHandicap(handicapIndex, this.tee);
+    this.courseHandicap = calculateCourseHandicap(
+      handicapIndex,
+      this.tee,
+      this.handicapHoleBasis,
+    );
   }
 
   private modelTee(
@@ -415,7 +423,12 @@ export class Round {
 
     // Add current differential
     const hcpToUse = Number(this.isEdit ? this.round.preHandicap : player.handicap);
-    const differential = calculateRoundDifferential(adjustedScore, this.tee, hcpToUse);
+    const differential = calculateRoundDifferential(
+      adjustedScore,
+      this.tee,
+      hcpToUse,
+      this.handicapHoleBasis,
+    );
     differentials.push(differential);
     const calculated = calculateHandicapIndexFromDifferentials(differentials, hcpToUse);
     const newHandicap = calculated ?? hcpToUse;

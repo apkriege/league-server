@@ -49,6 +49,8 @@ model user {
   leagueAnnouncements          league_announcement[]
   leagueAnnouncementDismissals league_announcement_dismissal[]
   auditLogs                    audit_log[]
+  createdPaymentBypassCodes    payment_bypass_code[] @relation("payment_bypass_code_created_by")
+  redeemedPaymentBypassCodes   payment_bypass_code[] @relation("payment_bypass_code_redeemed_by")
 
   @@index([email])
   @@index([deletedAt])
@@ -83,6 +85,28 @@ model stripe_checkout_completion {
 
   @@index([userId])
   @@index([leagueId])
+}
+
+model payment_bypass_code {
+  id           Int       @id @default(autoincrement())
+  codeHash     String    @unique @map("code_hash")
+  codeHint     String    @map("code_hint")
+  label        String?
+  createdById  Int       @map("created_by_id")
+  redeemedById Int?      @map("redeemed_by_id")
+  expiresAt    DateTime? @map("expires_at") @db.Timestamptz(3)
+  redeemedAt   DateTime? @map("redeemed_at") @db.Timestamptz(3)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  createdBy  user  @relation("payment_bypass_code_created_by", fields: [createdById], references: [id], onDelete: Restrict)
+  redeemedBy user? @relation("payment_bypass_code_redeemed_by", fields: [redeemedById], references: [id], onDelete: SetNull)
+
+  @@index([createdById])
+  @@index([redeemedById])
+  @@index([expiresAt])
+  @@index([redeemedAt])
+  @@index([revokedAt])
 }
 
 model club {
@@ -168,6 +192,7 @@ model league {
   name             String
   description      String?
   type             String
+  holeFormat       String    @default("18") @map("hole_format")
   viewerAccessCode String?   @unique @map("viewer_access_code")
   format           String? // e.g. "individual", "team"
   numPlayers       Int       @map("num_players")

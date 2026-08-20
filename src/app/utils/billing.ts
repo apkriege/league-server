@@ -1,4 +1,5 @@
 import type { Prisma } from '@prisma/client';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { prisma } from '../../prisma';
 
 export const BILLING_MIN_GOLFERS = Math.max(1, Number(process.env.BILLING_MIN_GOLFERS || 8));
@@ -23,6 +24,7 @@ export type BillingState = {
   allocatedGolfers: number;
   availableGolfers: number;
   hasCompletedRegistration: boolean;
+  paymentExempt: boolean;
 };
 
 const toObject = (value: unknown) => (value && typeof value === 'object' ? value : {});
@@ -37,6 +39,27 @@ export const getIncludedGolfers = (metadata: unknown) => {
   return Math.max(0, Number(billing.includedGolfers || 0));
 };
 
+export const isPaymentExempt = (metadata: unknown) =>
+  getBillingMetadata(metadata).paymentExempt === true;
+
+/**
+ * @deprecated Shared environment codes are not accepted by the redemption endpoint. This helper
+ * remains only for backward-compatible configuration diagnostics during the one-time-code rollout.
+ */
+export const isValidPaymentBypassCode = (value: unknown) => {
+  const normalize = (entry: unknown) => String(entry || '').trim().toUpperCase();
+  const candidate = normalize(value);
+  if (candidate.length < 8 || candidate.length > 128) return false;
+  const candidateHash = createHash('sha256').update(candidate).digest();
+  return String(process.env.PAYMENT_BYPASS_CODES || '')
+    .split(',')
+    .map(normalize)
+    .filter(Boolean)
+    .some((configuredCode) =>
+      timingSafeEqual(candidateHash, createHash('sha256').update(configuredCode).digest()),
+    );
+};
+
 export const getBillingState = (
   metadata: unknown,
   allocatedGolfers = 0,
@@ -45,6 +68,7 @@ export const getBillingState = (
   const includedGolfers = overrides.includedGolfers ?? getIncludedGolfers(metadata);
   const resolvedAllocatedGolfers = overrides.allocatedGolfers ?? allocatedGolfers ?? 0;
   const safeAllocatedGolfers = Math.max(0, Number(resolvedAllocatedGolfers));
+  const paymentExempt = isPaymentExempt(metadata);
 
   return {
     minimumGolfers: BILLING_MIN_GOLFERS,
@@ -53,9 +77,13 @@ export const getBillingState = (
     includedGolfers,
     allocatedGolfers: safeAllocatedGolfers,
     availableGolfers: Math.max(0, includedGolfers - safeAllocatedGolfers),
-    hasCompletedRegistration: includedGolfers >= BILLING_MIN_GOLFERS,
+    hasCompletedRegistration: paymentExempt || includedGolfers >= BILLING_MIN_GOLFERS,
+    paymentExempt,
   };
 };
+
+export const isBillingCapacityCovered = (billing: BillingState, requiredGolfers: number) =>
+  billing.paymentExempt || billing.includedGolfers >= requiredGolfers;
 
 export const mergeBillingMetadata = (metadata: unknown, billingPatch: Record<string, unknown>) => {
   const root = toObject(metadata) as Record<string, any>;

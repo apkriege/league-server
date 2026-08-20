@@ -147,6 +147,15 @@ describe('round handicap calculations', () => {
     expect(calculateCourseHandicap(8.7, modeled)).toBe(4);
   });
 
+  it('uses a stored 9-hole handicap directly for a 9-hole league', () => {
+    const modeled = modelTeeForRound({ ...tee, ratingFrontMen: 35.3 }, 9, 'front', {
+      courseHoles: 18,
+      gender: 'male',
+    });
+
+    expect(calculateCourseHandicap(4.4, modeled, 9)).toBe(4);
+  });
+
   it('calculates an 18-hole Course Handicap from the full Handicap Index', () => {
     const modeled = modelTeeForRound(tee, 18, 'front', {
       courseHoles: 18,
@@ -165,6 +174,17 @@ describe('round handicap calculations', () => {
     );
 
     expect(calculateRoundDifferential(42.2, modeled, 14)).toBe(15.7);
+  });
+
+  it('keeps a 9-hole differential on the 9-hole scale for a 9-hole league', () => {
+    const modeled = modelTeeForRound(
+      { ...tee, ratingFrontMen: 35, slopeFrontMen: 113 },
+      9,
+      'front',
+      { courseHoles: 18, gender: 'male' },
+    );
+
+    expect(calculateRoundDifferential(42.2, modeled, 7, 9)).toBe(7.2);
   });
 
   it('allocates stroke and match-play pops from Course Handicaps', () => {

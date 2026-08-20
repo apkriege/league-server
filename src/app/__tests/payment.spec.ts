@@ -45,7 +45,12 @@ const session = {
 } as any;
 
 describe('Stripe checkout completion', async () => {
-  const { applyCompletedCheckoutSession, applyRefundedCharge } = await import('../controllers/payment');
+  const {
+    applyCompletedCheckoutSession,
+    applyRefundedCharge,
+    getCheckoutConfirmationStatus,
+    withCheckoutSessionId,
+  } = await import('../controllers/payment');
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -132,6 +137,30 @@ describe('Stripe checkout completion', async () => {
 
     expect(transactionMock).not.toHaveBeenCalled();
     expect(mockTx.user.update).not.toHaveBeenCalled();
+  });
+
+  it('adds the Stripe session placeholder before a URL fragment', () => {
+    expect(withCheckoutSessionId('https://app.example.com/leagues?checkout=success#review')).toBe(
+      'https://app.example.com/leagues?checkout=success&session_id={CHECKOUT_SESSION_ID}#review',
+    );
+  });
+
+  it('classifies paid, processing, and failed checkout returns', () => {
+    expect(getCheckoutConfirmationStatus(session)).toBe('succeeded');
+    expect(
+      getCheckoutConfirmationStatus({
+        ...session,
+        payment_status: 'unpaid',
+        payment_intent: { status: 'processing' },
+      }),
+    ).toBe('processing');
+    expect(
+      getCheckoutConfirmationStatus({
+        ...session,
+        payment_status: 'unpaid',
+        payment_intent: { status: 'requires_payment_method' },
+      }),
+    ).toBe('failed');
   });
 
   it('revokes refunded league capacity once without removing active golfers', async () => {
