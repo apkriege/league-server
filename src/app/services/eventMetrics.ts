@@ -1,4 +1,5 @@
 import { prisma } from '../../prisma';
+import { calculateEventTeamStandings } from '../utils/event-team-standings';
 
 type DistributionKey =
   | 'eagles'
@@ -65,7 +66,7 @@ export class EventMetrics {
       },
     } as const;
 
-    const [rounds, seasonAggregate, eventIds] = await Promise.all([
+    const [rounds, seasonAggregate, eventIds, eventTeamData] = await Promise.all([
       prisma.round.findMany({
         where: { eventId: this.eventId, deletedAt: null },
         select: {
@@ -115,11 +116,51 @@ export class EventMetrics {
         by: ['eventId'],
         where: activeLeagueRounds,
       }),
+      prisma.event?.findFirst?.({
+        where: { id: this.eventId, leagueId: this.leagueId, isDeleted: false, deletedAt: null },
+        select: {
+          flights: {
+            where: { deletedAt: null },
+            select: {
+              players: {
+                where: { deletedAt: null },
+                select: { playerId: true, teamId: true },
+              },
+              teams: {
+                where: { deletedAt: null },
+                select: {
+                  teamId: true,
+                  team: { select: { name: true } },
+                },
+              },
+            },
+          },
+          teamEventPoints: {
+            select: { teamId: true, points: true },
+          },
+        },
+      }) ?? Promise.resolve(null),
     ]);
+
+    const teamAssignments = (eventTeamData?.flights ?? []).flatMap((flight) =>
+      flight.teams.map((assignment) => ({
+        teamId: Number(assignment.teamId),
+        name: String(assignment.team?.name || `Team ${assignment.teamId}`),
+      })),
+    );
+    const playerTeamAssignments = (eventTeamData?.flights ?? []).flatMap(
+      (flight) => flight.players,
+    );
 
     return {
       scores: this.scores(rounds),
       leaderboards: this.createLeaderboards(rounds),
+      teamStandings: calculateEventTeamStandings(
+        teamAssignments,
+        playerTeamAssignments,
+        eventTeamData?.teamEventPoints ?? [],
+        rounds,
+      ),
       skins: this.createSkins(rounds),
       scoreDistribution: this.scoreDistribution(
         rounds,
@@ -142,6 +183,10 @@ export class EventMetrics {
       net: round.net,
       pointsEarned: round.pointsEarned,
       matchPoints: round.matchPoints,
+      eagles: round.eagles,
+      birdies: round.birdies,
+      pars: round.pars,
+      bogeys: round.bogeys,
       scores: round.scores,
     }));
   }

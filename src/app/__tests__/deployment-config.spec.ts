@@ -16,7 +16,7 @@ describe('deployment configuration', () => {
     expect(railway.deploy.preDeployCommand.join(' ')).not.toMatch(/reset|db push|seed/i);
   });
 
-  it('keeps one clean initial migration baseline', () => {
+  it('keeps the ordered migration history required by deployed databases', () => {
     const migrationsRoot = path.join(serverRoot, 'prisma', 'migrations');
     const migrationDirectories = fs
       .readdirSync(migrationsRoot, { withFileTypes: true })
@@ -24,10 +24,16 @@ describe('deployment configuration', () => {
       .map((entry) => entry.name)
       .sort();
 
-    expect(migrationDirectories).toEqual(['20260809000000_init']);
-    expect(
-      fs.existsSync(path.join(migrationsRoot, migrationDirectories[0], 'migration.sql')),
-    ).toBe(true);
+    expect(migrationDirectories).toEqual([
+      '20260809000000_init',
+      '20260823000000_add_support_messages',
+      '20260824000000_add_league_scoring_periods',
+    ]);
+    for (const migrationDirectory of migrationDirectories) {
+      expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(
+        true,
+      );
+    }
   });
 
   it('pins Node 24 and runs repository-owned CI verification', () => {

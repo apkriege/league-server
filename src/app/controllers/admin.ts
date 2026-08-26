@@ -7,6 +7,7 @@ import {
   listPaymentBypassCodes,
   revokePaymentBypassCode,
 } from '../services/paymentBypassCode';
+import { getLeagueRoundProgress } from '../utils/league-round-progress';
 
 class AdminController {
   static getPaymentBypassCodes = async (_req: Request, res: Response) => {
@@ -87,13 +88,22 @@ class AdminController {
               events: { where: { deletedAt: null, isDeleted: false } },
             },
           },
+          events: {
+            where: { deletedAt: null, isDeleted: false },
+            select: { status: true, type: true, isComplete: true },
+          },
         },
         orderBy: {
           id: 'desc',
         },
       });
 
-      return res.json(leagues);
+      return res.json(
+        leagues.map(({ events, ...league }) => ({
+          ...league,
+          ...getLeagueRoundProgress(events),
+        })),
+      );
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });

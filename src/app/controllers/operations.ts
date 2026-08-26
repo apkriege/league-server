@@ -16,19 +16,11 @@ const createInviteToken = () => crypto.randomBytes(24).toString('hex');
 class OperationsController {
   static getLeagueAnnouncements = async (req: Request, res: Response) => {
     const leagueId = Number(req.params.leagueId);
-    const userId = Number(req.session.userId);
 
     const announcements = await (prisma as any).league_announcement.findMany({
       where: {
         leagueId,
         deletedAt: null,
-        ...(userId
-          ? {
-              dismissals: {
-                none: { userId },
-              },
-            }
-          : {}),
       },
       include: {
         author: {
@@ -151,39 +143,36 @@ class OperationsController {
     res.status(200).json(announcement);
   };
 
-  static dismissLeagueAnnouncement = async (req: Request, res: Response) => {
+  static deleteLeagueAnnouncement = async (req: Request, res: Response) => {
     const leagueId = Number(req.params.leagueId);
     const announcementId = Number(req.params.announcementId);
     const userId = Number(req.session.userId);
 
-    if (!userId) {
-      return res.status(401).json({ message: 'Login is required to remove announcements.' });
-    }
-
     const existing = await (prisma as any).league_announcement.findFirst({
       where: { id: announcementId, leagueId, deletedAt: null },
-      select: { id: true },
+      select: { id: true, title: true },
     });
 
     if (!existing) {
       return res.status(404).json({ message: 'Announcement not found' });
     }
 
-    await (prisma as any).league_announcement_dismissal.upsert({
-      where: {
-        announcementId_userId: {
-          announcementId,
-          userId,
-        },
-      },
-      create: {
-        announcementId,
-        userId,
-      },
-      update: {},
+    await (prisma as any).league_announcement.update({
+      where: { id: announcementId },
+      data: { deletedAt: new Date() },
     });
 
-    res.status(200).json({ message: 'Announcement removed.' });
+    await writeAuditLog({
+      userId,
+      leagueId,
+      entity: 'league_announcement',
+      entityId: announcementId,
+      action: 'delete',
+      summary: `Removed league announcement "${existing.title}".`,
+      metadata: { title: existing.title },
+    });
+
+    res.status(200).json({ message: 'Announcement removed for all league members.' });
   };
 
   static getLeagueInvitations = async (req: Request, res: Response) => {

@@ -1,7 +1,7 @@
 import { prisma } from '../../prisma';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
 import {
-  calculateCourseHandicap,
+  calculateLeaguePlayingHandicap,
   calculateMatchPops,
   calculateRoundDifferential,
   calculateStrokePops,
@@ -207,7 +207,11 @@ const calculateNextHandicap = ({
   const differentials = [...previousDifferentials, differential];
   const preHandicap = state.currentHandicap;
   const nextHandicap =
-    calculateHandicapIndexFromDifferentials(differentials, preHandicap) ?? preHandicap;
+    calculateHandicapIndexFromDifferentials(
+      differentials,
+      preHandicap,
+      state.startingHandicap,
+    ) ?? preHandicap;
 
   return {
     differential,
@@ -685,7 +689,11 @@ const recalculateEvent = async ({
       courseHoles: event.course?.numHoles,
       gender: round.player?.gender,
     });
-    const courseHandicap = calculateCourseHandicap(preHandicap, tee, handicapHoleBasis);
+    const courseHandicap = calculateLeaguePlayingHandicap(
+      preHandicap,
+      tee,
+      handicapHoleBasis,
+    );
     const scores = buildModeledScores({
       scoreRows,
       holes,

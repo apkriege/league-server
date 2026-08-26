@@ -28,6 +28,7 @@ import Payment from './controllers/payment';
 import Operations from './controllers/operations';
 import HealthController from './controllers/health';
 import SeasonSyncController from './controllers/seasonSync';
+import SupportController from './controllers/support';
 import { createRateLimiter } from './middleware/security';
 
 const router: Router = express.Router();
@@ -36,6 +37,11 @@ const paymentRateLimiter = createRateLimiter({
   keyPrefix: 'payment',
   windowMs: 15 * 60 * 1000,
   max: 10,
+});
+const supportRateLimiter = createRateLimiter({
+  keyPrefix: 'support',
+  windowMs: 60 * 60 * 1000,
+  max: 5,
 });
 
 router.get('/health', HealthController.getHealth);
@@ -50,6 +56,7 @@ router.post('/auth/password-reset/request', authRateLimiter, Auth.requestPasswor
 router.post('/auth/password-reset/complete', authRateLimiter, Auth.completePasswordReset);
 router.post('/auth/logout', Auth.logout);
 router.get('/auth/me', user, Auth.getProfile);
+router.post('/support/messages', user, supportRateLimiter, SupportController.submitMessage);
 
 // =====================
 // PAYMENT ROUTES
@@ -85,8 +92,8 @@ router.put(
 );
 router.delete(
   '/leagues/:leagueId/announcements/:announcementId',
-  leagueMemberGuard,
-  Operations.dismissLeagueAnnouncement,
+  leagueAdminGuard,
+  Operations.deleteLeagueAnnouncement,
 );
 router.get('/leagues/:leagueId/onboarding', leagueAdminGuard, Operations.getLeagueOnboarding);
 router.put('/leagues/:leagueId/onboarding', leagueAdminGuard, Operations.updateLeagueOnboarding);

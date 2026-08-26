@@ -1,6 +1,6 @@
 import { prisma } from '../../prisma';
 import {
-  calculateCourseHandicap,
+  calculateLeaguePlayingHandicap,
   calculateRoundDifferential,
   modelTeeForRound,
 } from '../utils/tee-rating';
@@ -77,12 +77,17 @@ export class Handicap {
       event.startSide,
       this.player.gender,
     );
-    const courseHandicap = calculateCourseHandicap(hcp, tee, handicapHoleBasis);
+    const courseHandicap = calculateLeaguePlayingHandicap(hcp, tee, handicapHoleBasis);
 
     const diff = calculateRoundDifferential(round.adjusted, tee, hcp, handicapHoleBasis);
     diffs.push(diff);
 
-    const newHandicap = calculateHandicapIndexFromDifferentials(diffs, hcp) ?? hcp;
+    const newHandicap =
+      calculateHandicapIndexFromDifferentials(
+        diffs,
+        hcp,
+        Number(this.player.startingHandicap),
+      ) ?? hcp;
 
     this.processedRounds.push({
       roundId: round.id,

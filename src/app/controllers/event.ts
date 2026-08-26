@@ -18,7 +18,7 @@ import { getPublicErrorResponse } from '../utils/error-response';
 import { EventMetrics } from '../services/eventMetrics';
 import { localEventTimeToUtc, normalizeTimeZone } from '../utils/time-zone';
 import {
-  calculateCourseHandicap,
+  calculateLeaguePlayingHandicap,
   modelTeeForRound,
   selectRoundHoles,
 } from '../utils/tee-rating';
@@ -27,6 +27,10 @@ import {
   normalizeLeagueHoleFormat,
   validateEventHolesForLeague,
 } from '../utils/league-hole-format';
+import {
+  normalizeLeagueScoringPeriods,
+  scoringPeriodDateKey,
+} from '../utils/league-scoring-periods';
 
 const canManageLeagueScores = async (req: Request, leagueId: number) => {
   const role = String(req.user?.role || '').toUpperCase();
@@ -430,6 +434,14 @@ class EventController {
     try {
       const leagueId = Number(req.params.leagueId);
       const eventsData = req.body.events;
+      const hasScoringPeriodsPayload = Object.prototype.hasOwnProperty.call(
+        req.body,
+        'scoringPeriods',
+      );
+
+      if (!Array.isArray(eventsData) || eventsData.length === 0) {
+        throw new Error('At least one event is required.');
+      }
 
       const league = await LeagueService.query().findFirst({
         where: { id: leagueId, deletedAt: null },
@@ -459,12 +471,70 @@ class EventController {
         );
       }
 
+      const scoringPeriods = hasScoringPeriodsPayload
+        ? normalizeLeagueScoringPeriods(req.body.scoringPeriods, league)
+        : [];
+
+      if (scoringPeriods.length > 0) {
+        const uncoveredEvent = eventsData.find((eventData: any) => {
+          const eventDate = scoringPeriodDateKey(eventData?.date);
+          return !scoringPeriods.some(
+            (period) =>
+              eventDate >= scoringPeriodDateKey(period.startDate) &&
+              eventDate <= scoringPeriodDateKey(period.endDate),
+          );
+        });
+        if (uncoveredEvent) {
+          throw new Error('Every generated event must fall within a scoring period.');
+        }
+      }
+
+      if (hasScoringPeriodsPayload) {
+        const [existingPeriods, scoredRoundCount] = await Promise.all([
+          prisma.league_scoring_period.findMany({
+            where: { leagueId },
+            orderBy: { position: 'asc' },
+          }),
+          prisma.round.count({
+            where: {
+              deletedAt: null,
+              scores: { some: {} },
+              event: { leagueId, isDeleted: false, deletedAt: null },
+            },
+          }),
+        ]);
+        const existingKey = existingPeriods
+          .map(
+            (period) =>
+              `${period.name}|${scoringPeriodDateKey(period.startDate)}|${scoringPeriodDateKey(period.endDate)}`,
+          )
+          .join('::');
+        const requestedKey = scoringPeriods
+          .map(
+            (period) =>
+              `${period.name}|${scoringPeriodDateKey(period.startDate)}|${scoringPeriodDateKey(period.endDate)}`,
+          )
+          .join('::');
+        if (scoredRoundCount > 0 && existingKey !== requestedKey) {
+          throw new Error('Scoring period dates cannot change after scores have been recorded.');
+        }
+      }
+
       for (const eventData of eventsData) {
         validateEventDateWithinLeague(eventData?.date, league);
         validateEventHolesForLeague(league.holeFormat, eventData?.holes);
       }
 
       const createdEvents = await prisma.$transaction(async (tx: any) => {
+        if (hasScoringPeriodsPayload) {
+          await tx.league_scoring_period.deleteMany({ where: { leagueId } });
+          if (scoringPeriods.length > 0) {
+            await tx.league_scoring_period.createMany({
+              data: scoringPeriods.map((period) => ({ ...period, leagueId })),
+            });
+          }
+        }
+
         const createdEventsInTransaction = [];
         for (const eventData of eventsData) {
           const eventHoles = validateEventHolesForLeague(league.holeFormat, eventData?.holes);
@@ -997,7 +1067,8 @@ const addEventRoundSetup = (event: any) => {
         });
         return {
           ...entry,
-          courseHandicap: calculateCourseHandicap(
+          handicapIndex,
+          courseHandicap: calculateLeaguePlayingHandicap(
             handicapIndex,
             tee,
             getHandicapHoleBasis(event.league?.holeFormat),

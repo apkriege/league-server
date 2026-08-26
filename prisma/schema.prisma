@@ -49,11 +49,31 @@ model user {
   leagueAnnouncements          league_announcement[]
   leagueAnnouncementDismissals league_announcement_dismissal[]
   auditLogs                    audit_log[]
+  supportMessages              support_message[]
   createdPaymentBypassCodes    payment_bypass_code[] @relation("payment_bypass_code_created_by")
   redeemedPaymentBypassCodes   payment_bypass_code[] @relation("payment_bypass_code_redeemed_by")
 
   @@index([email])
   @@index([deletedAt])
+}
+
+model support_message {
+  id            Int      @id @default(autoincrement())
+  requesterId   Int      @map("requester_id")
+  category      String
+  subject       String
+  message       String
+  emailStatus   String   @default("pending") @map("email_status")
+  emailId       String?  @map("email_id")
+  failureReason String?  @map("failure_reason")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  requester user @relation(fields: [requesterId], references: [id])
+
+  @@index([requesterId])
+  @@index([emailStatus])
+  @@index([createdAt])
 }
 
 model password_reset_token {
@@ -214,12 +234,31 @@ model league {
   teamEventPoints team_event_points[]
   invitations     league_invitation[]
   announcements   league_announcement[]
+  scoringPeriods  league_scoring_period[]
   auditLogs       audit_log[]
   onboarding      league_onboarding?
 
   @@index([adminId])
   @@index([startDate])
   @@index([deletedAt])
+}
+
+model league_scoring_period {
+  id        Int      @id @default(autoincrement())
+  leagueId  Int      @map("league_id")
+  name      String
+  position  Int
+  startDate DateTime @map("start_date") @db.Date
+  endDate   DateTime @map("end_date") @db.Date
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  league league @relation(fields: [leagueId], references: [id], onDelete: Cascade)
+
+  @@unique([leagueId, position])
+  @@index([leagueId])
+  @@index([startDate])
+  @@index([endDate])
 }
 
 model player {

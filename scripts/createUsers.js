@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient();
 
-const email = 'super@leaguenightpro.com';
+const email = 'adamkrieger87@gmail.com';
 const password = String(process.env.SUPER_ADMIN_PASSWORD || '');
 const firstName = 'Adam';
 const lastName = 'Krieger';

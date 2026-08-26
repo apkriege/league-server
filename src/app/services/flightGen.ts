@@ -326,13 +326,15 @@ export class FlightGen {
           },
           players: {
             create: [
-              ...team1PlayerIds.map((playerId: number) => ({
+              ...team1PlayerIds.map((playerId: number, playerIndex: number) => ({
                 teamId: team1Id,
                 playerId,
+                opponentId: team2PlayerIds[playerIndex] ?? null,
               })),
-              ...team2PlayerIds.map((playerId: number) => ({
+              ...team2PlayerIds.map((playerId: number, playerIndex: number) => ({
                 teamId: team2Id,
                 playerId,
+                opponentId: team1PlayerIds[playerIndex] ?? null,
               })),
             ],
           },

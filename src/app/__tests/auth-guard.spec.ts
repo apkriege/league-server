@@ -84,6 +84,21 @@ describe('authorization guards', async () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it('allows a super admin to manage any active league', async () => {
+    mocks.findUserById.mockResolvedValue({ id: 1, role: 'SUPER' });
+    mocks.findLeague.mockResolvedValue({ adminId: 42 });
+    const req = { session: { userId: 1 }, params: { leagueId: '12' } } as any;
+    const next = vi.fn();
+
+    await leagueAdminGuard(req, buildRes(), next);
+
+    expect(mocks.findLeague).toHaveBeenCalledWith({
+      where: { id: 12, deletedAt: null },
+      select: { adminId: true },
+    });
+    expect(next).toHaveBeenCalledOnce();
+  });
+
   it('denies a user role even if they are stored as the league owner', async () => {
     mocks.findUserById.mockResolvedValue({ id: 7, role: 'USER' });
     mocks.findLeague.mockResolvedValue({ adminId: 7 });

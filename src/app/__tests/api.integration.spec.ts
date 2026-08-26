@@ -273,6 +273,115 @@ describe('API integration', () => {
     expect(superAdmin.status).toBe(403);
   });
 
+  it('locks competitive league settings after scores have been recorded', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+    });
+
+    const read = await admin.get(`/api/leagues/${league.id}`);
+    expect(read.status).toBe(200);
+    expect(read.body.hasRecordedScores).toBe(true);
+
+    const update = await admin.put(`/api/leagues/${league.id}`).send({
+      name: league.name,
+      description: league.description,
+      type: league.type,
+      format: league.format,
+      holeFormat: league.holeFormat === '9' ? '18' : '9',
+      numPlayers: league.numPlayers,
+      startDate: league.startDate,
+      endDate: league.endDate,
+      contactFirstName: league.contactFirstName,
+      contactLastName: league.contactLastName,
+      contactEmail: league.contactEmail,
+      contactPhone: league.contactPhone,
+    });
+
+    expect(update.status).toBe(409);
+    expect(update.body.message).toMatch(/cannot change after scores have been recorded/i);
+
+    const changedEndDate = new Date(league.endDate);
+    changedEndDate.setUTCDate(changedEndDate.getUTCDate() - 1);
+    const dateUpdate = await admin.put(`/api/leagues/${league.id}`).send({
+      name: league.name,
+      description: league.description,
+      type: league.type,
+      format: league.format,
+      holeFormat: league.holeFormat,
+      numPlayers: league.numPlayers,
+      startDate: league.startDate,
+      endDate: changedEndDate,
+      contactFirstName: league.contactFirstName,
+      contactLastName: league.contactLastName,
+      contactEmail: league.contactEmail,
+      contactPhone: league.contactPhone,
+    });
+
+    expect(dateUpdate.status).toBe(409);
+    expect(dateUpdate.body.message).toMatch(/cannot change after the league has been created/i);
+  });
+
+  it('filters league statistics to a configured half', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+    });
+    const completedEvent = await prisma.event.findFirstOrThrow({
+      where: {
+        leagueId: league.id,
+        rounds: { some: { status: 'completed' } },
+      },
+      orderBy: { startsAt: 'asc' },
+    });
+    const cutoff = localDateKey(completedEvent.startsAt, completedEvent.timeZone);
+    const secondHalfStart = new Date(`${cutoff}T00:00:00.000Z`);
+    secondHalfStart.setUTCDate(secondHalfStart.getUTCDate() + 1);
+
+    await prisma.league_scoring_period.deleteMany({ where: { leagueId: league.id } });
+    await prisma.league_scoring_period.createMany({
+      data: [
+        {
+          leagueId: league.id,
+          name: '1st Half',
+          position: 1,
+          startDate: league.startDate,
+          endDate: new Date(`${cutoff}T00:00:00.000Z`),
+        },
+        {
+          leagueId: league.id,
+          name: '2nd Half',
+          position: 2,
+          startDate: secondHalfStart,
+          endDate: league.endDate,
+        },
+      ],
+    });
+
+    try {
+      const firstHalf = await prisma.league_scoring_period.findFirstOrThrow({
+        where: { leagueId: league.id, position: 1 },
+      });
+      const [overall, filtered] = await Promise.all([
+        admin.get(`/api/leagues/${league.id}/metrics`),
+        admin.get(`/api/leagues/${league.id}/metrics`).query({ periodId: firstHalf.id }),
+      ]);
+
+      expect(overall.status).toBe(200);
+      expect(filtered.status).toBe(200);
+      expect(filtered.body.selectedPeriod).toMatchObject({ id: firstHalf.id, name: '1st Half' });
+      expect(filtered.body.seasonSummary.totalRounds).toBeGreaterThan(0);
+      expect(filtered.body.seasonSummary.totalRounds).toBeLessThanOrEqual(
+        overall.body.seasonSummary.totalRounds,
+      );
+      expect(filtered.body.scoringPeriods).toHaveLength(2);
+    } finally {
+      await prisma.league_scoring_period.deleteMany({ where: { leagueId: league.id } });
+    }
+  });
+
   it('keeps a newly registered admin isolated from another admins league', async () => {
     const outsider = request.agent(app);
     const registration = await outsider.post('/api/auth/register').send({

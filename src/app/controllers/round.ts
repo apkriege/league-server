@@ -5,6 +5,7 @@ import { SeasonSync } from '../services/seasonSync';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
 import { writeAuditLog } from '../utils/audit';
 import { getPublicErrorResponse } from '../utils/error-response';
+import { resolveScoreSubmissionOpponents } from '../utils/score-opponents';
 
 type TeamPointsRow = { teamId: number; points: number };
 
@@ -412,6 +413,12 @@ const validateScoreSubmission = async (
   const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
   const maxHolePoints = Math.max(0, Number(event.ptsPerHole || 0)) * Number(event.holes || 0);
   const maxMatchPoints = Math.max(0, Number(event.ptsPerMatch || 0));
+  const resolvedOpponentByPlayerId = resolveScoreSubmissionOpponents({
+    eventFormat,
+    scoringFormat,
+    assignments: flight.players,
+    submittedPlayers: rawPlayers,
+  });
   const players = rawPlayers.map((player: any) => {
     const points = Number(player?.points || 0);
     const matchPoints = Number(player?.matchPoints || 0);
@@ -426,17 +433,10 @@ const validateScoreSubmission = async (
       throw new Error('Submitted player points are outside the event scoring rules.');
     }
 
-    const assignment: any = assignmentByPlayerId.get(Number(player.playerId));
-    const assignedOpponentId = assignment?.opponentId == null ? null : Number(assignment.opponentId);
-    const submittedOpponentId = player?.opponentId == null ? null : Number(player.opponentId);
-    if (submittedOpponentId !== assignedOpponentId) {
-      throw new Error('Player opponents must match the flight assignments.');
-    }
-
     return {
       ...player,
       playerId: Number(player.playerId),
-      opponentId: assignedOpponentId,
+      opponentId: resolvedOpponentByPlayerId.get(Number(player.playerId)) ?? null,
       points,
       matchPoints,
     };

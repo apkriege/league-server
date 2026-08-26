@@ -199,6 +199,22 @@ export const calculateCourseHandicap = (
   return roundHalfUp(adjustedIndex * (tee.slope / 113) + (tee.rating - tee.par));
 };
 
+export const calculateLeaguePlayingHandicap = (
+  storedHandicap: number,
+  tee: RoundTee,
+  handicapHoleBasis: 9 | 18 = 18,
+) => {
+  const handicap = Number(storedHandicap);
+  if (!Number.isFinite(handicap)) throw new Error('A valid stored handicap is required.');
+  if (handicapHoleBasis === 9 && tee.holesPlayed !== 9) {
+    throw new Error('A 9-hole handicap can only be used for a 9-hole round.');
+  }
+
+  const adjustedHandicap =
+    tee.holesPlayed === 9 && handicapHoleBasis === 18 ? handicap / 2 : handicap;
+  return roundHalfUp(adjustedHandicap);
+};
+
 export const calculateStrokePops = (courseHandicap: number, holes: TeeHole[]) => {
   const sorted = [...holes].sort((left, right) => left.hcp - right.hcp);
   const pops = new Map<number, number>();

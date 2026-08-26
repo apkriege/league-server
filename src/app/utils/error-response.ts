@@ -12,6 +12,7 @@ const validationMessagePatterns = [
   /^Flight /i,
   /^Hole /i,
   /^Selected /i,
+  /^Scoring /i,
   /required/i,
   /not found/i,
   /already exists/i,
@@ -70,7 +71,7 @@ export function getPublicErrorResponse(error: unknown) {
     return { status: 404, message };
   }
 
-  if (/cannot be edited|already exists/i.test(message)) {
+  if (/cannot be edited|cannot change|already exists/i.test(message)) {
     return { status: 409, message };
   }
 

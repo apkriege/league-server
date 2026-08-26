@@ -87,6 +87,36 @@ describe('Round service', () => {
     expect(createdScores.find((score: any) => score.hole === 1).net).toBe(2);
   });
 
+  it('uses the rounded stored league handicap without a tee adjustment', async () => {
+    db.event.findFirst.mockResolvedValue({
+      ...event,
+      league: { holeFormat: '9' },
+    });
+    db.player.findFirst.mockResolvedValue({
+      id: 1,
+      handicap: 8.4,
+      gender: 'male',
+      deletedAt: null,
+    });
+    db.player.findUnique.mockResolvedValue({
+      id: 1,
+      handicap: 8.4,
+      startingHandicap: 8.4,
+      gender: 'male',
+      rounds: [],
+    });
+
+    await new Round(99, { playerId: 1, opponentId: 2, scores, points: 3 }, undefined, db).process();
+
+    const createdScores = db.score.createMany.mock.calls[0][0].data;
+    expect(createdScores.find((score: any) => score.hole === 8).net).toBe(3);
+    expect(createdScores.find((score: any) => score.hole === 9).net).toBe(4);
+    expect(db.round.update).toHaveBeenCalledWith({
+      where: { id: 11 },
+      data: expect.objectContaining({ courseHandicap: 8 }),
+    });
+  });
+
   it('uses the original pre-handicap when editing a round', async () => {
     const existingRound = { id: 12, adjusted: 36, preHandicap: 0 };
     db.round.findUnique.mockResolvedValue(existingRound);

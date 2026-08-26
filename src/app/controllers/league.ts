@@ -15,6 +15,9 @@ import { localDateKey } from '../utils/time-zone';
 import { normalizeGender } from '../utils/tee-rating';
 import { lockAdminBilling } from '../services/billingLock';
 import { normalizeLeagueHoleFormat } from '../utils/league-hole-format';
+import { calculateSeasonSkinLeaderboards } from '../utils/season-skins';
+import { calculatePlayerResults } from '../utils/player-results';
+import { getLeagueRoundProgress } from '../utils/league-round-progress';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
@@ -175,6 +178,9 @@ class LeagueController {
               },
             },
           },
+          scoringPeriods: {
+            orderBy: { position: 'asc' },
+          },
         },
       });
 
@@ -183,16 +189,28 @@ class LeagueController {
         return;
       }
 
+      const recordedRoundCount = await prisma.round.count({
+        where: {
+          event: { leagueId: id, isDeleted: false, deletedAt: null },
+          deletedAt: null,
+          scores: { some: {} },
+        },
+      });
+      const leagueWithScoreState = {
+        ...league,
+        hasRecordedScores: recordedRoundCount > 0,
+      };
+
       const role = String((req as any).user?.role || '').toUpperCase();
       const canSeeAccessCode =
         role === 'SUPER' || Number(league.adminId) === Number(req.session.userId || 0);
 
       if (canSeeAccessCode) {
-        res.status(200).send(league);
+        res.status(200).send(leagueWithScoreState);
         return;
       }
 
-      const { viewerAccessCode: _viewerAccessCode, ...safeLeague } = league;
+      const { viewerAccessCode: _viewerAccessCode, ...safeLeague } = leagueWithScoreState;
       res.status(200).send(safeLeague);
     } catch (error) {
       console.error(error);
@@ -355,6 +373,10 @@ class LeagueController {
               events: { where: { isDeleted: false, deletedAt: null } },
             },
           },
+          events: {
+            where: { isDeleted: false, deletedAt: null },
+            select: { status: true, type: true, isComplete: true },
+          },
         },
         orderBy: {
           updatedAt: 'desc',
@@ -380,7 +402,12 @@ class LeagueController {
         take: 5,
       });
 
-      const safeLeagues = leagues.map(({ viewerAccessCode: _viewerAccessCode, ...league }) => league);
+      const safeLeagues = leagues.map(
+        ({ viewerAccessCode: _viewerAccessCode, events, ...league }) => ({
+          ...league,
+          ...getLeagueRoundProgress(events),
+        }),
+      );
 
       res.status(200).send({ leagues: safeLeagues, upcomingSchedule });
     } catch (error) {
@@ -616,12 +643,19 @@ class LeagueController {
       });
       LeagueController.validateLeagueDates(league);
 
-      const [activePlayerCount, activeTeamCount, activeEvents] = await Promise.all([
+      const [activePlayerCount, activeTeamCount, activeEvents, recordedRoundCount] = await Promise.all([
         prisma.player.count({ where: { leagueId: id, type: 'player', deletedAt: null } }),
         prisma.team.count({ where: { leagueId: id, deletedAt: null } }),
         prisma.event.findMany({
           where: { leagueId: id, isDeleted: false, deletedAt: null },
           select: { id: true, startsAt: true, timeZone: true },
+        }),
+        prisma.round.count({
+          where: {
+            event: { leagueId: id, isDeleted: false, deletedAt: null },
+            deletedAt: null,
+            scores: { some: {} },
+          },
         }),
       ]);
 
@@ -635,9 +669,17 @@ class LeagueController {
         league.type !== existingLeague.type ||
         league.format !== existingLeague.format ||
         league.holeFormat !== existingLeague.holeFormat;
-      if (structureChanged && activeEvents.length > 0) {
+      const datesChanged =
+        league.startDate.getTime() !== existingLeague.startDate.getTime() ||
+        league.endDate.getTime() !== existingLeague.endDate.getTime();
+      if (datesChanged) {
         return res.status(409).json({
-          message: 'League type, format, and hole format cannot change after events have been created.',
+          message: 'League start and end dates cannot change after the league has been created.',
+        });
+      }
+      if (structureChanged && recordedRoundCount > 0) {
+        return res.status(409).json({
+          message: 'League type, season format, and holes and handicap settings cannot change after scores have been recorded.',
         });
       }
       if (structureChanged && activeTeamCount > 0 && league.format !== 'team') {
@@ -828,11 +870,22 @@ class LeagueController {
         select: {
           type: true,
           format: true,
+          scoringPeriods: {
+            orderBy: { position: 'asc' },
+          },
           teams: {
             where: { deletedAt: null },
             select: {
               id: true,
               name: true,
+            },
+          },
+          players: {
+            where: { deletedAt: null },
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
             },
           },
         },
@@ -842,6 +895,36 @@ class LeagueController {
         res.status(404).send('League not found');
         return;
       }
+
+      const requestedPeriodId = Number(req.query.periodId || 0);
+      const selectedPeriod = requestedPeriodId
+        ? leagueMeta.scoringPeriods.find((period) => period.id === requestedPeriodId)
+        : null;
+      if (requestedPeriodId && !selectedPeriod) {
+        res.status(400).json({ message: 'Scoring period does not belong to this league.' });
+        return;
+      }
+
+      const leagueEvents = await prisma.event.findMany({
+        where: { leagueId, isDeleted: false, deletedAt: null },
+        select: { id: true, startsAt: true, timeZone: true },
+      });
+      const selectedEventIds = selectedPeriod
+        ? leagueEvents
+            .filter((event) => {
+              const date = localDateKey(event.startsAt, event.timeZone);
+              const startDate = selectedPeriod.startDate.toISOString().slice(0, 10);
+              const endDate = selectedPeriod.endDate.toISOString().slice(0, 10);
+              return date >= startDate && date <= endDate;
+            })
+            .map((event) => event.id)
+        : leagueEvents.map((event) => event.id);
+      const scopedEventWhere = {
+        leagueId,
+        isDeleted: false,
+        deletedAt: null,
+        ...(selectedPeriod ? { id: { in: selectedEventIds } } : {}),
+      };
 
       const isTeamLeague =
         String(leagueMeta.format || '').toLowerCase() === 'team' ||
@@ -857,7 +940,7 @@ class LeagueController {
       const rounds = await prisma.round.findMany({
         where: {
           deletedAt: null,
-          event: { leagueId, isDeleted: false, deletedAt: null },
+          event: scopedEventWhere,
           status: 'completed',
         },
         include: {
@@ -906,7 +989,11 @@ class LeagueController {
             rounds: 1,
             birdies: r.birdies,
             eagles: r.eagles,
-            startingHandicap: Number(r.player.startingHandicap ?? r.preHandicap ?? 0),
+            startingHandicap: Number(
+              selectedPeriod
+                ? (r.preHandicap ?? r.player.handicap ?? 0)
+                : (r.player.startingHandicap ?? r.preHandicap ?? 0),
+            ),
             currentHandicap: Number(r.postHandicap ?? r.preHandicap ?? r.player.handicap ?? 0),
           });
         }
@@ -928,6 +1015,8 @@ class LeagueController {
         }))
         .sort((a, b) => b.points - a.points);
 
+      const playerResults = calculatePlayerResults(leagueMeta.players, rounds);
+
       let standingsMode: 'player' | 'team' = 'player';
       let teamStandings: Array<{
         teamId: number;
@@ -940,7 +1029,10 @@ class LeagueController {
         standingsMode = 'team';
 
         const teamPointsRows = await prisma.team_event_points.findMany({
-          where: { leagueId },
+          where: {
+            leagueId,
+            ...(selectedPeriod ? { eventId: { in: selectedEventIds } } : {}),
+          },
           include: {
             team: {
               select: {
@@ -1180,8 +1272,7 @@ class LeagueController {
           round: {
             status: 'completed',
             event: {
-              leagueId,
-              isDeleted: false,
+              ...scopedEventWhere,
             },
           },
         },
@@ -1217,8 +1308,7 @@ class LeagueController {
           deletedAt: null,
           flight: {
             event: {
-              leagueId,
-              isDeleted: false,
+              ...scopedEventWhere,
             },
           },
         },
@@ -1339,7 +1429,7 @@ class LeagueController {
 
       // ── Season skins ─────────────────────────────────
       const allScores = await prisma.score.findMany({
-        where: { round: { event: { leagueId, isDeleted: false }, status: 'completed' } },
+        where: { round: { event: scopedEventWhere, status: 'completed' } },
         include: {
           round: {
             include: {
@@ -1350,154 +1440,16 @@ class LeagueController {
         },
       });
 
-      let grossSkinsLeaderboard: any[] = [];
-      let netSkinsLeaderboard: any[] = [];
-
-      if (standingsMode === 'team') {
-        const grossSkinCounts = new Map<number, { name: string; skins: number }>();
-        const netSkinCounts = new Map<number, { name: string; skins: number }>();
-        const grossTeamHoleMap = new Map<string, Map<number, number>>();
-        const netTeamHoleMap = new Map<string, Map<number, number>>();
-
-        for (const s of allScores) {
-          const eventFormat = normalizeEventFormat(s.round.event?.format, 'individual');
-          const scoringFormat = normalizeScoringFormat(s.round.event?.scoringFormat, 'stroke');
-          if (eventFormat !== 'team' || scoringFormat !== 'stroke') continue;
-
-          const eventId = Number(s.round.event.id);
-          const playerId = Number(s.round.playerId);
-          const teamId =
-            Number(s.round.player?.teamId || 0) ||
-            Number(eventPlayerTeamMap.get(`${eventId}-${playerId}`) || 0);
-          if (!teamId) continue;
-
-          const holeKey = `${eventId}-${s.hole}`;
-
-          const grossByTeam = grossTeamHoleMap.get(holeKey) || new Map<number, number>();
-          const gross = Number(s.gross);
-          if (Number.isFinite(gross) && gross > 0) {
-            const current = grossByTeam.get(teamId);
-            if (current == null || gross < current) {
-              grossByTeam.set(teamId, gross);
-            }
-            grossTeamHoleMap.set(holeKey, grossByTeam);
-          }
-
-          const netByTeam = netTeamHoleMap.get(holeKey) || new Map<number, number>();
-          const net = Number(s.net);
-          if (Number.isFinite(net) && net > 0) {
-            const current = netByTeam.get(teamId);
-            if (current == null || net < current) {
-              netByTeam.set(teamId, net);
-            }
-            netTeamHoleMap.set(holeKey, netByTeam);
-          }
-        }
-
-        for (const scoresByTeam of grossTeamHoleMap.values()) {
-          if (scoresByTeam.size < 2) continue;
-          const values = [...scoresByTeam.values()];
-          const min = Math.min(...values);
-          const winners = [...scoresByTeam.entries()].filter(([, score]) => score === min);
-          if (winners.length !== 1) continue;
-
-          const teamId = winners[0][0];
-          const existing = grossSkinCounts.get(teamId);
-          if (existing) existing.skins += 1;
-          else
-            grossSkinCounts.set(teamId, {
-              name: teamNameMap.get(teamId) || `Team ${teamId}`,
-              skins: 1,
-            });
-        }
-
-        for (const scoresByTeam of netTeamHoleMap.values()) {
-          if (scoresByTeam.size < 2) continue;
-          const values = [...scoresByTeam.values()];
-          const min = Math.min(...values);
-          const winners = [...scoresByTeam.entries()].filter(([, score]) => score === min);
-          if (winners.length !== 1) continue;
-
-          const teamId = winners[0][0];
-          const existing = netSkinCounts.get(teamId);
-          if (existing) existing.skins += 1;
-          else
-            netSkinCounts.set(teamId, {
-              name: teamNameMap.get(teamId) || `Team ${teamId}`,
-              skins: 1,
-            });
-        }
-
-        grossSkinsLeaderboard = [...grossSkinCounts.entries()]
-          .map(([teamId, d]) => ({ playerId: teamId, teamId, name: d.name, skins: d.skins }))
-          .sort((a, b) => b.skins - a.skins)
-          .slice(0, 3);
-
-        netSkinsLeaderboard = [...netSkinCounts.entries()]
-          .map(([teamId, d]) => ({ playerId: teamId, teamId, name: d.name, skins: d.skins }))
-          .sort((a, b) => b.skins - a.skins)
-          .slice(0, 3);
-      } else {
-        // Aggregate gross skins: count holes won per player across all events
-        const grossSkinCounts = new Map<number, { name: string; skins: number }>();
-        const grossHoleMap = new Map<
-          string,
-          { playerId: number; name: string; gross: number } | null
-        >();
-        for (const s of allScores) {
-          const key = `${s.round.event.id}-${s.hole}`;
-          const entry = grossHoleMap.get(key);
-          const playerName = `${s.round.player.firstName} ${s.round.player.lastName}`;
-          if (!entry) {
-            grossHoleMap.set(key, { playerId: s.round.playerId, name: playerName, gross: s.gross });
-          } else if (s.gross < entry.gross) {
-            grossHoleMap.set(key, { playerId: s.round.playerId, name: playerName, gross: s.gross });
-          } else if (s.gross === entry.gross) {
-            grossHoleMap.set(key, null);
-          }
-        }
-        for (const winner of grossHoleMap.values()) {
-          if (!winner) continue;
-          const existing = grossSkinCounts.get(winner.playerId);
-          if (existing) existing.skins++;
-          else grossSkinCounts.set(winner.playerId, { name: winner.name, skins: 1 });
-        }
-        grossSkinsLeaderboard = [...grossSkinCounts.entries()]
-          .map(([playerId, d]) => ({ playerId, name: d.name, skins: d.skins }))
-          .sort((a, b) => b.skins - a.skins)
-          .slice(0, 3);
-
-        // Aggregate net skins
-        const netSkinCounts = new Map<number, { name: string; skins: number }>();
-        const netHoleMap = new Map<
-          string,
-          { playerId: number; name: string; net: number } | null
-        >();
-        for (const s of allScores) {
-          const key = `${s.round.event.id}-${s.hole}`;
-          const entry = netHoleMap.get(key);
-          const playerName = `${s.round.player.firstName} ${s.round.player.lastName}`;
-          if (!entry) {
-            netHoleMap.set(key, { playerId: s.round.playerId, name: playerName, net: s.net });
-          } else if (s.net < entry.net) {
-            netHoleMap.set(key, { playerId: s.round.playerId, name: playerName, net: s.net });
-          } else if (s.net === entry.net) {
-            netHoleMap.set(key, null);
-          }
-        }
-        for (const winner of netHoleMap.values()) {
-          if (!winner) continue;
-          const existing = netSkinCounts.get(winner.playerId);
-          if (existing) existing.skins++;
-          else netSkinCounts.set(winner.playerId, { name: winner.name, skins: 1 });
-        }
-        netSkinsLeaderboard = [...netSkinCounts.entries()]
-          .map(([playerId, d]) => ({ playerId, name: d.name, skins: d.skins }))
-          .sort((a, b) => b.skins - a.skins)
-          .slice(0, 3);
-      }
-
-      const skins = { gross: grossSkinsLeaderboard, net: netSkinsLeaderboard };
+      const skins = calculateSeasonSkinLeaderboards(
+        allScores.map((score) => ({
+          eventId: Number(score.round.event.id),
+          hole: Number(score.hole),
+          playerId: Number(score.round.playerId),
+          playerName: `${score.round.player.firstName} ${score.round.player.lastName}`.trim(),
+          gross: Number(score.gross),
+          net: Number(score.net),
+        })),
+      );
 
       // ── Top-5 leaderboards ───────────────────────────
       const top5Points =
@@ -1550,8 +1502,26 @@ class LeagueController {
       };
 
       res.status(200).json({
+        scoringPeriods: leagueMeta.scoringPeriods.map((period) => ({
+          id: period.id,
+          name: period.name,
+          position: period.position,
+          startDate: period.startDate,
+          endDate: period.endDate,
+          eventCount: leagueEvents.filter((event) => {
+            const date = localDateKey(event.startsAt, event.timeZone);
+            return (
+              date >= period.startDate.toISOString().slice(0, 10) &&
+              date <= period.endDate.toISOString().slice(0, 10)
+            );
+          }).length,
+        })),
+        selectedPeriod: selectedPeriod
+          ? { id: selectedPeriod.id, name: selectedPeriod.name }
+          : null,
         standingsMode,
         standings,
+        playerResults,
         teamStandings,
         scoreDistribution,
         grossTrend,
