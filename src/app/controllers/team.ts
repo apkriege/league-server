@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma';
 import { getPublicErrorResponse } from '../utils/error-response';
+import { buildTeamEventResults } from '../utils/team-event-results';
 
 class TeamController {
   static buildTeamInclude = () =>
@@ -11,6 +12,9 @@ class TeamController {
         orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
       },
       teamEventPoints: {
+        where: {
+          event: { isDeleted: false, deletedAt: null },
+        },
         include: {
           event: {
             select: {
@@ -93,74 +97,110 @@ class TeamController {
       }
 
       const leagueId = Number(team.leagueId);
-      const playerIds = team.players.map((player) => Number(player.id));
-      const now = new Date();
-
-      const [recentRounds, upcomingEvents] = await Promise.all([
-        playerIds.length > 0
-          ? prisma.round.findMany({
-              where: {
-                playerId: { in: playerIds },
-                deletedAt: null,
-                status: 'completed',
-                event: {
-                  leagueId,
-                  isDeleted: false,
+      const events = leagueId
+        ? await prisma.event.findMany({
+            where: {
+              leagueId,
+              isDeleted: false,
+              deletedAt: null,
+            },
+            select: {
+              id: true,
+              name: true,
+              startsAt: true,
+              timeZone: true,
+              format: true,
+              scoringFormat: true,
+              type: true,
+              status: true,
+              isComplete: true,
+              holes: true,
+              course: { select: { name: true } },
+              teamEventPoints: {
+                select: { teamId: true, points: true },
+              },
+              flights: {
+                where: {
                   deletedAt: null,
+                  OR: [
+                    { teams: { some: { teamId: id, deletedAt: null } } },
+                    {
+                      players: {
+                        some: {
+                          deletedAt: null,
+                          OR: [{ teamId: id }, { teamId: null, player: { teamId: id } }],
+                        },
+                      },
+                    },
+                  ],
                 },
-              },
-              include: {
-                player: {
-                  select: {
-                    id: true,
-                    firstName: true,
-                    lastName: true,
+                select: {
+                  id: true,
+                  startsAt: true,
+                  teams: {
+                    where: { deletedAt: null },
+                    select: {
+                      teamId: true,
+                      opponentId: true,
+                      team: { select: { id: true, name: true } },
+                    },
+                  },
+                  players: {
+                    where: { deletedAt: null },
+                    select: {
+                      playerId: true,
+                      teamId: true,
+                      player: { select: { teamId: true } },
+                    },
                   },
                 },
-                event: {
-                  select: {
-                    id: true,
-                    name: true,
-                    startsAt: true,
-                    timeZone: true,
-                    scoringFormat: true,
-                    format: true,
+              },
+              rounds: {
+                where: { deletedAt: null, status: 'completed' },
+                select: {
+                  id: true,
+                  playerId: true,
+                  date: true,
+                  gross: true,
+                  net: true,
+                  pointsEarned: true,
+                  matchPoints: true,
+                  eagles: true,
+                  birdies: true,
+                  pars: true,
+                  bogeys: true,
+                  player: {
+                    select: {
+                      id: true,
+                      firstName: true,
+                      lastName: true,
+                    },
                   },
                 },
               },
-              orderBy: [{ date: 'desc' }, { id: 'desc' }],
-              take: 12,
-            })
-          : [],
-        leagueId
-          ? prisma.event.findMany({
-              where: {
-                leagueId,
-                isDeleted: false,
-                deletedAt: null,
-                status: { not: 'canceled' },
-                startsAt: { gte: now },
-              },
-              select: {
-                id: true,
-                name: true,
-                startsAt: true,
-                timeZone: true,
-                format: true,
-                scoringFormat: true,
-                holes: true,
-                status: true,
-              },
-              orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
-              take: 6,
-            })
-          : [],
-      ]);
+            },
+            orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+          })
+        : [];
+
+      const teamLeaderboard = leagueId
+        ? await prisma.team.findMany({
+            where: { leagueId, deletedAt: null },
+            select: {
+              id: true,
+              name: true,
+              seasonPoints: true,
+              seasonRank: true,
+            },
+            orderBy: [{ seasonPoints: 'desc' }, { name: 'asc' }],
+          })
+        : [];
+      const eventResults = buildTeamEventResults(id, events);
 
       res.status(200).json({
         ...team,
-        recentRounds,
-        upcomingEvents,
+        teamLeaderboard,
+        eventResults,
       });
     } catch (error) {
       console.error(error);
