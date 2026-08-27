@@ -10,6 +10,7 @@ import { logAuth, logAuthFailure } from '../middleware/logging';
 import { sendSignupNotification } from '../services/signupNotification';
 import { isProductionRuntime } from '../utils/runtime-config';
 import { sendPasswordResetEmail } from '../services/passwordResetEmail';
+import { sendEmailVerificationEmail } from '../services/emailVerificationEmail';
 
 declare module 'express-session' {
   interface SessionData {
@@ -29,6 +30,8 @@ const serializeUser = (user: any, extra: Record<string, unknown> = {}) => ({
   role: user.role,
   phone: user.phone ?? null,
   metadata: user.metadata ?? null,
+  emailVerifiedAt: user.emailVerifiedAt ?? null,
+  emailVerificationStatus: user.emailVerifiedAt ? 'VERIFIED' : 'PENDING',
   ...extra,
 });
 
@@ -52,6 +55,20 @@ const normalizeAccessCode = (code: unknown) =>
 
 const hashResetToken = (token: string) => crypto.createHash('sha256').update(token).digest('hex');
 const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
+const hashVerificationToken = (token: string) =>
+  crypto.createHash('sha256').update(token).digest('hex');
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+const LEGAL_POLICY_VERSION = '2026-08-25';
+const VERIFICATION_RESPONSE = {
+  message: 'If an unverified account exists for that email, a new verification link has been sent.',
+};
+
+const createVerificationToken = () => crypto.randomBytes(32).toString('hex');
+
+const getVerificationRedirectPath = (invitationToken: unknown) => {
+  const token = String(invitationToken || '').trim();
+  return token ? `/invite/${encodeURIComponent(token)}` : '/leagues/create';
+};
 
 class AuthController {
   static async requestPasswordReset(req: Request, res: Response) {
@@ -162,10 +179,14 @@ class AuthController {
 
   static async register(req: Request, res: Response) {
     try {
-      const { firstName, lastName, email, password, invitationToken } = req.body || {};
+      const { firstName, lastName, email, password, acceptedPolicies, invitationToken } =
+        req.body || {};
       logAuth(req, 'auth:register:start', { emailProvided: Boolean(email) });
 
-      if (!firstName || !lastName || !email || !password) {
+      const normalizedFirstName = String(firstName || '').trim();
+      const normalizedLastName = String(lastName || '').trim();
+      const normalizedEmail = String(email || '').trim().toLowerCase();
+      if (!normalizedFirstName || !normalizedLastName || !normalizedEmail || !password) {
         logAuthFailure(req, 'auth:register:invalid', { reason: 'missing-fields' });
         return res
           .status(400)
@@ -176,7 +197,12 @@ class AuthController {
         return res.status(400).json({ message: 'Password must be at least 8 characters' });
       }
 
-      const normalizedEmail = String(email).trim().toLowerCase();
+      if (acceptedPolicies !== true) {
+        return res.status(400).json({
+          message: 'You must accept the Terms of Service and acknowledge the Privacy Policy',
+        });
+      }
+
       let registrationRole = 'ADMIN';
       if (invitationToken) {
         const invitation = await prisma.league_invitation.findFirst({
@@ -202,64 +228,207 @@ class AuthController {
           reason: 'user-exists',
           email: normalizedEmail,
         });
-        return res.status(400).json({ message: 'User already exists' });
+        return res.status(400).json({
+          message: existingUser.emailVerifiedAt
+            ? 'User already exists'
+            : 'This account is pending email verification. Request a new verification email.',
+        });
       }
 
       const hashedPassword = await bcrypt.hash(String(password), 10);
-      const user = await User.create({
-        firstName: String(firstName).trim(),
-        lastName: String(lastName).trim(),
-        email: normalizedEmail,
-        username: normalizedEmail,
-        password: hashedPassword,
-        role: registrationRole,
-        metadata: {
-          billing: {
-            includedGolfers: 0,
-            minimumGolfers: BILLING_MIN_GOLFERS,
-            pricePerGolferCents: BILLING_PRICE_PER_GOLFER_CENTS,
-            currency: BILLING_CURRENCY,
+      const verificationToken = createVerificationToken();
+      const now = new Date();
+      const user = await prisma.$transaction(async (tx) => {
+        const createdUser = await tx.user.create({
+          data: {
+            firstName: normalizedFirstName,
+            lastName: normalizedLastName,
+            email: normalizedEmail,
+            username: normalizedEmail,
+            password: hashedPassword,
+            role: registrationRole,
+            emailVerifiedAt: null,
+            metadata: {
+              billing: {
+                includedGolfers: 0,
+                minimumGolfers: BILLING_MIN_GOLFERS,
+                pricePerGolferCents: BILLING_PRICE_PER_GOLFER_CENTS,
+                currency: BILLING_CURRENCY,
+              },
+              legalConsent: {
+                termsAcceptedAt: now.toISOString(),
+                termsVersion: LEGAL_POLICY_VERSION,
+                privacyAcknowledgedAt: now.toISOString(),
+                privacyVersion: LEGAL_POLICY_VERSION,
+              },
+            },
           },
-        },
-      });
-      await sendSignupNotification({
-        id: user.id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        role: user.role,
-      });
-
-      req.session.regenerate((err) => {
-        if (err) {
-          logAuthFailure(req, 'auth:session:regenerate-failed', {
-            flow: 'register',
-            error: err.message,
-          });
-          return res.status(500).json({ message: 'Server error' });
-        }
-
-        req.session.userId = user.id;
-        req.session.save((saveErr) => {
-          if (saveErr) {
-            logAuthFailure(req, 'auth:session:save-failed', {
-              flow: 'register',
-              userId: user.id,
-              error: saveErr.message,
-            });
-            return res.status(500).json({ message: 'Server error' });
-          }
-
-          logAuth(req, 'auth:register:success', { userId: user.id, sessionId: req.sessionID });
-          return res.status(201).json({
-            message: 'User created',
-            user: serializeUser(user, { leagues: [] }),
-          });
         });
+        await tx.email_verification_token.create({
+          data: {
+            userId: createdUser.id,
+            tokenHash: hashVerificationToken(verificationToken),
+            redirectPath: getVerificationRedirectPath(invitationToken),
+            expiresAt: new Date(now.getTime() + EMAIL_VERIFICATION_TTL_MS),
+          },
+        });
+        return createdUser;
+      });
+
+      const emailResult = await sendEmailVerificationEmail({
+        userId: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        token: verificationToken,
+      });
+      if (emailResult.status !== 'sent') {
+        console.error(JSON.stringify({
+          level: 'error',
+          event: 'email-verification:send-failed',
+          userId: user.id,
+          reason: emailResult.reason,
+        }));
+      }
+
+      logAuth(req, 'auth:register:success', { userId: user.id, verificationPending: true });
+      return res.status(201).json({
+        message:
+          emailResult.status === 'sent'
+            ? 'Account created. Check your email to verify your account.'
+            : 'Account created, but the verification email could not be sent. Request a new verification email.',
+        emailSent: emailResult.status === 'sent',
+        verificationRequired: true,
+        user: serializeUser(user, { leagues: [] }),
       });
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Server error' });
+    }
+  }
+
+  static async resendEmailVerification(req: Request, res: Response) {
+    try {
+      const email = String(req.body?.email || '').trim().toLowerCase();
+      if (!email) return res.status(400).json({ message: 'Email is required' });
+
+      const user = await prisma.user.findFirst({
+        where: { email, deletedAt: null, emailVerifiedAt: null },
+        select: { id: true, email: true, firstName: true, role: true },
+      });
+      if (!user) return res.status(200).json(VERIFICATION_RESPONSE);
+
+      const invitation =
+        user.role === 'USER'
+          ? await prisma.league_invitation.findFirst({
+              where: {
+                email: user.email,
+                status: 'pending',
+                deletedAt: null,
+                OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+              },
+              orderBy: { createdAt: 'desc' },
+              select: { token: true },
+            })
+          : null;
+      const token = createVerificationToken();
+      const now = new Date();
+      await prisma.$transaction([
+        prisma.email_verification_token.updateMany({
+          where: { userId: user.id, usedAt: null },
+          data: { usedAt: now },
+        }),
+        prisma.email_verification_token.create({
+          data: {
+            userId: user.id,
+            tokenHash: hashVerificationToken(token),
+            redirectPath: getVerificationRedirectPath(invitation?.token),
+            expiresAt: new Date(now.getTime() + EMAIL_VERIFICATION_TTL_MS),
+          },
+        }),
+      ]);
+      const emailResult = await sendEmailVerificationEmail({
+        userId: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        token,
+      });
+      if (emailResult.status !== 'sent') {
+        console.error(JSON.stringify({
+          level: 'error',
+          event: 'email-verification:resend-failed',
+          userId: user.id,
+          reason: emailResult.reason,
+        }));
+      }
+      return res.status(200).json(VERIFICATION_RESPONSE);
+    } catch (error) {
+      console.error('Email verification resend failed:', error);
+      return res.status(200).json(VERIFICATION_RESPONSE);
+    }
+  }
+
+  static async verifyEmail(req: Request, res: Response) {
+    try {
+      const token = String(req.body?.token || '').trim();
+      if (!token) return res.status(400).json({ message: 'Verification token is required' });
+
+      const verification = await prisma.email_verification_token.findUnique({
+        where: { tokenHash: hashVerificationToken(token) },
+        include: { user: true },
+      });
+      const now = new Date();
+      if (
+        !verification ||
+        verification.usedAt ||
+        verification.expiresAt <= now ||
+        verification.user.deletedAt
+      ) {
+        return res.status(400).json({ message: 'This verification link is invalid or expired' });
+      }
+
+      const verifiedUser = await prisma.$transaction(async (tx) => {
+        const claimed = await tx.email_verification_token.updateMany({
+          where: { id: verification.id, usedAt: null, expiresAt: { gt: now } },
+          data: { usedAt: now },
+        });
+        if (claimed.count !== 1) return null;
+
+        await tx.email_verification_token.updateMany({
+          where: { userId: verification.userId, usedAt: null },
+          data: { usedAt: now },
+        });
+        return tx.user.update({
+          where: { id: verification.userId },
+          data: { emailVerifiedAt: now },
+        });
+      });
+      if (!verifiedUser) {
+        return res.status(400).json({ message: 'This verification link is invalid or expired' });
+      }
+
+      await sendSignupNotification({
+        id: verifiedUser.id,
+        firstName: verifiedUser.firstName,
+        lastName: verifiedUser.lastName,
+        email: verifiedUser.email,
+        role: verifiedUser.role,
+      });
+
+      req.session.regenerate((error) => {
+        if (error) return res.status(500).json({ message: 'Unable to start your session' });
+        req.session.userId = verifiedUser.id;
+        req.session.save((saveError) => {
+          if (saveError) return res.status(500).json({ message: 'Unable to start your session' });
+          return res.status(200).json({
+            message: 'Email has been verified.',
+            redirectTo: verification.redirectPath,
+            user: serializeUser(verifiedUser, { leagues: [] }),
+          });
+        });
+      });
+    } catch (error) {
+      console.error('Email verification failed:', error);
+      return res.status(500).json({ message: 'Unable to verify email' });
     }
   }
 
@@ -281,6 +450,14 @@ class AuthController {
       if (!user || user.deletedAt) {
         logAuthFailure(req, 'auth:login:invalid', { reason: 'user-not-found-or-deleted' });
         return res.status(400).json({ message: 'Invalid credentials' });
+      }
+
+      if (!user.emailVerifiedAt) {
+        logAuthFailure(req, 'auth:login:invalid', { reason: 'email-unverified', userId: user.id });
+        return res.status(403).json({
+          message: 'Verify your email before signing in.',
+          verificationRequired: true,
+        });
       }
 
       const isPasswordValid = await bcrypt.compare(String(password), String(user.password || ''));

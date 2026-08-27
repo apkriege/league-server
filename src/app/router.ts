@@ -52,6 +52,8 @@ router.get('/health', HealthController.getHealth);
 router.post('/auth/login', authRateLimiter, Auth.login);
 router.post('/auth/league-code', authRateLimiter, Auth.loginWithLeagueCode);
 router.post('/auth/register', authRateLimiter, Auth.register);
+router.post('/auth/email-verification/verify', authRateLimiter, Auth.verifyEmail);
+router.post('/auth/email-verification/resend', authRateLimiter, Auth.resendEmailVerification);
 router.post('/auth/password-reset/request', authRateLimiter, Auth.requestPasswordReset);
 router.post('/auth/password-reset/complete', authRateLimiter, Auth.completePasswordReset);
 router.post('/auth/logout', Auth.logout);

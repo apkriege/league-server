@@ -15,6 +15,40 @@ const login = async (agent: ReturnType<typeof request.agent>, email: string) => 
   return response.body.user;
 };
 
+const verifyRegisteredUser = async (
+  agent: ReturnType<typeof request.agent>,
+  userId: number,
+  expectedRedirect: string,
+) => {
+  const token = crypto.randomBytes(32).toString('hex');
+  const now = new Date();
+  await prisma.$transaction([
+    prisma.email_verification_token.updateMany({
+      where: { userId, usedAt: null },
+      data: { usedAt: now },
+    }),
+    prisma.email_verification_token.create({
+      data: {
+        userId,
+        tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+        redirectPath: expectedRedirect,
+        expiresAt: new Date(now.getTime() + 60_000),
+      },
+    }),
+  ]);
+
+  const response = await agent.post('/api/auth/email-verification/verify').send({ token });
+  expect(response.status).toBe(200);
+  expect(response.body).toMatchObject({
+    message: 'Email has been verified.',
+    redirectTo: expectedRedirect,
+    user: { id: userId, emailVerificationStatus: 'VERIFIED' },
+  });
+  const replay = await agent.post('/api/auth/email-verification/verify').send({ token });
+  expect(replay.status).toBe(400);
+  return response;
+};
+
 describe('API integration', () => {
   afterAll(async () => {
     await prisma.$disconnect();
@@ -384,13 +418,41 @@ describe('API integration', () => {
 
   it('keeps a newly registered admin isolated from another admins league', async () => {
     const outsider = request.agent(app);
-    const registration = await outsider.post('/api/auth/register').send({
+    const missingConsent = await outsider.post('/api/auth/register').send({
       firstName: 'Outside',
       lastName: 'Admin',
       email: 'outside-admin@test.com',
       password,
     });
+    expect(missingConsent.status).toBe(400);
+    expect(missingConsent.body.message).toContain('Terms of Service');
+
+    const registration = await outsider.post('/api/auth/register').send({
+      firstName: 'Outside',
+      lastName: 'Admin',
+      email: 'outside-admin@test.com',
+      password,
+      acceptedPolicies: true,
+    });
     expect(registration.status).toBe(201);
+    expect(registration.body.user.emailVerificationStatus).toBe('PENDING');
+    await expect(
+      prisma.user.findUniqueOrThrow({ where: { id: registration.body.user.id } }),
+    ).resolves.toMatchObject({
+      metadata: {
+        legalConsent: {
+          termsVersion: '2026-08-25',
+          privacyVersion: '2026-08-25',
+        },
+      },
+    });
+
+    const pendingLogin = await outsider.post('/api/auth/login').send({
+      email: 'outside-admin@test.com',
+      password,
+    });
+    expect(pendingLogin.status).toBe(403);
+    await verifyRegisteredUser(outsider, registration.body.user.id, '/leagues/create');
 
     const league = await prisma.league.findFirstOrThrow({
       where: { name: 'Seeded Thursday Night League' },
@@ -758,10 +820,16 @@ describe('API integration', () => {
       lastName: 'Player',
       email,
       password,
+      acceptedPolicies: true,
       invitationToken: invitationResponse.body.invitations[0].token,
     });
     expect(registration.status).toBe(201);
     expect(registration.body.user.role).toBe('USER');
+    await verifyRegisteredUser(
+      member,
+      registration.body.user.id,
+      `/invite/${invitationResponse.body.invitations[0].token}`,
+    );
 
     const claim = await member.post(
       `/api/invitations/${invitationResponse.body.invitations[0].token}/claim`,

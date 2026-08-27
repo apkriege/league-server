@@ -37,6 +37,7 @@ model user {
   role      String    @default("USER") // USER, ADMIN, SUPER
   phone     String?
   metadata  Json?
+  emailVerifiedAt DateTime? @default(now()) @map("email_verified_at") @db.Timestamptz(3)
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
@@ -46,6 +47,7 @@ model user {
   sentLeagueInvitations        league_invitation[]             @relation("league_invitation_invited_by")
   claimedLeagueInvitations     league_invitation[]             @relation("league_invitation_claimed_by")
   passwordResetTokens          password_reset_token[]
+  emailVerificationTokens      email_verification_token[]
   leagueAnnouncements          league_announcement[]
   leagueAnnouncementDismissals league_announcement_dismissal[]
   auditLogs                    audit_log[]
@@ -83,6 +85,21 @@ model password_reset_token {
   expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
   usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user user @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model email_verification_token {
+  id           Int       @id @default(autoincrement())
+  userId       Int       @map("user_id")
+  tokenHash    String    @unique @map("token_hash")
+  redirectPath String    @default("/leagues/create") @map("redirect_path")
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt       DateTime? @map("used_at") @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
   user user @relation(fields: [userId], references: [id], onDelete: Cascade)
 
