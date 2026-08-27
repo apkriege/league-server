@@ -59,7 +59,7 @@ async function main() {
   }
 
   if (hasEveryTestAdminValue && adminPassword.length < 8) {
-    throw new Error('TEST_ADMIN_PASSWORD must be at least 8 characters');
+    throw new Error('TEST_ADMIN_PASSWORD must be at least 8 characterss');
   }
   if (hasEveryTestAdminValue && adminEmail === email) {
     throw new Error('SUPER_ADMIN_EMAIL and TEST_ADMIN_EMAIL must be different');
