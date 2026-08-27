@@ -49,16 +49,18 @@ describe('league billing', () => {
 
     await expect(getAllocatedGolfersForAdmin(7)).resolves.toBe(18);
     expect(findManyMock).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { adminId: 7, deletedAt: null } }),
+      expect.objectContaining({
+        where: { adminId: 7, billingExempt: false, deletedAt: null },
+      }),
     );
   });
 
-  it('treats a redeemed payment access code as covering registration and all capacity', () => {
+  it('does not honor legacy account-wide payment exemption metadata', () => {
     const billing = getBillingState({ billing: { includedGolfers: 0, paymentExempt: true } }, 24);
 
-    expect(billing.hasCompletedRegistration).toBe(true);
-    expect(billing.paymentExempt).toBe(true);
-    expect(isBillingCapacityCovered(billing, 10000)).toBe(true);
+    expect(billing.hasCompletedRegistration).toBe(false);
+    expect(billing.paymentExempt).toBe(false);
+    expect(isBillingCapacityCovered(billing, 10000)).toBe(false);
   });
 
   it('validates configured payment access codes without case or surrounding whitespace', () => {

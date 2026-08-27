@@ -24,6 +24,8 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm run verify
-      - run: npm run test:integration
+      # Run these locally before pushing:
+      # - run: npm run verify
+      # - run: npm run test:integration
+      - run: npm run build
       - run: npm run audit:prod

@@ -8,6 +8,7 @@ import {
 import { sendAppEmail } from '../services/email';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DEFAULT_SUPPORT_EMAIL = 'support@leaguenightpro.com';
 
 class SupportController {
   static submitMessage = async (req: Request, res: Response) => {
@@ -53,7 +54,7 @@ class SupportController {
       });
 
       const configuredRecipient = String(
-        process.env.SUPPORT_EMAIL || process.env.SIGNUP_NOTIFICATION_TO || '',
+        process.env.SUPPORT_EMAIL || DEFAULT_SUPPORT_EMAIL,
       ).trim();
       const recipients = EMAIL_PATTERN.test(configuredRecipient)
         ? [configuredRecipient]

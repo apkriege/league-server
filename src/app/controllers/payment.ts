@@ -9,23 +9,12 @@ import {
   getBillingMetadata,
   getAllocatedGolfersForAdmin,
   getBillingState,
-  isPaymentExempt,
   mergeBillingMetadata,
 } from '../utils/billing';
 import { lockAdminBilling, lockLeagueCapacity } from '../services/billingLock';
 import { redeemPaymentBypassCode } from '../services/paymentBypassCode';
 
-let stripeClient: Stripe | null = null;
-
-const getStripeClient = () => {
-  const secretKey = String(process.env.STRIPE_SECRET_KEY || '').trim();
-  if (!secretKey) {
-    throw new Error('Missing STRIPE_SECRET_KEY');
-  }
-
-  stripeClient ??= new Stripe(secretKey);
-  return stripeClient;
-};
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
 const defaultClientOrigin = getPrimaryClientOrigin() || 'http://localhost:5173';
 
@@ -111,7 +100,7 @@ const createStripeCustomer = (user: {
   firstName: string;
   lastName: string;
 }) =>
-  getStripeClient().customers.create({
+  stripe.customers.create({
     email: user.email,
     name: `${user.firstName} ${user.lastName}`,
     metadata: { userId: String(user.id) },
@@ -123,7 +112,7 @@ const resolveStripeCustomerId = async (
 ) => {
   if (customerId) {
     try {
-      const customer = await getStripeClient().customers.retrieve(customerId);
+      const customer = await stripe.customers.retrieve(customerId);
       if (!customer.deleted) return customer.id;
     } catch (error) {
       if (!isMissingStripeResource(error)) throw error;
@@ -415,14 +404,14 @@ class PaymentController {
       const currentBillingMetadata = getBillingMetadata(currentMetadata);
       const currentIncludedGolfers = Math.max(0, Number(currentBillingMetadata.includedGolfers || 0));
 
-      let capacityLeague: { id: number; numPlayers: number } | null = null;
+      let capacityLeague: { id: number; numPlayers: number; billingExempt: boolean } | null = null;
       if (purpose === 'league_capacity') {
         if (!Number.isInteger(leagueId) || leagueId <= 0) {
           return res.status(400).json({ message: 'League ID is required for a capacity upgrade' });
         }
         capacityLeague = await prisma.league.findFirst({
           where: { id: leagueId, adminId: user.id, deletedAt: null },
-          select: { id: true, numPlayers: true },
+          select: { id: true, numPlayers: true, billingExempt: true },
         });
         if (!capacityLeague) {
           return res.status(404).json({ message: 'League not found' });
@@ -444,16 +433,22 @@ class PaymentController {
 
       const allocatedGolfers = await getAllocatedGolfersForAdmin(user.id);
       const billingState = getBillingState(currentMetadata, allocatedGolfers);
-      if (billingState.paymentExempt) {
+      const bypassesCheckout =
+        Boolean(capacityLeague?.billingExempt) ||
+        (purpose !== 'league_capacity' && billingState.hasPendingLeagueBypass);
+      if (bypassesCheckout) {
         if (purpose === 'league_capacity' && capacityLeague) {
           await prisma.$transaction(async (tx) => {
             await lockAdminBilling(tx, user.id);
             await lockLeagueCapacity(tx, capacityLeague.id);
             const lockedLeague = await tx.league.findFirst({
               where: { id: capacityLeague.id, adminId: user.id, deletedAt: null },
-              select: { id: true, numPlayers: true },
+              select: { id: true, numPlayers: true, billingExempt: true },
             });
             if (!lockedLeague) throw new Error('League not found');
+            if (!lockedLeague.billingExempt) {
+              throw new Error('Payment is required for this capacity change.');
+            }
             await tx.league.update({
               where: { id: lockedLeague.id },
               data: { numPlayers: Math.max(lockedLeague.numPlayers, targetGolfers) },
@@ -462,7 +457,8 @@ class PaymentController {
         }
         return res.status(200).json({
           alreadyCovered: true,
-          paymentExempt: true,
+          paymentExempt: false,
+          leagueBypassPending: billingState.hasPendingLeagueBypass,
           sessionId: null,
           url: null,
           customerId: currentStripeMetadata.customerId || null,
@@ -512,7 +508,7 @@ class PaymentController {
             quantity,
           };
 
-      const checkoutSession = await getStripeClient().checkout.sessions.create({
+      const checkoutSession = await stripe.checkout.sessions.create({
         line_items: [lineItem],
         mode: 'payment',
         success_url: successUrl,
@@ -591,7 +587,7 @@ class PaymentController {
       }
 
       return res.status(200).json({
-        message: 'Payment access code applied. This account no longer requires checkout.',
+        message: 'Payment access code applied to your next league creation.',
         billing,
       });
     } catch (error) {
@@ -612,7 +608,7 @@ class PaymentController {
     }
 
     try {
-      const checkoutSession = await getStripeClient().checkout.sessions.retrieve(sessionId, {
+      const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId, {
         expand: ['payment_intent'],
       });
 
@@ -687,13 +683,10 @@ class PaymentController {
           : '';
 
       if (
-        !isPaymentExempt(initialMetadata) &&
         lastCheckoutSessionId &&
         initialStripeState?.lastCheckoutStatus !== 'completed'
       ) {
-        const checkoutSession = await getStripeClient().checkout.sessions.retrieve(
-          lastCheckoutSessionId,
-        );
+        const checkoutSession = await stripe.checkout.sessions.retrieve(lastCheckoutSessionId);
         const updatedUser = await applyCompletedCheckoutSession(checkoutSession);
         if (updatedUser && updatedUser.id === user?.id) {
           user = { id: updatedUser.id, metadata: updatedUser.metadata };
@@ -727,7 +720,7 @@ class PaymentController {
     let event: Stripe.Event;
 
     try {
-      event = getStripeClient().webhooks.constructEvent(req.body, signature, webhookSecret);
+      event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
     } catch (err: any) {
       return res.status(400).send(`Webhook signature verification failed: ${err.message}`);
     }

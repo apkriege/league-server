@@ -1,7 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma';
 import { lockAdminBilling } from './billingLock';
-import { getAllocatedGolfersForAdmin, getBillingState, mergeBillingMetadata } from '../utils/billing';
+import {
+  getAllocatedGolfersForAdmin,
+  getBillingState,
+  getPendingLeagueBypassCodeId,
+  mergeBillingMetadata,
+} from '../utils/billing';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const DEFAULT_EXPIRATION_DAYS = 30;
@@ -82,6 +88,37 @@ export const revokePaymentBypassCode = async (id: number) => {
   return result.count > 0;
 };
 
+export const attachPendingPaymentBypassToLeague = async (
+  tx: Prisma.TransactionClient,
+  input: { userId: number; leagueId: number; userMetadata: unknown },
+) => {
+  const codeId = getPendingLeagueBypassCodeId(input.userMetadata);
+  if (!codeId) return false;
+
+  const assignedCode = await tx.payment_bypass_code.updateMany({
+    where: {
+      id: codeId,
+      redeemedById: input.userId,
+      redeemedAt: { not: null },
+      redeemedLeagueId: null,
+      revokedAt: null,
+    },
+    data: { redeemedLeagueId: input.leagueId },
+  });
+  if (assignedCode.count !== 1) return false;
+
+  await tx.user.update({
+    where: { id: input.userId },
+    data: {
+      metadata: mergeBillingMetadata(input.userMetadata, {
+        pendingLeagueBypassCodeId: null,
+        pendingLeagueBypassRedeemedAt: null,
+      }),
+    },
+  });
+  return true;
+};
+
 export const redeemPaymentBypassCode = async (userId: number, rawCode: unknown) => {
   const normalizedCode = normalizePaymentBypassCode(rawCode);
   if (normalizedCode.length < 8 || normalizedCode.length > 128) return null;
@@ -102,16 +139,21 @@ export const redeemPaymentBypassCode = async (userId: number, rawCode: unknown) 
           if (!user) throw new Error('User not found');
           const allocatedGolfers = await getAllocatedGolfersForAdmin(user.id, undefined, tx);
           const currentBilling = getBillingState(user.metadata, allocatedGolfers);
-          if (currentBilling.paymentExempt) return currentBilling;
+          // Each account can hold only one pending one-league bypass. Do not consume another code
+          // until the first entitlement has been attached to a newly created league.
+          if (getPendingLeagueBypassCodeId(user.metadata)) {
+            return null;
+          }
 
+          const redeemedAt = new Date();
           const claimed = await tx.payment_bypass_code.updateMany({
             where: {
               id: code.id,
               redeemedAt: null,
               revokedAt: null,
-              OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+              OR: [{ expiresAt: null }, { expiresAt: { gt: redeemedAt } }],
             },
-            data: { redeemedById: userId, redeemedAt: new Date() },
+            data: { redeemedById: userId, redeemedAt },
           });
           if (claimed.count !== 1) return null;
 
@@ -119,9 +161,8 @@ export const redeemPaymentBypassCode = async (userId: number, rawCode: unknown) 
             where: { id: user.id },
             data: {
               metadata: mergeBillingMetadata(user.metadata, {
-                paymentExempt: true,
-                paymentExemptAt: new Date().toISOString(),
-                paymentExemptCodeId: code.id,
+                pendingLeagueBypassCodeId: code.id,
+                pendingLeagueBypassRedeemedAt: redeemedAt.toISOString(),
               }),
             },
             select: { metadata: true },

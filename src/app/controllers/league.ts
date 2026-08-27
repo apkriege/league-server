@@ -7,6 +7,7 @@ import {
   getAllocatedGolfersForAdmin,
   getBillingState,
   getLeagueBillableGolfers,
+  getPendingLeagueBypassCodeId,
   isBillingCapacityCovered,
 } from '../utils/billing';
 import { writeAuditLog } from '../utils/audit';
@@ -14,6 +15,7 @@ import { generateLeagueAccessCode } from './auth';
 import { localDateKey } from '../utils/time-zone';
 import { normalizeGender } from '../utils/tee-rating';
 import { lockAdminBilling } from '../services/billingLock';
+import { attachPendingPaymentBypassToLeague } from '../services/paymentBypassCode';
 import { normalizeLeagueHoleFormat } from '../utils/league-hole-format';
 import { calculateSeasonSkinLeaderboards } from '../utils/season-skins';
 import { calculatePlayerResults } from '../utils/player-results';
@@ -482,14 +484,18 @@ class LeagueController {
       const allocatedGolfers = await getAllocatedGolfersForAdmin(adminId);
       const billingState = getBillingState(adminUser.metadata, allocatedGolfers);
 
-      if (!billingState.hasCompletedRegistration) {
+      const hasPendingLeagueBypass = billingState.hasPendingLeagueBypass;
+      if (!billingState.hasCompletedRegistration && !hasPendingLeagueBypass) {
         return res.status(402).json({
           message: `Complete registration payment for at least ${billingState.minimumGolfers} golfers before creating a league.`,
           billing: billingState,
         });
       }
 
-      if (!isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)) {
+      if (
+        !hasPendingLeagueBypass &&
+        !isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)
+      ) {
         return res.status(402).json({
           message: `This league requires payment for ${billableGolfers} golfers.`,
           billing: billingState,
@@ -512,13 +518,18 @@ class LeagueController {
           lockedAdmin.metadata,
           lockedAllocatedGolfers,
         );
-        if (!lockedBillingState.hasCompletedRegistration) {
+        const pendingLeagueBypassCodeId = getPendingLeagueBypassCodeId(lockedAdmin.metadata);
+        const useLeagueBypass = pendingLeagueBypassCodeId !== null;
+        if (!lockedBillingState.hasCompletedRegistration && !useLeagueBypass) {
           throw new Error('Registration payment is required.');
         }
-        if (!isBillingCapacityCovered(
-          lockedBillingState,
-          lockedAllocatedGolfers + billableGolfers,
-        )) {
+        if (
+          !useLeagueBypass &&
+          !isBillingCapacityCovered(
+            lockedBillingState,
+            lockedAllocatedGolfers + billableGolfers,
+          )
+        ) {
           throw new Error(`Payment is required for ${billableGolfers} golfers.`);
         }
 
@@ -527,8 +538,22 @@ class LeagueController {
             ...normalizedLeagueData,
             adminId,
             viewerAccessCode,
+            billingExempt: useLeagueBypass,
           },
         });
+
+        if (pendingLeagueBypassCodeId) {
+          const attached = await attachPendingPaymentBypassToLeague(tx, {
+            userId: adminId,
+            leagueId: createdLeague.id,
+            userMetadata: lockedAdmin.metadata,
+          });
+          if (!attached) {
+            throw new Error(
+              'Payment is required because the one-time access code is no longer available.',
+            );
+          }
+        }
 
         await tx.league_onboarding.create({ data: { leagueId: createdLeague.id } });
 
@@ -708,7 +733,10 @@ class LeagueController {
       const billingState = getBillingState(adminUser?.metadata, allocatedGolfers);
 
       const billableGolfers = Math.max(BILLING_MIN_GOLFERS, nextNumPlayers);
-      if (!isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)) {
+      if (
+        !existingLeague.billingExempt &&
+        !isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)
+      ) {
         return res.status(402).json({
           message: `This change requires payment for ${billableGolfers} golfers in this league.`,
           billing: billingState,
@@ -731,10 +759,13 @@ class LeagueController {
           lockedAdmin?.metadata,
           lockedAllocatedGolfers,
         );
-        if (!isBillingCapacityCovered(
-          lockedBillingState,
-          lockedAllocatedGolfers + billableGolfers,
-        )) {
+        if (
+          !existingLeague.billingExempt &&
+          !isBillingCapacityCovered(
+            lockedBillingState,
+            lockedAllocatedGolfers + billableGolfers,
+          )
+        ) {
           throw new Error('Payment is required for this capacity change.');
         }
 
@@ -801,7 +832,13 @@ class LeagueController {
       const result = await prisma.$transaction(async (tx) => {
         const league = await tx.league.findFirst({
           where: { id: leagueId, deletedAt: null },
-          select: { id: true, name: true, adminId: true, numPlayers: true },
+          select: {
+            id: true,
+            name: true,
+            adminId: true,
+            numPlayers: true,
+            billingExempt: true,
+          },
         });
         if (!league) throw new Error('League not found');
 
@@ -818,7 +855,7 @@ class LeagueController {
           await lockAdminBilling(tx, adminId);
         }
 
-        if (String(nextAdmin.role).toUpperCase() !== 'SUPER') {
+        if (!league.billingExempt && String(nextAdmin.role).toUpperCase() !== 'SUPER') {
           const allocatedGolfers = await getAllocatedGolfersForAdmin(
             nextAdmin.id,
             undefined,

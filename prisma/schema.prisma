@@ -108,19 +108,21 @@ model stripe_checkout_completion {
 }
 
 model payment_bypass_code {
-  id           Int       @id @default(autoincrement())
-  codeHash     String    @unique @map("code_hash")
-  codeHint     String    @map("code_hint")
-  label        String?
-  createdById  Int       @map("created_by_id")
-  redeemedById Int?      @map("redeemed_by_id")
-  expiresAt    DateTime? @map("expires_at") @db.Timestamptz(3)
-  redeemedAt   DateTime? @map("redeemed_at") @db.Timestamptz(3)
-  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  id               Int       @id @default(autoincrement())
+  codeHash         String    @unique @map("code_hash")
+  codeHint         String    @map("code_hint")
+  label            String?
+  createdById      Int       @map("created_by_id")
+  redeemedById     Int?      @map("redeemed_by_id")
+  redeemedLeagueId Int?      @unique @map("redeemed_league_id")
+  expiresAt        DateTime? @map("expires_at") @db.Timestamptz(3)
+  redeemedAt       DateTime? @map("redeemed_at") @db.Timestamptz(3)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  createdBy  user  @relation("payment_bypass_code_created_by", fields: [createdById], references: [id], onDelete: Restrict)
-  redeemedBy user? @relation("payment_bypass_code_redeemed_by", fields: [redeemedById], references: [id], onDelete: SetNull)
+  createdBy      user    @relation("payment_bypass_code_created_by", fields: [createdById], references: [id], onDelete: Restrict)
+  redeemedBy     user?   @relation("payment_bypass_code_redeemed_by", fields: [redeemedById], references: [id], onDelete: SetNull)
+  redeemedLeague league? @relation(fields: [redeemedLeagueId], references: [id], onDelete: Restrict)
 
   @@index([createdById])
   @@index([redeemedById])
@@ -217,6 +219,7 @@ model league {
   format           String? // e.g. "individual", "team"
   numPlayers       Int       @map("num_players")
   adminId          Int       @map("admin_id")
+  billingExempt    Boolean   @default(false) @map("billing_exempt")
   startDate        DateTime  @map("start_date") @db.Date
   endDate          DateTime  @map("end_date") @db.Date
   contactFirstName String    @map("contact_first")
@@ -227,16 +230,17 @@ model league {
   updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  admin           user                  @relation(fields: [adminId], references: [id])
-  events          event[]
-  players         player[]
-  teams           team[]
-  teamEventPoints team_event_points[]
-  invitations     league_invitation[]
-  announcements   league_announcement[]
-  scoringPeriods  league_scoring_period[]
-  auditLogs       audit_log[]
-  onboarding      league_onboarding?
+  admin             user                    @relation(fields: [adminId], references: [id])
+  events            event[]
+  players           player[]
+  teams             team[]
+  teamEventPoints   team_event_points[]
+  invitations       league_invitation[]
+  announcements     league_announcement[]
+  scoringPeriods    league_scoring_period[]
+  auditLogs         audit_log[]
+  onboarding        league_onboarding?
+  paymentBypassCode payment_bypass_code?
 
   @@index([adminId])
   @@index([startDate])

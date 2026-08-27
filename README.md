@@ -40,6 +40,9 @@ The production process exits during startup when billing values, Stripe identifi
 notification email addresses are malformed. This prevents a deployment with known-broken checkout
 or email configuration from receiving traffic.
 
+Support requests default to `support@leaguenightpro.com`. Set `SUPPORT_EMAIL_FROM` to
+`League Night Pro Support <support@leaguenightpro.com>` after verifying the domain with Resend.
+
 ### Railway CORS and cookies
 
 Set `CLIENT_URL` to the exact public origin that serves the browser client. Do not set it to the API

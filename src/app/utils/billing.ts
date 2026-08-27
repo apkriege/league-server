@@ -25,6 +25,7 @@ export type BillingState = {
   availableGolfers: number;
   hasCompletedRegistration: boolean;
   paymentExempt: boolean;
+  hasPendingLeagueBypass: boolean;
 };
 
 const toObject = (value: unknown) => (value && typeof value === 'object' ? value : {});
@@ -39,8 +40,10 @@ export const getIncludedGolfers = (metadata: unknown) => {
   return Math.max(0, Number(billing.includedGolfers || 0));
 };
 
-export const isPaymentExempt = (metadata: unknown) =>
-  getBillingMetadata(metadata).paymentExempt === true;
+export const getPendingLeagueBypassCodeId = (metadata: unknown) => {
+  const codeId = Number(getBillingMetadata(metadata).pendingLeagueBypassCodeId);
+  return Number.isInteger(codeId) && codeId > 0 ? codeId : null;
+};
 
 /**
  * @deprecated Shared environment codes are not accepted by the redemption endpoint. This helper
@@ -68,7 +71,7 @@ export const getBillingState = (
   const includedGolfers = overrides.includedGolfers ?? getIncludedGolfers(metadata);
   const resolvedAllocatedGolfers = overrides.allocatedGolfers ?? allocatedGolfers ?? 0;
   const safeAllocatedGolfers = Math.max(0, Number(resolvedAllocatedGolfers));
-  const paymentExempt = isPaymentExempt(metadata);
+  const hasPendingLeagueBypass = getPendingLeagueBypassCodeId(metadata) !== null;
 
   return {
     minimumGolfers: BILLING_MIN_GOLFERS,
@@ -77,13 +80,14 @@ export const getBillingState = (
     includedGolfers,
     allocatedGolfers: safeAllocatedGolfers,
     availableGolfers: Math.max(0, includedGolfers - safeAllocatedGolfers),
-    hasCompletedRegistration: paymentExempt || includedGolfers >= BILLING_MIN_GOLFERS,
-    paymentExempt,
+    hasCompletedRegistration: hasPendingLeagueBypass || includedGolfers >= BILLING_MIN_GOLFERS,
+    paymentExempt: false,
+    hasPendingLeagueBypass,
   };
 };
 
 export const isBillingCapacityCovered = (billing: BillingState, requiredGolfers: number) =>
-  billing.paymentExempt || billing.includedGolfers >= requiredGolfers;
+  billing.includedGolfers >= requiredGolfers;
 
 export const mergeBillingMetadata = (metadata: unknown, billingPatch: Record<string, unknown>) => {
   const root = toObject(metadata) as Record<string, any>;
@@ -107,6 +111,7 @@ export const getAllocatedGolfersForAdmin = async (
     where: {
       adminId,
       deletedAt: null,
+      billingExempt: false,
       ...(excludeLeagueId ? { id: { not: excludeLeagueId } } : {}),
     },
     select: {
