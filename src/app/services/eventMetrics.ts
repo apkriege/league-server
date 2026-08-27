@@ -1,46 +1,108 @@
 import { prisma } from '../../prisma';
+import { calculateEventTeamStandings } from '../utils/event-team-standings';
+
+type DistributionKey =
+  | 'eagles'
+  | 'birdies'
+  | 'pars'
+  | 'bogeys'
+  | 'doubleBogeys'
+  | 'tripleBogeys';
+
+type DistributionTotals = Record<DistributionKey, number | null>;
+
+type MetricRound = {
+  playerId: number;
+  preHandicap: number | null;
+  postHandicap: number | null;
+  gross: number;
+  net: number;
+  pointsEarned: number;
+  matchPoints: number;
+  eagles: number;
+  birdies: number;
+  pars: number;
+  bogeys: number;
+  doubleBogeys: number;
+  tripleBogeys: number;
+  player: {
+    firstName: string;
+    lastName: string;
+    handicap: number;
+  };
+  scores: Array<{
+    hole: number;
+    gross: number;
+    net: number;
+    par: number;
+  }>;
+};
+
+const DISTRIBUTION_KEYS: DistributionKey[] = [
+  'eagles',
+  'birdies',
+  'pars',
+  'bogeys',
+  'doubleBogeys',
+  'tripleBogeys',
+];
+
+const playerName = (round: MetricRound) =>
+  `${round.player.firstName} ${round.player.lastName}`.trim();
 
 export class EventMetrics {
-  private eventId: number;
-  constructor(eventId: number) {
-    this.eventId = eventId;
-  }
+  constructor(
+    private readonly eventId: number,
+    private readonly leagueId: number,
+  ) {}
 
   async processEvent() {
-    const scores = await this.scores();
-    const leaderboards = await this.createLeaderboards();
-    const skins = await this.createSkins();
-    const scoreDistribution = await this.scoreDistribution();
+    const activeLeagueRounds = {
+      deletedAt: null,
+      event: {
+        leagueId: this.leagueId,
+        isDeleted: false,
+        deletedAt: null,
+      },
+    } as const;
 
-    return {
-      scores,
-      leaderboards,
-      skins,
-      scoreDistribution,
-    };
-  }
-
-  private async scoreDistribution() {
-    const event = await prisma.event.findUnique({
-      where: { id: this.eventId },
-      select: { leagueId: true },
-    });
-    if (!event) throw new Error('Event not found');
-
-    const [eventAgg, seasonAgg, eventIds] = await Promise.all([
-      prisma.round.aggregate({
-        where: { eventId: this.eventId },
-        _sum: {
+    const [rounds, seasonAggregate, eventIds, eventTeamData] = await Promise.all([
+      prisma.round.findMany({
+        where: { eventId: this.eventId, deletedAt: null },
+        select: {
+          playerId: true,
+          preHandicap: true,
+          postHandicap: true,
+          gross: true,
+          net: true,
+          pointsEarned: true,
+          matchPoints: true,
           eagles: true,
           birdies: true,
           pars: true,
           bogeys: true,
           doubleBogeys: true,
           tripleBogeys: true,
+          player: {
+            select: {
+              firstName: true,
+              lastName: true,
+              handicap: true,
+            },
+          },
+          scores: {
+            select: {
+              hole: true,
+              gross: true,
+              net: true,
+              par: true,
+            },
+            orderBy: { hole: 'asc' },
+          },
         },
       }),
       prisma.round.aggregate({
-        where: { event: { leagueId: event.leagueId } },
+        where: activeLeagueRounds,
         _sum: {
           eagles: true,
           birdies: true,
@@ -52,39 +114,63 @@ export class EventMetrics {
       }),
       prisma.round.groupBy({
         by: ['eventId'],
-        where: { event: { leagueId: event.leagueId } },
+        where: activeLeagueRounds,
       }),
+      prisma.event?.findFirst?.({
+        where: { id: this.eventId, leagueId: this.leagueId, isDeleted: false, deletedAt: null },
+        select: {
+          flights: {
+            where: { deletedAt: null },
+            select: {
+              players: {
+                where: { deletedAt: null },
+                select: { playerId: true, teamId: true },
+              },
+              teams: {
+                where: { deletedAt: null },
+                select: {
+                  teamId: true,
+                  team: { select: { name: true } },
+                },
+              },
+            },
+          },
+          teamEventPoints: {
+            select: { teamId: true, points: true },
+          },
+        },
+      }) ?? Promise.resolve(null),
     ]);
 
-    const numEvents = eventIds.length || 1;
-    const round1 = (n: number | null, divisor = 1) => Math.round(((n ?? 0) / divisor) * 10) / 10;
+    const teamAssignments = (eventTeamData?.flights ?? []).flatMap((flight) =>
+      flight.teams.map((assignment) => ({
+        teamId: Number(assignment.teamId),
+        name: String(assignment.team?.name || `Team ${assignment.teamId}`),
+      })),
+    );
+    const playerTeamAssignments = (eventTeamData?.flights ?? []).flatMap(
+      (flight) => flight.players,
+    );
 
     return {
-      thisEvent: {
-        eagles: eventAgg._sum.eagles ?? 0,
-        birdies: eventAgg._sum.birdies ?? 0,
-        pars: eventAgg._sum.pars ?? 0,
-        bogeys: eventAgg._sum.bogeys ?? 0,
-        doubleBogeys: eventAgg._sum.doubleBogeys ?? 0,
-        tripleBogeys: eventAgg._sum.tripleBogeys ?? 0,
-      },
-      seasonAvg: {
-        eagles: round1(seasonAgg._sum.eagles, numEvents),
-        birdies: round1(seasonAgg._sum.birdies, numEvents),
-        pars: round1(seasonAgg._sum.pars, numEvents),
-        bogeys: round1(seasonAgg._sum.bogeys, numEvents),
-        doubleBogeys: round1(seasonAgg._sum.doubleBogeys, numEvents),
-        tripleBogeys: round1(seasonAgg._sum.tripleBogeys, numEvents),
-      },
+      scores: this.scores(rounds),
+      leaderboards: this.createLeaderboards(rounds),
+      teamStandings: calculateEventTeamStandings(
+        teamAssignments,
+        playerTeamAssignments,
+        eventTeamData?.teamEventPoints ?? [],
+        rounds,
+      ),
+      skins: this.createSkins(rounds),
+      scoreDistribution: this.scoreDistribution(
+        rounds,
+        seasonAggregate._sum,
+        eventIds.length,
+      ),
     };
   }
 
-  private async scores() {
-    const rounds = await prisma.round.findMany({
-      where: { eventId: this.eventId },
-      include: { player: true, scores: true },
-    });
-
+  private scores(rounds: MetricRound[]) {
     return rounds.map((round) => ({
       playerId: round.playerId,
       player: {
@@ -97,182 +183,137 @@ export class EventMetrics {
       net: round.net,
       pointsEarned: round.pointsEarned,
       matchPoints: round.matchPoints,
-      scores: round.scores.map((score) => ({
-        hole: score.hole,
-        gross: score.gross,
-        net: score.net,
-        par: score.par,
-      })),
+      eagles: round.eagles,
+      birdies: round.birdies,
+      pars: round.pars,
+      bogeys: round.bogeys,
+      scores: round.scores,
     }));
   }
 
-  // create leaderboards
-  private async createLeaderboards() {
-    const rounds = await prisma.round.findMany({
-      where: { eventId: this.eventId },
-      include: { player: true },
-    });
+  private createLeaderboards(rounds: MetricRound[]) {
+    const entries = rounds.map((round) => ({
+      playerId: round.playerId,
+      name: playerName(round),
+      handicap: round.player.handicap,
+      points: round.pointsEarned + round.matchPoints,
+      gross: round.gross,
+      net: round.net,
+    }));
 
     return {
-      playerPoints: await this.playerPoints(rounds),
-      playerLowGross: await this.playerLowGross(rounds),
-      playerLowNet: await this.playerLowNet(rounds),
+      playerPoints: [...entries]
+        .sort((left, right) => right.points - left.points)
+        .map((entry) => ({
+          playerId: entry.playerId,
+          name: entry.name,
+          handicap: entry.handicap,
+          value: entry.points,
+        })),
+      playerLowGross: [...entries]
+        .sort((left, right) => left.gross - right.gross)
+        .map((entry) => ({
+          playerId: entry.playerId,
+          name: entry.name,
+          handicap: entry.handicap,
+          value: entry.gross,
+        })),
+      playerLowNet: [...entries]
+        .sort((left, right) => left.net - right.net)
+        .map((entry) => ({
+          playerId: entry.playerId,
+          name: entry.name,
+          handicap: entry.handicap,
+          value: entry.net,
+        })),
     };
   }
 
-  // event points leaderboard
-  private async playerPoints(rounds: any[]) {
-    const x = [
-      ...rounds.map((r) => ({
-        playerId: r.playerId,
-        name: `${r.player.firstName} ${r.player.lastName}`,
-        handicap: r.player.handicap,
-        value: r.pointsEarned + r.matchPoints,
-      })),
-    ];
-
-    return x.sort((a, b) => b.value - a.value);
-  }
-
-  // low net score
-  private async playerLowNet(rounds: any[]) {
-    const x = [
-      ...rounds.map((r) => ({
-        playerId: r.playerId,
-        name: `${r.player.firstName} ${r.player.lastName}`,
-        handicap: r.player.handicap,
-        value: r.net,
-      })),
-    ];
-
-    return x.sort((a, b) => a.value - b.value);
-  }
-
-  // low gross score
-  private async playerLowGross(rounds: any[]) {
-    const x = [
-      ...rounds.map((r) => ({
-        playerId: r.playerId,
-        name: `${r.player.firstName} ${r.player.lastName}`,
-        handicap: r.player.handicap,
-        value: r.gross,
-      })),
-    ];
-
-    return x.sort((a, b) => a.value - b.value);
-  }
-
-  // create skins leaderboard
-  private async createSkins() {
-    const rounds = await prisma.round.findMany({
-      where: { eventId: this.eventId },
-      include: { player: true, scores: true },
-    });
-
+  private createSkins(rounds: MetricRound[]) {
     return {
-      playerSkins: await this.playerSkins(rounds),
-      playerNetSkins: await this.playerNetSkins(rounds),
+      playerSkins: this.findSkins(rounds, 'gross'),
+      playerNetSkins: this.findSkins(rounds, 'net'),
     };
   }
 
-  private scoreLabel(gross: number, par: number): string {
-    const diff = gross - par;
-    if (diff <= -2) return 'Eagle';
-    if (diff === -1) return 'Birdie';
-    if (diff === 0) return 'Par';
-    if (diff === 1) return 'Bogey';
-    if (diff === 2) return 'Double Bogey';
-    return `+${diff}`;
-  }
-
-  private async playerSkins(rounds: any[]) {
-    const holeScores: Record<number, Array<{ playerId: number; name: string; gross: number; par: number }>> = {};
+  private findSkins(rounds: MetricRound[], valueKey: 'gross' | 'net') {
+    const scoresByHole = new Map<
+      number,
+      Array<{ playerId: number; name: string; value: number; par: number }>
+    >();
 
     for (const round of rounds) {
       for (const score of round.scores) {
-        const { hole, gross } = score;
-        if (!holeScores[hole]) holeScores[hole] = [];
-        holeScores[hole].push({
+        const entries = scoresByHole.get(score.hole) ?? [];
+        entries.push({
           playerId: round.playerId,
-          name: `${round.player.firstName} ${round.player.lastName}`,
-          gross: Number(gross),
+          name: playerName(round),
+          value: Number(score[valueKey]),
           par: Number(score.par),
         });
+        scoresByHole.set(score.hole, entries);
       }
     }
 
-    const skins: {
+    const skins: Array<{
       playerId: number;
       name: string;
       hole: string;
-      gross: number;
       scoreLabel: string;
-    }[] = [];
+      gross?: number;
+      net?: number;
+    }> = [];
 
-    for (const hole in holeScores) {
-      const entries = holeScores[hole] ?? [];
-      if (entries.length === 0) continue;
-
-      const lowestGross = Math.min(...entries.map((entry) => entry.gross));
-      const winners = entries.filter((entry) => entry.gross === lowestGross);
+    for (const [hole, entries] of scoresByHole) {
+      const lowestValue = Math.min(...entries.map((entry) => entry.value));
+      const winners = entries.filter((entry) => entry.value === lowestValue);
       if (winners.length !== 1) continue;
 
-      const skinWinner = winners[0];
+      const winner = winners[0];
       skins.push({
-        playerId: skinWinner.playerId,
-        name: skinWinner.name,
+        playerId: winner.playerId,
+        name: winner.name,
         hole: String(hole),
-        gross: skinWinner.gross,
-        scoreLabel: this.scoreLabel(skinWinner.gross, skinWinner.par),
+        [valueKey]: winner.value,
+        scoreLabel: this.scoreLabel(winner.value, winner.par),
       });
     }
 
-    return skins.sort((a, b) => Number(a.hole) - Number(b.hole));
+    return skins.sort((left, right) => Number(left.hole) - Number(right.hole));
   }
 
-  private async playerNetSkins(round: any[]) {
-    const holeNetScores: Record<number, Array<{ playerId: number; name: string; net: number; par: number }>> = {};
+  private scoreDistribution(
+    rounds: MetricRound[],
+    seasonTotals: DistributionTotals,
+    eventCount: number,
+  ) {
+    const divisor = eventCount || 1;
+    const eventTotals = Object.fromEntries(
+      DISTRIBUTION_KEYS.map((key) => [
+        key,
+        rounds.reduce((total, round) => total + round[key], 0),
+      ]),
+    ) as Record<DistributionKey, number>;
+    const seasonAverages = Object.fromEntries(
+      DISTRIBUTION_KEYS.map((key) => [
+        key,
+        Math.round((((seasonTotals[key] ?? 0) / divisor) * 10)) / 10,
+      ]),
+    ) as Record<DistributionKey, number>;
 
-    for (const r of round) {
-      for (const score of r.scores) {
-        const { hole, net } = score;
-        if (!holeNetScores[hole]) holeNetScores[hole] = [];
-        holeNetScores[hole].push({
-          playerId: r.playerId,
-          name: `${r.player.firstName} ${r.player.lastName}`,
-          net: Number(net),
-          par: Number(score.par),
-        });
-      }
-    }
+    return {
+      thisEvent: eventTotals,
+      seasonAvg: seasonAverages,
+    };
+  }
 
-    const skins: {
-      playerId: number;
-      name: string;
-      hole: string;
-      net: number;
-      scoreLabel: string;
-    }[] = [];
-
-    for (const hole in holeNetScores) {
-      const entries = holeNetScores[hole] ?? [];
-      if (entries.length === 0) continue;
-
-      const lowestNet = Math.min(...entries.map((entry) => entry.net));
-      const winners = entries.filter((entry) => entry.net === lowestNet);
-      if (winners.length !== 1) continue;
-
-      const skinWinner = winners[0];
-      skins.push({
-        playerId: skinWinner.playerId,
-        name: skinWinner.name,
-        hole: String(hole),
-        net: skinWinner.net,
-        scoreLabel: this.scoreLabel(skinWinner.net, skinWinner.par),
-      });
-    }
-
-    const sortedNetSkins = skins.sort((a, b) => Number(a.hole) - Number(b.hole));
-    return sortedNetSkins;
+  private scoreLabel(score: number, par: number) {
+    const difference = score - par;
+    if (difference <= -2) return 'Eagle';
+    if (difference === -1) return 'Birdie';
+    if (difference === 0) return 'Par';
+    if (difference === 1) return 'Bogey';
+    if (difference === 2) return 'Double Bogey';
+    return `+${difference}`;
   }
 }

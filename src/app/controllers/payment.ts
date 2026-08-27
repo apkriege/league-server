@@ -9,8 +9,11 @@ import {
   getBillingMetadata,
   getAllocatedGolfersForAdmin,
   getBillingState,
+  isPaymentExempt,
   mergeBillingMetadata,
 } from '../utils/billing';
+import { lockAdminBilling, lockLeagueCapacity } from '../services/billingLock';
+import { redeemPaymentBypassCode } from '../services/paymentBypassCode';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
@@ -23,12 +26,26 @@ const DEFAULT_CANCEL_URL =
   process.env.STRIPE_CHECKOUT_CANCEL_URL ||
   `${defaultClientOrigin}/?checkout=registration_cancel#register`;
 const DEFAULT_PRICE_ID = process.env.STRIPE_PRICE_ID || '';
+const PRODUCT_TAX_CODE = process.env.STRIPE_PRODUCT_TAX_CODE || 'txcd_10103000';
 
-type CheckoutPurpose = 'registration' | 'seat_upgrade';
+const CHECKOUT_PURPOSES = [
+  'registration',
+  'seat_upgrade',
+  'league_capacity',
+] as const;
+type CheckoutPurpose = (typeof CHECKOUT_PURPOSES)[number];
+export type CheckoutConfirmationStatus = 'succeeded' | 'processing' | 'failed';
+
+const isCheckoutPurpose = (value: string): value is CheckoutPurpose =>
+  CHECKOUT_PURPOSES.some((purpose) => purpose === value);
 
 const getProductName = (purpose: CheckoutPurpose, quantity: number) => {
   if (purpose === 'registration') {
     return `League Admin Registration (${quantity} golfers included)`;
+  }
+
+  if (purpose === 'league_capacity') {
+    return `Additional league golfer capacity (${quantity})`;
   }
 
   return `Additional golfer seats (${quantity})`;
@@ -39,16 +56,85 @@ const getCheckoutRedirectUrl = (value: unknown, fallback: string) => {
   return isTrustedClientOrigin(value.trim()) ? value.trim() : fallback;
 };
 
+export const withCheckoutSessionId = (redirectUrl: string) => {
+  if (redirectUrl.includes('{CHECKOUT_SESSION_ID}')) return redirectUrl;
+
+  const hashIndex = redirectUrl.indexOf('#');
+  const url = hashIndex >= 0 ? redirectUrl.slice(0, hashIndex) : redirectUrl;
+  const hash = hashIndex >= 0 ? redirectUrl.slice(hashIndex) : '';
+  const separator = url.includes('?') ? '&' : '?';
+
+  return `${url}${separator}session_id={CHECKOUT_SESSION_ID}${hash}`;
+};
+
+export const getCheckoutConfirmationStatus = (
+  session: Stripe.Checkout.Session,
+): CheckoutConfirmationStatus => {
+  if (session.payment_status === 'paid' || session.payment_status === 'no_payment_required') {
+    return 'succeeded';
+  }
+
+  const paymentIntentStatus =
+    session.payment_intent && typeof session.payment_intent !== 'string'
+      ? session.payment_intent.status
+      : null;
+
+  if (
+    session.status === 'expired' ||
+    paymentIntentStatus === 'canceled' ||
+    paymentIntentStatus === 'requires_payment_method'
+  ) {
+    return 'failed';
+  }
+
+  return 'processing';
+};
+
+const isMissingStripeResource = (error: unknown) => {
+  const stripeError = error as { code?: unknown; statusCode?: unknown };
+  return stripeError?.code === 'resource_missing' || stripeError?.statusCode === 404;
+};
+
+const createStripeCustomer = (user: {
+  id: number;
+  email: string;
+  firstName: string;
+  lastName: string;
+}) =>
+  stripe.customers.create({
+    email: user.email,
+    name: `${user.firstName} ${user.lastName}`,
+    metadata: { userId: String(user.id) },
+  });
+
+const resolveStripeCustomerId = async (
+  customerId: string | undefined,
+  user: { id: number; email: string; firstName: string; lastName: string },
+) => {
+  if (customerId) {
+    try {
+      const customer = await stripe.customers.retrieve(customerId);
+      if (!customer.deleted) return customer.id;
+    } catch (error) {
+      if (!isMissingStripeResource(error)) throw error;
+    }
+  }
+
+  const customer = await createStripeCustomer(user);
+  return customer.id;
+};
+
 export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Session) => {
   const userIdFromReference = Number(session.client_reference_id);
   if (!userIdFromReference) return null;
 
-  if (session.payment_status !== 'paid' && session.status !== 'complete') {
+  if (session.payment_status !== 'paid' && session.payment_status !== 'no_payment_required') {
     return null;
   }
 
   const completedQuantity = Math.max(0, Number(session.metadata?.quantity || 0));
   const requestedTargetGolfers = Math.max(0, Number(session.metadata?.targetGolfers || 0));
+  const leagueId = Math.max(0, Number(session.metadata?.leagueId || 0));
   const completedPurpose = String(session.metadata?.purpose || 'seat_upgrade');
   if (!Number.isInteger(completedQuantity) || completedQuantity <= 0) return null;
 
@@ -56,6 +142,10 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
     try {
       return await prisma.$transaction(
         async (tx) => {
+          await lockAdminBilling(tx, userIdFromReference);
+          if (completedPurpose === 'league_capacity' && leagueId > 0) {
+            await lockLeagueCapacity(tx, leagueId);
+          }
           const processed = await tx.stripe_checkout_completion.findUnique({
             where: { sessionId: session.id },
           });
@@ -79,11 +169,27 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
             0,
             Number(currentBillingMetadata.includedGolfers || 0),
           );
-          const nextIncludedGolfers = Math.max(
-            currentIncludedGolfers + completedQuantity,
-            requestedTargetGolfers,
-            currentIncludedGolfers,
-          );
+          const nextIncludedGolfers =
+            completedPurpose === 'league_capacity'
+              ? currentIncludedGolfers + completedQuantity
+              : Math.max(
+                  currentIncludedGolfers + completedQuantity,
+                  requestedTargetGolfers,
+                  currentIncludedGolfers,
+                );
+
+          if (completedPurpose === 'league_capacity' && leagueId > 0) {
+            const league = await tx.league.findFirst({
+              where: { id: leagueId, adminId: user.id, deletedAt: null },
+              select: { id: true, numPlayers: true },
+            });
+            if (league) {
+              await tx.league.update({
+                where: { id: league.id },
+                data: { numPlayers: Math.max(league.numPlayers, requestedTargetGolfers) },
+              });
+            }
+          }
 
           const updatedUser = await tx.user.update({
             where: { id: user.id },
@@ -125,7 +231,10 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
           await tx.stripe_checkout_completion.create({
             data: {
               sessionId: session.id,
+              paymentIntentId:
+                typeof session.payment_intent === 'string' ? session.payment_intent : null,
               userId: user.id,
+              leagueId: leagueId > 0 ? leagueId : null,
               purpose: completedPurpose,
               quantity: completedQuantity,
               targetGolfers: requestedTargetGolfers,
@@ -147,13 +256,109 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
   return null;
 };
 
+export const applyRefundedCharge = async (charge: Stripe.Charge) => {
+  const paymentIntentId =
+    typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id;
+  if (!paymentIntentId || Number(charge.amount_refunded || 0) <= 0) return null;
+
+  return prisma.$transaction(
+    async (tx) => {
+      const completion = await tx.stripe_checkout_completion.findUnique({
+        where: { paymentIntentId },
+      });
+      if (!completion) return null;
+
+      await lockAdminBilling(tx, completion.userId);
+      if (completion.purpose === 'league_capacity' && completion.leagueId) {
+        await lockLeagueCapacity(tx, completion.leagueId);
+      }
+
+      const totalRefundedQuantity = charge.refunded
+        ? completion.quantity
+        : Math.min(
+            completion.quantity,
+            Math.floor(
+              Number(charge.amount_refunded || 0) /
+                Math.max(1, BILLING_PRICE_PER_GOLFER_CENTS),
+            ),
+          );
+      const quantityToRevoke = Math.max(
+        0,
+        totalRefundedQuantity - Number(completion.refundedQuantity || 0),
+      );
+      if (quantityToRevoke === 0) return completion;
+
+      const user = await tx.user.findFirst({
+        where: { id: completion.userId, deletedAt: null },
+        select: { metadata: true },
+      });
+      if (!user) return null;
+
+      const billing = getBillingMetadata(user.metadata);
+      const includedGolfers = Math.max(0, Number(billing.includedGolfers || 0));
+      await tx.user.update({
+        where: { id: completion.userId },
+        data: {
+          metadata: mergeBillingMetadata(user.metadata, {
+            includedGolfers: Math.max(0, includedGolfers - quantityToRevoke),
+            lastRefundedAt: new Date().toISOString(),
+            lastRefundedSeatQuantity: quantityToRevoke,
+          }),
+        },
+      });
+
+      if (completion.purpose === 'league_capacity' && completion.leagueId) {
+        const league = await tx.league.findFirst({
+          where: { id: completion.leagueId, adminId: completion.userId, deletedAt: null },
+          select: { id: true, numPlayers: true },
+        });
+        if (league) {
+          const activeRegularPlayers = await tx.player.count({
+            where: { leagueId: league.id, type: 'player', deletedAt: null },
+          });
+          await tx.league.update({
+            where: { id: league.id },
+            data: {
+              numPlayers: Math.max(
+                BILLING_MIN_GOLFERS,
+                activeRegularPlayers,
+                league.numPlayers - quantityToRevoke,
+              ),
+            },
+          });
+        }
+      }
+
+      return tx.stripe_checkout_completion.update({
+        where: { id: completion.id },
+        data: {
+          refundedQuantity: totalRefundedQuantity,
+          refundedAt: new Date(),
+        },
+      });
+    },
+    { isolationLevel: 'Serializable' },
+  );
+};
+
+export const applyLostDispute = async (dispute: Stripe.Dispute) => {
+  if (dispute.status !== 'lost') return null;
+  const paymentIntentId =
+    typeof dispute.payment_intent === 'string'
+      ? dispute.payment_intent
+      : dispute.payment_intent?.id;
+  if (!paymentIntentId) return null;
+
+  return applyRefundedCharge({
+    payment_intent: paymentIntentId,
+    amount_refunded: dispute.amount,
+    refunded: false,
+  } as Stripe.Charge);
+};
+
 class PaymentController {
   static async createCheckoutSession(req: Request, res: Response) {
     try {
-      if (!process.env.STRIPE_SECRET_KEY) {
-        return res.status(500).json({ message: 'Missing STRIPE_SECRET_KEY' });
-      }
-
       const userId = req.session.userId;
       if (!userId) {
         return res.status(401).json({ message: 'Not authenticated' });
@@ -164,17 +369,21 @@ class PaymentController {
         return res.status(404).json({ message: 'User not found' });
       }
 
-      const purpose = String(req.body?.purpose || 'seat_upgrade') as CheckoutPurpose;
+      const requestedPurpose = String(req.body?.purpose || 'seat_upgrade');
+      const leagueId = Number(req.body?.leagueId || 0);
       const requestedGolfers = Math.max(
         0,
         Number(req.body?.requestedGolfers ?? req.body?.quantity ?? BILLING_MIN_GOLFERS)
       );
-      const successUrl = getCheckoutRedirectUrl(req.body?.successUrl, DEFAULT_SUCCESS_URL);
+      const successUrl = withCheckoutSessionId(
+        getCheckoutRedirectUrl(req.body?.successUrl, DEFAULT_SUCCESS_URL),
+      );
       const cancelUrl = getCheckoutRedirectUrl(req.body?.cancelUrl, DEFAULT_CANCEL_URL);
 
-      if (!['registration', 'seat_upgrade'].includes(purpose)) {
+      if (!isCheckoutPurpose(requestedPurpose)) {
         return res.status(400).json({ message: 'Invalid checkout purpose' });
       }
+      const purpose = requestedPurpose;
       if (!Number.isInteger(requestedGolfers) || requestedGolfers < 1 || requestedGolfers > 10000) {
         return res.status(400).json({ message: 'Requested golfers must be a whole number from 1 to 10000' });
       }
@@ -196,16 +405,62 @@ class PaymentController {
       const currentBillingMetadata = getBillingMetadata(currentMetadata);
       const currentIncludedGolfers = Math.max(0, Number(currentBillingMetadata.includedGolfers || 0));
 
+      let capacityLeague: { id: number; numPlayers: number } | null = null;
+      if (purpose === 'league_capacity') {
+        if (!Number.isInteger(leagueId) || leagueId <= 0) {
+          return res.status(400).json({ message: 'League ID is required for a capacity upgrade' });
+        }
+        capacityLeague = await prisma.league.findFirst({
+          where: { id: leagueId, adminId: user.id, deletedAt: null },
+          select: { id: true, numPlayers: true },
+        });
+        if (!capacityLeague) {
+          return res.status(404).json({ message: 'League not found' });
+        }
+      }
+
       const targetGolfers =
-        purpose === 'registration'
+        purpose === 'league_capacity' && capacityLeague
+          ? Math.max(capacityLeague.numPlayers, requestedGolfers)
+          : purpose === 'registration'
           ? Math.max(BILLING_MIN_GOLFERS, requestedGolfers || BILLING_MIN_GOLFERS)
           : Math.max(currentIncludedGolfers, requestedGolfers);
       const quantity = Math.max(
         0,
-        purpose === 'registration'
-          ? targetGolfers - currentIncludedGolfers
-          : targetGolfers - currentIncludedGolfers
+        purpose === 'league_capacity' && capacityLeague
+          ? targetGolfers - capacityLeague.numPlayers
+          : targetGolfers - currentIncludedGolfers,
       );
+
+      const allocatedGolfers = await getAllocatedGolfersForAdmin(user.id);
+      const billingState = getBillingState(currentMetadata, allocatedGolfers);
+      if (billingState.paymentExempt) {
+        if (purpose === 'league_capacity' && capacityLeague) {
+          await prisma.$transaction(async (tx) => {
+            await lockAdminBilling(tx, user.id);
+            await lockLeagueCapacity(tx, capacityLeague.id);
+            const lockedLeague = await tx.league.findFirst({
+              where: { id: capacityLeague.id, adminId: user.id, deletedAt: null },
+              select: { id: true, numPlayers: true },
+            });
+            if (!lockedLeague) throw new Error('League not found');
+            await tx.league.update({
+              where: { id: lockedLeague.id },
+              data: { numPlayers: Math.max(lockedLeague.numPlayers, targetGolfers) },
+            });
+          });
+        }
+        return res.status(200).json({
+          alreadyCovered: true,
+          paymentExempt: true,
+          sessionId: null,
+          url: null,
+          customerId: currentStripeMetadata.customerId || null,
+          priceId: DEFAULT_PRICE_ID || null,
+          quantity: 0,
+          targetGolfers,
+        });
+      }
 
       if (quantity <= 0) {
         return res.status(200).json({
@@ -219,16 +474,16 @@ class PaymentController {
         });
       }
 
-      let customerId: string | undefined = currentStripeMetadata.customerId;
-
-      if (!customerId) {
-        const customer = await stripe.customers.create({
-          email: user.email,
-          name: `${user.firstName} ${user.lastName}`,
-          metadata: { userId: String(user.id) },
-        });
-        customerId = customer.id;
+      if (!process.env.STRIPE_SECRET_KEY) {
+        return res.status(500).json({ message: 'Missing STRIPE_SECRET_KEY' });
       }
+
+      const customerId = await resolveStripeCustomerId(
+        typeof currentStripeMetadata.customerId === 'string'
+          ? currentStripeMetadata.customerId
+          : undefined,
+        user,
+      );
 
       const lineItem: Stripe.Checkout.SessionCreateParams.LineItem = DEFAULT_PRICE_ID
         ? {
@@ -241,6 +496,7 @@ class PaymentController {
               unit_amount: BILLING_PRICE_PER_GOLFER_CENTS,
               product_data: {
                 name: getProductName(purpose, quantity),
+                tax_code: PRODUCT_TAX_CODE,
               },
             },
             quantity,
@@ -257,6 +513,7 @@ class PaymentController {
           purpose,
           quantity: String(quantity),
           targetGolfers: String(targetGolfers),
+          ...(capacityLeague ? { leagueId: String(capacityLeague.id) } : {}),
         },
       });
 
@@ -296,10 +553,107 @@ class PaymentController {
         targetGolfers,
       });
     } catch (error: any) {
-      console.error('createCheckoutSession error:', error);
-      return res
-        .status(500)
-        .json({ message: error?.message || 'Failed to create checkout session' });
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'stripe:checkout-session-failed',
+          requestId: (req as Request & { requestId?: string }).requestId ?? null,
+          type: error?.type ?? null,
+          code: error?.code ?? null,
+          statusCode: error?.statusCode ?? null,
+          message: error?.message || 'Unknown Stripe checkout error',
+        }),
+      );
+      return res.status(500).json({ message: 'Failed to create checkout session' });
+    }
+  }
+
+  static async redeemPaymentBypassCode(req: Request, res: Response) {
+    try {
+      const userId = req.session.userId;
+      if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+
+      const billing = await redeemPaymentBypassCode(userId, req.body?.code);
+      if (!billing) {
+        return res.status(400).json({
+          message: 'That payment access code is invalid, expired, revoked, or already used.',
+        });
+      }
+
+      return res.status(200).json({
+        message: 'Payment access code applied. This account no longer requires checkout.',
+        billing,
+      });
+    } catch (error) {
+      console.error('redeemPaymentBypassCode error:', error);
+      return res.status(500).json({ message: 'Failed to apply payment access code' });
+    }
+  }
+
+  static async confirmCheckoutSession(req: Request, res: Response) {
+    const userId = req.session.userId;
+    if (!userId) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    const sessionId = String(req.params.sessionId || '').trim();
+    if (!/^cs_[A-Za-z0-9_]+$/.test(sessionId) || sessionId.length > 255) {
+      return res.status(400).json({ message: 'Invalid checkout session ID' });
+    }
+
+    try {
+      const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId, {
+        expand: ['payment_intent'],
+      });
+
+      if (String(checkoutSession.client_reference_id || '') !== String(userId)) {
+        return res.status(404).json({ message: 'Checkout session not found' });
+      }
+
+      const status = getCheckoutConfirmationStatus(checkoutSession);
+      const returnedPurpose = String(checkoutSession.metadata?.purpose || 'seat_upgrade');
+      const purpose: CheckoutPurpose = isCheckoutPurpose(returnedPurpose)
+        ? returnedPurpose
+        : 'seat_upgrade';
+
+      if (status === 'succeeded') {
+        const updatedUser = await applyCompletedCheckoutSession(checkoutSession);
+        if (!updatedUser || updatedUser.id !== userId) {
+          throw new Error('Paid checkout could not be applied to the current account');
+        }
+      }
+
+      return res.status(200).json({
+        sessionId: checkoutSession.id,
+        status,
+        purpose,
+        message:
+          status === 'processing'
+            ? 'Your payment is still processing. Your saved work is safe; try confirming again shortly.'
+            : status === 'failed'
+              ? 'The payment was not completed. Your saved work is safe, and you can try checkout again.'
+              : null,
+      });
+    } catch (error: any) {
+      const notFound = isMissingStripeResource(error);
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'stripe:checkout-confirmation-failed',
+          requestId: (req as Request & { requestId?: string }).requestId ?? null,
+          sessionId,
+          userId,
+          type: error?.type ?? null,
+          code: error?.code ?? null,
+          statusCode: error?.statusCode ?? null,
+          message: error?.message || 'Unknown Stripe checkout confirmation error',
+        }),
+      );
+      return res.status(notFound ? 404 : 503).json({
+        message: notFound
+          ? 'Checkout session not found'
+          : 'We could not confirm the payment right now. Your saved work is safe; please try again.',
+      });
     }
   }
 
@@ -322,7 +676,11 @@ class PaymentController {
           ? initialStripeState.lastCheckoutSessionId
           : '';
 
-      if (lastCheckoutSessionId && initialStripeState?.lastCheckoutStatus !== 'completed') {
+      if (
+        !isPaymentExempt(initialMetadata) &&
+        lastCheckoutSessionId &&
+        initialStripeState?.lastCheckoutStatus !== 'completed'
+      ) {
         const checkoutSession = await stripe.checkout.sessions.retrieve(lastCheckoutSessionId);
         const updatedUser = await applyCompletedCheckoutSession(checkoutSession);
         if (updatedUser && updatedUser.id === user?.id) {
@@ -338,7 +696,7 @@ class PaymentController {
       return res.status(200).json({ stripe: stripeState, billing: billingState });
     } catch (error: any) {
       console.error('getStripeState error:', error);
-      return res.status(500).json({ message: error?.message || 'Failed to read Stripe state' });
+      return res.status(500).json({ message: 'Failed to read Stripe state' });
     }
   }
 
@@ -363,15 +721,22 @@ class PaymentController {
     }
 
     try {
-      if (event.type === 'checkout.session.completed') {
+      if (
+        event.type === 'checkout.session.completed' ||
+        event.type === 'checkout.session.async_payment_succeeded'
+      ) {
         const session = event.data.object as Stripe.Checkout.Session;
         await applyCompletedCheckoutSession(session);
+      } else if (event.type === 'charge.refunded') {
+        await applyRefundedCharge(event.data.object as Stripe.Charge);
+      } else if (event.type === 'charge.dispute.closed') {
+        await applyLostDispute(event.data.object as Stripe.Dispute);
       }
 
       return res.json({ received: true });
     } catch (error: any) {
       console.error('handleWebhook error:', error);
-      return res.status(500).json({ message: error?.message || 'Webhook handling failed' });
+      return res.status(500).json({ message: 'Webhook handling failed' });
     }
   }
 }

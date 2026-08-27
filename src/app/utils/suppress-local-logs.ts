@@ -12,5 +12,4 @@ if (isLocalRuntime && process.env.LOCAL_SERVER_LOGS !== 'true') {
   console.info = () => undefined;
   console.log = () => undefined;
   console.warn = () => undefined;
-  console.error = () => undefined;
 }

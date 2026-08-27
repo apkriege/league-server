@@ -4,18 +4,45 @@ import EventService from '../models/event';
 import LeagueService from '../models/league';
 import { extractTeamId, FlightGen } from '../services/flightGen';
 import {
+  normalizeEventFlightTeamIds,
+  resolveEventFlightTeams,
+} from '../services/eventTeamResolution';
+import {
   normalizeEventFormat,
   normalizeScoringFormat,
   validateEventMode,
 } from '../utils/event-mode';
-import { buildEventScoreAccess, getLeagueScoreOrder } from '../utils/score-order';
+import { buildEventScoreAccess } from '../utils/score-order';
 import { writeAuditLog } from '../utils/audit';
 import { getPublicErrorResponse } from '../utils/error-response';
-
-import dayjs from 'dayjs';
-import customParseFormat from 'dayjs/plugin/customParseFormat';
 import { EventMetrics } from '../services/eventMetrics';
-dayjs.extend(customParseFormat);
+import { localEventTimeToUtc, normalizeTimeZone } from '../utils/time-zone';
+import {
+  calculateLeaguePlayingHandicap,
+  modelTeeForRound,
+  selectRoundHoles,
+} from '../utils/tee-rating';
+import {
+  getHandicapHoleBasis,
+  normalizeLeagueHoleFormat,
+  validateEventHolesForLeague,
+} from '../utils/league-hole-format';
+import {
+  normalizeLeagueScoringPeriods,
+  scoringPeriodDateKey,
+} from '../utils/league-scoring-periods';
+
+const canManageLeagueScores = async (req: Request, leagueId: number) => {
+  const role = String(req.user?.role || '').toUpperCase();
+  if (role === 'SUPER') return true;
+  if (role !== 'ADMIN' || !req.session.userId) return false;
+
+  const league = await prisma.league.findFirst({
+    where: { id: leagueId, adminId: req.session.userId, deletedAt: null },
+    select: { id: true },
+  });
+  return Boolean(league);
+};
 
 class EventController {
   static getAdminEvent = async (req: Request, res: Response) => {
@@ -52,6 +79,7 @@ class EventController {
       const events = await prisma.event.findMany({
         where: { leagueId, isDeleted: false, deletedAt: null },
         include: {
+          _count: { select: { rounds: true } },
           course: true,
           tee: {
             select: {
@@ -61,13 +89,16 @@ class EventController {
             },
           },
           flights: {
+            orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
             include: {
               players: {
+                orderBy: { id: 'asc' },
                 include: {
                   player: true,
                 },
               },
               teams: {
+                orderBy: { id: 'asc' },
                 include: {
                   team: {
                     include: {
@@ -79,14 +110,15 @@ class EventController {
             },
           },
         },
-        orderBy: [{ date: 'asc' }, { id: 'asc' }],
+        orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
       });
-      const scoreOrder = await getLeagueScoreOrder(leagueId);
-
+      const canManageScores = await canManageLeagueScores(req, leagueId);
       res.status(200).send(
         events.map((event: any) => ({
           ...event,
-          ...buildEventScoreAccess(Number(event.id), scoreOrder),
+          ...(canManageScores
+            ? buildEventScoreAccess(event)
+            : { canEnterScores: false, canEditScores: false }),
         })),
       );
     } catch (error) {
@@ -102,63 +134,69 @@ class EventController {
       const leagueId = Number(req.params.leagueId);
       const eventId = Number(req.params.eventId);
 
-      const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
-        include: {
-          course: true,
-          tee: true,
-          flights: {
-            include: {
-              players: {
-                include: {
-                  player: {
-                    include: {
-                      team: true,
-                      rounds: {
-                        take: 1,
-                        where: { eventId },
-                        include: {
-                          scores: {
-                            select: {
-                              hole: true,
-                              gross: true,
+      const [event, metrics, canManageScores] = await Promise.all([
+        prisma.event.findFirst({
+          where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+          include: {
+            _count: { select: { rounds: true } },
+            league: { select: { holeFormat: true } },
+            course: true,
+            tee: true,
+            flights: {
+              orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+              include: {
+                players: {
+                  orderBy: { id: 'asc' },
+                  include: {
+                    player: {
+                      include: {
+                        team: true,
+                        rounds: {
+                          take: 1,
+                          where: { eventId, deletedAt: null },
+                          include: {
+                            scores: {
+                              select: {
+                                hole: true,
+                                gross: true,
+                              },
+                              orderBy: { hole: 'asc' },
                             },
-                            orderBy: { hole: 'asc' },
                           },
                         },
                       },
                     },
                   },
                 },
-              },
-              teams: {
-                include: {
-                  team: {
-                    include: {
-                      players: true,
+                teams: {
+                  orderBy: { id: 'asc' },
+                  include: {
+                    team: {
+                      include: {
+                        players: true,
+                      },
                     },
                   },
                 },
               },
             },
           },
-        },
-      });
+        }),
+        new EventMetrics(eventId, leagueId).processEvent(),
+        canManageLeagueScores(req, leagueId),
+      ]);
 
       if (!event) {
         res.status(404).send('Event not found');
         return;
       }
 
-      const scoreOrder = await getLeagueScoreOrder(leagueId);
-
-      const metrics = new EventMetrics(eventId);
-      const x = await metrics.processEvent();
-
       const eventWithMetrics = {
-        ...event,
-        ...buildEventScoreAccess(Number(event.id), scoreOrder),
-        metrics: x,
+        ...addEventRoundSetup(event),
+        ...(canManageScores
+          ? buildEventScoreAccess(event)
+          : { canEnterScores: false, canEditScores: false }),
+        metrics,
       };
 
       res.status(200).send(eventWithMetrics);
@@ -277,9 +315,17 @@ class EventController {
       }
 
       validateEventDateWithinLeague(eventData?.date, league);
+      const eventHoles = validateEventHolesForLeague(league.holeFormat, eventData?.holes);
 
       const newEvent = await prisma.$transaction(async (tx: any) => {
-        await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+        const roundConfig = await validateCourseAndTee(
+          tx,
+          eventData?.courseId,
+          eventData?.teeId,
+          eventHoles,
+          eventData?.startSide,
+        );
+        const timeZone = roundConfig.timeZone;
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
         const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
         const pointsEnabled = eventData?.pointsEnabled !== false;
@@ -304,6 +350,7 @@ class EventController {
         );
 
         const { flights, ...e } = normalizedEventData;
+        const startsAt = localEventTimeToUtc(e.date, e.startTime, timeZone);
 
         const created = await tx.event.create({
           data: {
@@ -312,9 +359,9 @@ class EventController {
             courseId: Number(e.courseId),
             teeId: Number(e.teeId),
             name: e.name,
-            date: toEventDateTime(e.date),
-            startTime: e.startTime,
-            startSide: e.startSide,
+            startsAt,
+            timeZone,
+            startSide: roundConfig.startSide,
             interval: e.interval,
             format: forcedFormat,
             scoringFormat: normalizedScoringFormat,
@@ -329,7 +376,7 @@ class EventController {
               pointsEnabled,
             ),
             type: e.type,
-            holes: e.holes,
+            holes: roundConfig.holes,
             ...(createdLeagueTeams.length > 0
               ? {
                   teams: {
@@ -343,7 +390,17 @@ class EventController {
         const leagueForFlights =
           createdLeagueTeams.length > 0 ? { ...league, teams: createdLeagueTeams } : league;
 
-        const flightGen = new FlightGen(leagueForFlights, normalizedEventData, created.id, tx);
+        const flightGen = new FlightGen(
+          leagueForFlights,
+          {
+            ...normalizedEventData,
+            startsAt,
+            holes: roundConfig.holes,
+            startSide: roundConfig.startSide,
+          },
+          created.id,
+          tx,
+        );
         await flightGen.saveFlights();
 
         return created;
@@ -377,6 +434,14 @@ class EventController {
     try {
       const leagueId = Number(req.params.leagueId);
       const eventsData = req.body.events;
+      const hasScoringPeriodsPayload = Object.prototype.hasOwnProperty.call(
+        req.body,
+        'scoringPeriods',
+      );
+
+      if (!Array.isArray(eventsData) || eventsData.length === 0) {
+        throw new Error('At least one event is required.');
+      }
 
       const league = await LeagueService.query().findFirst({
         where: { id: leagueId, deletedAt: null },
@@ -400,14 +465,87 @@ class EventController {
         return;
       }
 
+      if (normalizeLeagueHoleFormat(league.holeFormat) === 'mixed') {
+        throw new Error(
+          'Invalid schedule generation: mixed 9/18-hole leagues require events to be created individually.',
+        );
+      }
+
+      const scoringPeriods = hasScoringPeriodsPayload
+        ? normalizeLeagueScoringPeriods(req.body.scoringPeriods, league)
+        : [];
+
+      if (scoringPeriods.length > 0) {
+        const uncoveredEvent = eventsData.find((eventData: any) => {
+          const eventDate = scoringPeriodDateKey(eventData?.date);
+          return !scoringPeriods.some(
+            (period) =>
+              eventDate >= scoringPeriodDateKey(period.startDate) &&
+              eventDate <= scoringPeriodDateKey(period.endDate),
+          );
+        });
+        if (uncoveredEvent) {
+          throw new Error('Every generated event must fall within a scoring period.');
+        }
+      }
+
+      if (hasScoringPeriodsPayload) {
+        const [existingPeriods, scoredRoundCount] = await Promise.all([
+          prisma.league_scoring_period.findMany({
+            where: { leagueId },
+            orderBy: { position: 'asc' },
+          }),
+          prisma.round.count({
+            where: {
+              deletedAt: null,
+              scores: { some: {} },
+              event: { leagueId, isDeleted: false, deletedAt: null },
+            },
+          }),
+        ]);
+        const existingKey = existingPeriods
+          .map(
+            (period) =>
+              `${period.name}|${scoringPeriodDateKey(period.startDate)}|${scoringPeriodDateKey(period.endDate)}`,
+          )
+          .join('::');
+        const requestedKey = scoringPeriods
+          .map(
+            (period) =>
+              `${period.name}|${scoringPeriodDateKey(period.startDate)}|${scoringPeriodDateKey(period.endDate)}`,
+          )
+          .join('::');
+        if (scoredRoundCount > 0 && existingKey !== requestedKey) {
+          throw new Error('Scoring period dates cannot change after scores have been recorded.');
+        }
+      }
+
       for (const eventData of eventsData) {
         validateEventDateWithinLeague(eventData?.date, league);
+        validateEventHolesForLeague(league.holeFormat, eventData?.holes);
       }
 
       const createdEvents = await prisma.$transaction(async (tx: any) => {
+        if (hasScoringPeriodsPayload) {
+          await tx.league_scoring_period.deleteMany({ where: { leagueId } });
+          if (scoringPeriods.length > 0) {
+            await tx.league_scoring_period.createMany({
+              data: scoringPeriods.map((period) => ({ ...period, leagueId })),
+            });
+          }
+        }
+
         const createdEventsInTransaction = [];
         for (const eventData of eventsData) {
-          await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+          const eventHoles = validateEventHolesForLeague(league.holeFormat, eventData?.holes);
+          const roundConfig = await validateCourseAndTee(
+            tx,
+            eventData?.courseId,
+            eventData?.teeId,
+            eventHoles,
+            eventData?.startSide,
+          );
+          const timeZone = roundConfig.timeZone;
           const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
           const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
           const pointsEnabled = eventData?.pointsEnabled !== false;
@@ -425,6 +563,7 @@ class EventController {
             pointsEnabled,
             strokePoints: normalizedStrokePoints,
           };
+          const startsAt = localEventTimeToUtc(e.date, e.startTime, timeZone);
 
           const createdEvent = await tx.event.create({
             data: {
@@ -433,9 +572,9 @@ class EventController {
               courseId: Number(e.courseId),
               teeId: Number(e.teeId),
               name: e.name,
-              date: toEventDateTime(e.date),
-              startTime: e.startTime,
-              startSide: e.startSide,
+              startsAt,
+              timeZone,
+              startSide: roundConfig.startSide,
               interval: e.interval,
               format: forcedFormat,
               scoringFormat: normalizedScoringFormat,
@@ -450,13 +589,20 @@ class EventController {
                 pointsEnabled,
               ),
               type: e.type,
-              holes: e.holes,
+              holes: roundConfig.holes,
             },
           });
 
           const flightGen = new FlightGen(
             league,
-            { ...eventData, format: forcedFormat, scoringFormat: normalizedScoringFormat },
+            {
+              ...eventData,
+              startsAt,
+              holes: roundConfig.holes,
+              startSide: roundConfig.startSide,
+              format: forcedFormat,
+              scoringFormat: normalizedScoringFormat,
+            },
             createdEvent.id,
             tx,
           );
@@ -500,12 +646,17 @@ class EventController {
 
       const eventLeague = await prisma.league.findFirst({
         where: { id: leagueId, deletedAt: null },
-        select: { startDate: true, endDate: true },
+        select: { startDate: true, endDate: true, holeFormat: true },
       });
       if (!eventLeague) {
         return res.status(404).json({ message: 'League not found' });
       }
       validateEventDateWithinLeague(eventData?.date, eventLeague);
+      const eventHoles = validateEventHolesForLeague(
+        eventLeague.holeFormat,
+        eventData?.holes,
+      );
+      validateEditableEventDetails(eventData);
 
       const existingEvent = await prisma.event.findFirst({
         where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
@@ -542,20 +693,37 @@ class EventController {
 
       // have to delete and recreate flights to update players/teams in flights, which is the main reason for using a transaction here
       await prisma.$transaction(async (tx: any) => {
-        await validateCourseAndTee(tx, eventData?.courseId, eventData?.teeId);
+        const roundConfig = await validateCourseAndTee(
+          tx,
+          eventData?.courseId,
+          eventData?.teeId,
+          eventHoles,
+          eventData?.startSide,
+        );
+        const timeZone = roundConfig.timeZone;
+        eventData.holes = roundConfig.holes;
+        eventData.startSide = roundConfig.startSide;
+        const startsAt = localEventTimeToUtc(eventData.date, eventData.startTime, timeZone);
 
-        const flightIds = await tx.flight.findMany({
+        const existingFlights = await tx.flight.findMany({
           where: { eventId },
-          select: { id: true },
+          select: {
+            id: true,
+            teams: {
+              include: {
+                team: {
+                  include: {
+                    players: {
+                      where: { deletedAt: null },
+                      select: { id: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
         });
-        await tx.flight_player.deleteMany({
-          where: { flightId: { in: flightIds.map((f: { id: number }) => f.id) } },
-        });
-        await tx.flight_team.deleteMany({
-          where: { flightId: { in: flightIds.map((f: { id: number }) => f.id) } },
-        });
-        await tx.flight.deleteMany({ where: { eventId } });
-
+        const existingFlightTeams = existingFlights.flatMap((flight: any) => flight.teams);
         const league = await LeagueService.query().findFirst({
           where: { id: leagueId, deletedAt: null },
           include: {
@@ -578,6 +746,22 @@ class EventController {
         }
 
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
+        if (forcedFormat === 'team') {
+          eventData.flights = normalizeEventFlightTeamIds(
+            eventData.flights,
+            existingFlightTeams,
+            eventData.teams,
+          );
+        }
+        const flightIds = existingFlights.map((flight: any) => flight.id);
+        await tx.flight_player.deleteMany({
+          where: { flightId: { in: flightIds } },
+        });
+        await tx.flight_team.deleteMany({
+          where: { flightId: { in: flightIds } },
+        });
+        await tx.flight.deleteMany({ where: { eventId } });
+
         const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
         const pointsEnabled = eventData?.pointsEnabled !== false;
         const normalizedStrokePoints = normalizeStrokePoints(
@@ -598,12 +782,12 @@ class EventController {
             courseId: Number(eventData.courseId),
             teeId: Number(eventData.teeId),
             name: eventData.name,
-            date: toEventDateTime(eventData.date),
+            startsAt,
+            timeZone,
             type: eventData.type,
             holes: eventData.holes,
-            startTime: eventData.startTime,
             startSide: eventData.startSide,
-            interval: eventData.interval,
+            interval: Number(eventData.interval),
             format: forcedFormat,
             scoringFormat: normalizedScoringFormat,
             pointsEnabled,
@@ -619,7 +803,26 @@ class EventController {
           },
         });
 
-        const flightGen = new FlightGen(league, eventData, eventId, tx);
+        const resolvedTeams =
+          forcedFormat === 'team'
+            ? await resolveEventFlightTeams(tx, leagueId, eventId, eventData.flights)
+            : league.teams;
+        const teamsForFlights = Array.from(
+          new Map(
+            [
+              ...resolvedTeams,
+              ...existingFlightTeams
+                .map((entry: any) => entry.team)
+                .filter(Boolean),
+            ].map((team: any) => [Number(team.id), team]),
+          ).values(),
+        );
+        const flightGen = new FlightGen(
+          { ...league, teams: teamsForFlights },
+          { ...eventData, startsAt },
+          eventId,
+          tx,
+        );
         await flightGen.saveFlights();
       });
 
@@ -750,27 +953,6 @@ class EventController {
 
 export default EventController;
 
-const toEventDateTime = (input: unknown): Date => {
-  if (input instanceof Date) return input;
-
-  if (typeof input === 'string') {
-    const trimmed = input.trim();
-
-    const dateOnly = dayjs(trimmed, 'YYYY-MM-DD', true);
-    if (dateOnly.isValid()) {
-      // Store date-only payloads at noon UTC so US local rendering does not shift to the prior day.
-      return new Date(`${trimmed}T12:00:00.000Z`);
-    }
-
-    const dt = new Date(trimmed);
-    if (!Number.isNaN(dt.getTime())) {
-      return dt;
-    }
-  }
-
-  throw new Error('Invalid event date. Expected YYYY-MM-DD or ISO-8601 DateTime.');
-};
-
 const toDateOnlyKey = (input: unknown): string => {
   if (input instanceof Date && !Number.isNaN(input.getTime())) {
     return input.toISOString().slice(0, 10);
@@ -802,7 +984,28 @@ const validateEventDateWithinLeague = (eventDate: unknown, league: any) => {
   }
 };
 
-const validateCourseAndTee = async (db: any, rawCourseId: unknown, rawTeeId: unknown) => {
+const validateEditableEventDetails = (eventData: any) => {
+  if (!String(eventData?.name || '').trim()) {
+    throw new Error('Event name is required.');
+  }
+
+  const interval = Number(eventData?.interval);
+  if (!Number.isInteger(interval) || interval < 1 || interval > 180) {
+    throw new Error('Event interval must be a whole number from 1 to 180 minutes.');
+  }
+
+  if (!String(eventData?.type || '').trim()) {
+    throw new Error('Event type is required.');
+  }
+};
+
+const validateCourseAndTee = async (
+  db: any,
+  rawCourseId: unknown,
+  rawTeeId: unknown,
+  rawHoles: unknown,
+  rawStartSide: unknown,
+) => {
   const courseId = Number(rawCourseId);
   const teeId = Number(rawTeeId);
   if (!Number.isInteger(courseId) || courseId <= 0 || !Number.isInteger(teeId) || teeId <= 0) {
@@ -816,12 +1019,64 @@ const validateCourseAndTee = async (db: any, rawCourseId: unknown, rawTeeId: unk
       deletedAt: null,
       course: { deletedAt: null },
     },
-    select: { id: true },
+    select: {
+      id: true,
+      holes: true,
+      course: {
+        select: {
+          timeZone: true,
+          numHoles: true,
+        },
+      },
+    },
   });
 
   if (!tee) {
     throw new Error('Selected tee does not belong to the selected course.');
   }
+
+  const selection = selectRoundHoles(tee, tee.course.numHoles, rawHoles, rawStartSide);
+  return {
+    timeZone: normalizeTimeZone(tee.course.timeZone),
+    holes: selection.holesPlayed,
+    startSide: selection.side,
+  };
+};
+
+const addEventRoundSetup = (event: any) => {
+  const selection = selectRoundHoles(
+    event.tee,
+    event.course?.numHoles,
+    event.holes,
+    event.startSide,
+  );
+
+  return {
+    ...event,
+    scoringHoles: selection.holes,
+    startSide: selection.side,
+    flights: (event.flights || []).map((flight: any) => ({
+      ...flight,
+      players: (flight.players || []).map((entry: any) => {
+        const player = entry.player;
+        const existingRound = player?.rounds?.[0];
+        const handicapIndex = Number(existingRound?.preHandicap ?? player?.handicap);
+        const tee = modelTeeForRound(event.tee, Number(event.holes), selection.side, {
+          courseHoles: event.course?.numHoles,
+          gender: player?.gender,
+        });
+        return {
+          ...entry,
+          handicapIndex,
+          courseHandicap: calculateLeaguePlayingHandicap(
+            handicapIndex,
+            tee,
+            getHandicapHoleBasis(event.league?.holeFormat),
+          ),
+        };
+      }),
+    })),
+  };
 };
 
 const normalizeStrokePoints = (

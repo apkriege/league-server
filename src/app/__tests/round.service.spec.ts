@@ -13,7 +13,9 @@ const event = {
   teeId: 2,
   holes: 9,
   startSide: 'front',
-  date: new Date('2026-04-16T12:00:00.000Z'),
+  startsAt: new Date('2026-04-16T12:00:00.000Z'),
+  timeZone: 'America/Detroit',
+  course: { numHoles: 18 },
   scoringFormat: 'match',
   isDeleted: false,
   deletedAt: null,
@@ -37,8 +39,8 @@ const buildDb = () => {
   const db: any = {
     event: { findFirst: vi.fn().mockResolvedValue(event) },
     player: {
-      findFirst: vi.fn().mockResolvedValue({ id: 1, handicap: 10, deletedAt: null }),
-      findUnique: vi.fn().mockResolvedValue({ id: 1, handicap: 10, rounds: [] }),
+      findFirst: vi.fn().mockResolvedValue({ id: 1, handicap: 10, gender: 'male', deletedAt: null }),
+      findUnique: vi.fn().mockResolvedValue({ id: 1, handicap: 10, gender: 'male', rounds: [] }),
       update: vi.fn().mockResolvedValue({}),
     },
     round: {
@@ -66,10 +68,52 @@ describe('Round service', () => {
 
     expect(db.round.create).toHaveBeenCalledTimes(1);
     const createdScores = db.score.createMany.mock.calls[0][0].data;
-    expect(createdScores.find((score: any) => score.hole === 1).net).toBe(2);
+    expect(createdScores.find((score: any) => score.hole === 1).net).toBe(3);
     expect(db.round.update).toHaveBeenCalledWith({
       where: { id: 11 },
       data: expect.objectContaining({ preHandicap: 10 }),
+    });
+  });
+
+  it('does not halve a stored 9-hole handicap for a 9-hole league', async () => {
+    db.event.findFirst.mockResolvedValue({
+      ...event,
+      league: { holeFormat: '9' },
+    });
+
+    await new Round(99, { playerId: 1, opponentId: 2, scores, points: 3 }, undefined, db).process();
+
+    const createdScores = db.score.createMany.mock.calls[0][0].data;
+    expect(createdScores.find((score: any) => score.hole === 1).net).toBe(2);
+  });
+
+  it('uses the rounded stored league handicap without a tee adjustment', async () => {
+    db.event.findFirst.mockResolvedValue({
+      ...event,
+      league: { holeFormat: '9' },
+    });
+    db.player.findFirst.mockResolvedValue({
+      id: 1,
+      handicap: 8.4,
+      gender: 'male',
+      deletedAt: null,
+    });
+    db.player.findUnique.mockResolvedValue({
+      id: 1,
+      handicap: 8.4,
+      startingHandicap: 8.4,
+      gender: 'male',
+      rounds: [],
+    });
+
+    await new Round(99, { playerId: 1, opponentId: 2, scores, points: 3 }, undefined, db).process();
+
+    const createdScores = db.score.createMany.mock.calls[0][0].data;
+    expect(createdScores.find((score: any) => score.hole === 8).net).toBe(3);
+    expect(createdScores.find((score: any) => score.hole === 9).net).toBe(4);
+    expect(db.round.update).toHaveBeenCalledWith({
+      where: { id: 11 },
+      data: expect.objectContaining({ courseHandicap: 8 }),
     });
   });
 

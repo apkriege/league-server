@@ -1,5 +1,11 @@
 import { prisma } from '../../prisma';
-import { modelTeeForRound } from '../utils/tee-rating';
+import {
+  calculateLeaguePlayingHandicap,
+  calculateRoundDifferential,
+  modelTeeForRound,
+} from '../utils/tee-rating';
+import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
+import { getHandicapHoleBasis } from '../utils/league-hole-format';
 
 interface ProcessedRound {
   roundId: number;
@@ -9,13 +15,13 @@ interface ProcessedRound {
   postHandicap: number;
   courseSlope: number;
   courseRating: number;
+  courseHandicap: number;
 }
 
 export class Handicap {
   private playerId: number;
   private player: any;
   private processedRounds: ProcessedRound[] = [];
-  private minRounds = 5; // minimum rounds required to calculate handicap
 
   constructor(playerId: number) {
     this.playerId = playerId;
@@ -40,6 +46,7 @@ export class Handicap {
           differential: processed.differential,
           courseRating: processed.courseRating,
           courseSlope: processed.courseSlope,
+          courseHandicap: processed.courseHandicap,
         },
       });
     }
@@ -62,34 +69,25 @@ export class Handicap {
         : this.processedRounds[this.processedRounds.length - 1].postHandicap;
     const diffs = this.processedRounds.map((r) => r.differential);
     const event = round.event;
-    const tee = this.modelTee(event.tee, event.holes, event.startSide);
+    const handicapHoleBasis = getHandicapHoleBasis(this.player.league?.holeFormat);
+    const tee = this.modelTee(
+      event.tee,
+      event.course?.numHoles,
+      event.holes,
+      event.startSide,
+      this.player.gender,
+    );
+    const courseHandicap = calculateLeaguePlayingHandicap(hcp, tee, handicapHoleBasis);
 
-    const diff = Number((((round.adjusted - tee.rating) * 113) / tee.slope).toFixed(2));
+    const diff = calculateRoundDifferential(round.adjusted, tee, hcp, handicapHoleBasis);
     diffs.push(diff);
 
-    const sortedDiffs = diffs.sort((a, b) => a - b);
-
-    let newHandicap: number;
-
-    // First time player
-    if (!this.player.handicap) {
-      newHandicap = Number((diff * 0.96).toFixed(2));
-    }
-    // Blend in player handicap when less than roundsToUse
-    else if (sortedDiffs.length < this.minRounds) {
-      const sum = sortedDiffs.reduce((a, b) => a + b, 0) + hcp;
-      const avg = sum / (sortedDiffs.length + 1);
-      newHandicap = Number((avg * 0.96).toFixed(2));
-    }
-    // 5+ rounds: use average of lowest 5
-    else {
-      const lowest5 = sortedDiffs.slice(0, this.minRounds);
-      const avg = lowest5.reduce((a, b) => a + b, 0) / this.minRounds;
-      newHandicap = Number((avg * 0.96).toFixed(2));
-    }
-
-    const teeAdjustment = tee.rating - tee.par || 0;
-    newHandicap = Number((newHandicap + teeAdjustment).toFixed(2));
+    const newHandicap =
+      calculateHandicapIndexFromDifferentials(
+        diffs,
+        hcp,
+        Number(this.player.startingHandicap),
+      ) ?? hcp;
 
     this.processedRounds.push({
       roundId: round.id,
@@ -99,6 +97,7 @@ export class Handicap {
       postHandicap: newHandicap,
       courseSlope: tee.slope,
       courseRating: tee.rating,
+      courseHandicap,
     });
   }
 
@@ -107,8 +106,9 @@ export class Handicap {
     const player = await prisma.player.findUnique({
       where: { id: this.playerId },
       include: {
+        league: { select: { holeFormat: true } },
         rounds: {
-          include: { event: { include: { tee: true } } },
+          include: { event: { include: { tee: true, course: true } } },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -121,7 +121,13 @@ export class Handicap {
     this.player = player;
   }
 
-  private modelTee(tee: any, numHoles: number, startSide: string) {
-    return modelTeeForRound(tee, numHoles, startSide);
+  private modelTee(
+    tee: any,
+    courseHoles: number,
+    numHoles: number,
+    startSide: string,
+    gender: string,
+  ) {
+    return modelTeeForRound(tee, numHoles, startSide, { courseHoles, gender });
   }
 }

@@ -7,7 +7,7 @@ class TempController {
       res.status(200).send('Hello, TypeScript with Express!');
     } catch (error) {
       console.error(error);
-      res.status(500).send(error);
+      res.status(500).json({ message: 'Internal server error' });
     }
   };
 }

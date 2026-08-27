@@ -12,6 +12,7 @@ const validationMessagePatterns = [
   /^Flight /i,
   /^Hole /i,
   /^Selected /i,
+  /^Scoring /i,
   /required/i,
   /not found/i,
   /already exists/i,
@@ -26,6 +27,36 @@ export function getErrorMessage(error: unknown, fallback = 'Internal server erro
 
 export function getPublicErrorResponse(error: unknown) {
   const message = getErrorMessage(error);
+  const httpError = error as {
+    status?: unknown;
+    statusCode?: unknown;
+    type?: unknown;
+  };
+  const status = Number(httpError?.status ?? httpError?.statusCode);
+
+  if (httpError?.type === 'entity.parse.failed') {
+    return { status: 400, message: 'Invalid JSON request body.' };
+  }
+
+  if (httpError?.type === 'entity.too.large') {
+    return { status: 413, message: 'Request body is too large.' };
+  }
+
+  if (httpError?.type === 'encoding.unsupported' || httpError?.type === 'charset.unsupported') {
+    return { status: 415, message: 'Unsupported request encoding.' };
+  }
+
+  if (httpError?.type === 'request.aborted') {
+    return { status: 400, message: 'Request was aborted.' };
+  }
+
+  if (error instanceof URIError) {
+    return { status: 400, message: 'Malformed request URL.' };
+  }
+
+  if (error instanceof Prisma.PrismaClientInitializationError) {
+    return { status: 503, message: 'Database is temporarily unavailable.' };
+  }
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
     if (error.code === 'P2002') {
@@ -40,12 +71,46 @@ export function getPublicErrorResponse(error: unknown) {
     return { status: 404, message };
   }
 
-  if (/cannot be edited|already exists/i.test(message)) {
+  if (/cannot be edited|cannot change|already exists/i.test(message)) {
     return { status: 409, message };
   }
 
   if (validationMessagePatterns.some((pattern) => pattern.test(message))) {
     return { status: 400, message };
+  }
+
+  const publicHttpMessages: Record<number, string> = {
+    400: 'Bad request.',
+    401: 'Not authenticated.',
+    402: 'Payment required.',
+    403: 'Forbidden.',
+    404: 'Route not found.',
+    405: 'Method not allowed.',
+    406: 'Not acceptable.',
+    408: 'Request timeout.',
+    409: 'Conflict.',
+    410: 'Resource no longer available.',
+    412: 'Precondition failed.',
+    413: 'Request body is too large.',
+    415: 'Unsupported media type.',
+    422: 'Request could not be processed.',
+    423: 'Resource is locked.',
+    429: 'Too many requests.',
+    431: 'Request headers are too large.',
+    502: 'Upstream service error.',
+    503: 'Service temporarily unavailable.',
+    504: 'Upstream service timeout.',
+  };
+  if (Number.isInteger(status) && publicHttpMessages[status]) {
+    return { status, message: publicHttpMessages[status] };
+  }
+
+  if (Number.isInteger(status) && status >= 400 && status < 500) {
+    return { status, message: 'Request failed.' };
+  }
+
+  if (Number.isInteger(status) && status >= 500 && status < 600) {
+    return { status, message: 'Internal server error' };
   }
 
   return { status: 500, message: 'Internal server error' };

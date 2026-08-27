@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../../prisma';
 import { writeAuditLog } from '../utils/audit';
-import { createNotification } from '../utils/notifications';
+import { sendLeagueInvitationEmail } from '../services/leagueInvitationEmail';
 
 const addDays = (days: number) => {
   const date = new Date();
@@ -16,19 +16,11 @@ const createInviteToken = () => crypto.randomBytes(24).toString('hex');
 class OperationsController {
   static getLeagueAnnouncements = async (req: Request, res: Response) => {
     const leagueId = Number(req.params.leagueId);
-    const userId = Number(req.session.userId);
 
     const announcements = await (prisma as any).league_announcement.findMany({
       where: {
         leagueId,
         deletedAt: null,
-        ...(userId
-          ? {
-              dismissals: {
-                none: { userId },
-              },
-            }
-          : {}),
       },
       include: {
         author: {
@@ -151,39 +143,36 @@ class OperationsController {
     res.status(200).json(announcement);
   };
 
-  static dismissLeagueAnnouncement = async (req: Request, res: Response) => {
+  static deleteLeagueAnnouncement = async (req: Request, res: Response) => {
     const leagueId = Number(req.params.leagueId);
     const announcementId = Number(req.params.announcementId);
     const userId = Number(req.session.userId);
 
-    if (!userId) {
-      return res.status(401).json({ message: 'Login is required to remove announcements.' });
-    }
-
     const existing = await (prisma as any).league_announcement.findFirst({
       where: { id: announcementId, leagueId, deletedAt: null },
-      select: { id: true },
+      select: { id: true, title: true },
     });
 
     if (!existing) {
       return res.status(404).json({ message: 'Announcement not found' });
     }
 
-    await (prisma as any).league_announcement_dismissal.upsert({
-      where: {
-        announcementId_userId: {
-          announcementId,
-          userId,
-        },
-      },
-      create: {
-        announcementId,
-        userId,
-      },
-      update: {},
+    await (prisma as any).league_announcement.update({
+      where: { id: announcementId },
+      data: { deletedAt: new Date() },
     });
 
-    res.status(200).json({ message: 'Announcement removed.' });
+    await writeAuditLog({
+      userId,
+      leagueId,
+      entity: 'league_announcement',
+      entityId: announcementId,
+      action: 'delete',
+      summary: `Removed league announcement "${existing.title}".`,
+      metadata: { title: existing.title },
+    });
+
+    res.status(200).json({ message: 'Announcement removed for all league members.' });
   };
 
   static getLeagueInvitations = async (req: Request, res: Response) => {
@@ -207,10 +196,6 @@ class OperationsController {
     const playerIds = Array.isArray(req.body?.playerIds)
       ? req.body.playerIds.map((id: unknown) => Number(id)).filter(Boolean)
       : [];
-    const emails = Array.isArray(req.body?.emails)
-      ? req.body.emails.map((email: unknown) => normalizeEmail(email)).filter(Boolean)
-      : [];
-
     const league = await prisma.league.findUnique({
       where: { id: leagueId },
       select: { id: true, name: true },
@@ -234,11 +219,10 @@ class OperationsController {
         email: normalizeEmail(player.email),
         name: `${player.firstName} ${player.lastName}`.trim(),
       })),
-      ...emails.map((email: string) => ({ playerId: null, email, name: email })),
     ].filter((target) => target.email);
 
     if (inviteTargets.length === 0) {
-      return res.status(400).json({ message: 'Select players or enter emails to invite.' });
+      return res.status(400).json({ message: 'Select at least one roster player with an email address.' });
     }
 
     const created = [];
@@ -281,7 +265,22 @@ class OperationsController {
       metadata: { invitationIds: created.map((invite) => invite.id) },
     });
 
-    res.status(201).json(created);
+    const delivery = await Promise.all(
+      created.map(async (invite) => ({
+        invitationId: invite.id,
+        email: invite.email,
+        result: await sendLeagueInvitationEmail({
+          invitationId: invite.id,
+          token: invite.token,
+          email: invite.email,
+          playerName:
+            inviteTargets.find((target) => target.email === invite.email)?.name || invite.email,
+          leagueName: league.name,
+        }),
+      })),
+    );
+
+    res.status(201).json({ invitations: created, delivery });
   };
 
   static revokeLeagueInvitation = async (req: Request, res: Response) => {
@@ -372,35 +371,36 @@ class OperationsController {
     }
 
     let player = invitation.player;
-    if (!player) {
+    if (!player || player.deletedAt) {
       player = await prisma.player.findFirst({
         where: { leagueId: invitation.leagueId, email: normalizedUserEmail, deletedAt: null },
       });
     }
 
-    if (player) {
-      await prisma.player.update({
-        where: { id: player.id },
-        data: { userId },
+    if (!player) {
+      return res.status(409).json({
+        message: 'The roster player for this invitation is no longer available.',
+      });
+    }
+    if (player.userId && player.userId !== userId) {
+      return res.status(409).json({
+        message: 'This roster player is already connected to another account.',
       });
     }
 
-    const claimed = await prisma.league_invitation.update({
-      where: { id: invitation.id },
-      data: {
-        status: 'claimed',
-        claimedById: userId,
-        claimedAt: new Date(),
-      },
-    });
-
-    await createNotification({
-      userId: invitation.league.adminId,
-      leagueId: invitation.leagueId,
-      type: 'invitation_claimed',
-      title: 'Player claimed invitation',
-      body: `${user.firstName} ${user.lastName} joined ${invitation.league.name}.`,
-      metadata: { invitationId: invitation.id, playerId: player?.id ?? null },
+    const claimed = await prisma.$transaction(async (tx) => {
+      await tx.player.update({
+        where: { id: player.id },
+        data: { userId },
+      });
+      return tx.league_invitation.update({
+        where: { id: invitation.id },
+        data: {
+          status: 'claimed',
+          claimedById: userId,
+          claimedAt: new Date(),
+        },
+      });
     });
 
     await writeAuditLog({
@@ -517,101 +517,6 @@ class OperationsController {
     res.status(200).json(logs);
   };
 
-  static createLeagueNotification = async (req: Request, res: Response) => {
-    const leagueId = Number(req.params.leagueId);
-    const userId = Number(req.session.userId);
-    const title = String(req.body?.title || '').trim();
-    const body = String(req.body?.body || '').trim();
-    const includeAdmin = Boolean(req.body?.includeAdmin ?? true);
-
-    if (!title || !body) {
-      return res.status(400).json({ message: 'Title and body are required.' });
-    }
-
-    const league = await prisma.league.findUnique({
-      where: { id: leagueId },
-      select: { id: true, name: true, adminId: true },
-    });
-
-    if (!league) {
-      return res.status(404).json({ message: 'League not found' });
-    }
-
-    const players = await prisma.player.findMany({
-      where: { leagueId, deletedAt: null, userId: { not: null } },
-      select: { userId: true },
-    });
-
-    const recipientIds = new Set<number>();
-    players.forEach((player) => {
-      if (player.userId) recipientIds.add(player.userId);
-    });
-    if (includeAdmin) recipientIds.add(league.adminId);
-
-    if (recipientIds.size === 0) {
-      return res.status(400).json({
-        message: 'No claimed league users found. Invite players before sending notifications.',
-      });
-    }
-
-    await prisma.notification.createMany({
-      data: [...recipientIds].map((recipientId) => ({
-        userId: recipientId,
-        leagueId,
-        type: 'league_announcement',
-        title,
-        body,
-        metadata: {
-          leagueId,
-          sentByUserId: userId,
-        },
-      })),
-    });
-
-    await writeAuditLog({
-      userId,
-      leagueId,
-      entity: 'notification',
-      action: 'create',
-      summary: `Sent league notification "${title}" to ${recipientIds.size} user${recipientIds.size === 1 ? '' : 's'}.`,
-      metadata: { title, recipientCount: recipientIds.size },
-    });
-
-    res.status(201).json({ message: 'Notification sent.', recipientCount: recipientIds.size });
-  };
-
-  static getNotifications = async (req: Request, res: Response) => {
-    const userId = Number(req.session.userId);
-    const notifications = await prisma.notification.findMany({
-      where: { userId, deletedAt: null },
-      orderBy: { createdAt: 'desc' },
-      take: 30,
-    });
-
-    res.status(200).json(notifications);
-  };
-
-  static markNotificationRead = async (req: Request, res: Response) => {
-    const userId = Number(req.session.userId);
-    const id = Number(req.params.id);
-    const notification = await prisma.notification.updateMany({
-      where: { id, userId },
-      data: { readAt: new Date() },
-    });
-
-    res.status(200).json(notification);
-  };
-
-  static clearNotification = async (req: Request, res: Response) => {
-    const userId = Number(req.session.userId);
-    const id = Number(req.params.id);
-    const notification = await prisma.notification.updateMany({
-      where: { id, userId, deletedAt: null },
-      data: { deletedAt: new Date() },
-    });
-
-    res.status(200).json(notification);
-  };
 }
 
 export default OperationsController;

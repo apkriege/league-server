@@ -3,13 +3,22 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 process.env.STRIPE_SECRET_KEY = 'sk_test_unit_test_only';
 
 const mockTx: any = {
+  $queryRaw: vi.fn(),
   stripe_checkout_completion: {
     findUnique: vi.fn(),
     create: vi.fn(),
+    update: vi.fn(),
   },
   user: {
     findFirst: vi.fn(),
     update: vi.fn(),
+  },
+  league: {
+    findFirst: vi.fn(),
+    update: vi.fn(),
+  },
+  player: {
+    count: vi.fn(),
   },
 };
 const transactionMock = vi.fn(async (callback: any) => callback(mockTx));
@@ -36,7 +45,12 @@ const session = {
 } as any;
 
 describe('Stripe checkout completion', async () => {
-  const { applyCompletedCheckoutSession } = await import('../controllers/payment');
+  const {
+    applyCompletedCheckoutSession,
+    applyRefundedCharge,
+    getCheckoutConfirmationStatus,
+    withCheckoutSessionId,
+  } = await import('../controllers/payment');
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -59,7 +73,9 @@ describe('Stripe checkout completion', async () => {
     expect(mockTx.stripe_checkout_completion.create).toHaveBeenCalledWith({
       data: {
         sessionId: 'cs_paid_once',
+        paymentIntentId: 'pi_1',
         userId: 7,
+        leagueId: null,
         purpose: 'seat_upgrade',
         quantity: 2,
         targetGolfers: 12,
@@ -75,5 +91,108 @@ describe('Stripe checkout completion', async () => {
 
     expect(mockTx.user.update).not.toHaveBeenCalled();
     expect(mockTx.stripe_checkout_completion.create).not.toHaveBeenCalled();
+  });
+
+  it('applies an additional-player payment only to its league capacity', async () => {
+    mockTx.stripe_checkout_completion.findUnique.mockResolvedValue(null);
+    mockTx.league.findFirst.mockResolvedValue({ id: 3, numPlayers: 8 });
+    mockTx.league.update.mockResolvedValue({ id: 3, numPlayers: 9 });
+
+    await applyCompletedCheckoutSession({
+      ...session,
+      id: 'cs_league_capacity',
+      metadata: {
+        purpose: 'league_capacity',
+        quantity: '1',
+        targetGolfers: '9',
+        leagueId: '3',
+      },
+    });
+
+    expect(mockTx.league.update).toHaveBeenCalledWith({
+      where: { id: 3 },
+      data: { numPlayers: 9 },
+    });
+    expect(mockTx.user.update.mock.calls[0][0].data.metadata.billing.includedGolfers).toBe(11);
+    expect(mockTx.stripe_checkout_completion.create).toHaveBeenCalledWith({
+      data: {
+        sessionId: 'cs_league_capacity',
+        paymentIntentId: 'pi_1',
+        userId: 7,
+        leagueId: 3,
+        purpose: 'league_capacity',
+        quantity: 1,
+        targetGolfers: 9,
+      },
+    });
+  });
+
+  it('does not grant seats for a completed but unpaid checkout', async () => {
+    await applyCompletedCheckoutSession({
+      ...session,
+      id: 'cs_unpaid',
+      payment_status: 'unpaid',
+      status: 'complete',
+    });
+
+    expect(transactionMock).not.toHaveBeenCalled();
+    expect(mockTx.user.update).not.toHaveBeenCalled();
+  });
+
+  it('adds the Stripe session placeholder before a URL fragment', () => {
+    expect(withCheckoutSessionId('https://app.example.com/leagues?checkout=success#review')).toBe(
+      'https://app.example.com/leagues?checkout=success&session_id={CHECKOUT_SESSION_ID}#review',
+    );
+  });
+
+  it('classifies paid, processing, and failed checkout returns', () => {
+    expect(getCheckoutConfirmationStatus(session)).toBe('succeeded');
+    expect(
+      getCheckoutConfirmationStatus({
+        ...session,
+        payment_status: 'unpaid',
+        payment_intent: { status: 'processing' },
+      }),
+    ).toBe('processing');
+    expect(
+      getCheckoutConfirmationStatus({
+        ...session,
+        payment_status: 'unpaid',
+        payment_intent: { status: 'requires_payment_method' },
+      }),
+    ).toBe('failed');
+  });
+
+  it('revokes refunded league capacity once without removing active golfers', async () => {
+    mockTx.stripe_checkout_completion.findUnique.mockResolvedValue({
+      id: 12,
+      userId: 7,
+      leagueId: 3,
+      purpose: 'league_capacity',
+      quantity: 2,
+      refundedQuantity: 0,
+    });
+    mockTx.league.findFirst.mockResolvedValue({ id: 3, numPlayers: 10 });
+    mockTx.player.count.mockResolvedValue(9);
+    mockTx.stripe_checkout_completion.update.mockResolvedValue({ id: 12 });
+
+    await applyRefundedCharge({
+      payment_intent: 'pi_1',
+      amount_refunded: 2000,
+      refunded: true,
+    } as any);
+
+    expect(mockTx.user.update.mock.calls[0][0].data.metadata.billing.includedGolfers).toBe(8);
+    expect(mockTx.league.update).toHaveBeenCalledWith({
+      where: { id: 3 },
+      data: { numPlayers: 9 },
+    });
+    expect(mockTx.stripe_checkout_completion.update).toHaveBeenCalledWith({
+      where: { id: 12 },
+      data: {
+        refundedQuantity: 2,
+        refundedAt: expect.any(Date),
+      },
+    });
   });
 });

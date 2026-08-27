@@ -2,6 +2,14 @@ import { Request, Response } from 'express';
 import PlayerService from '../models/player';
 import { prisma } from '../../prisma';
 import { writeAuditLog } from '../utils/audit';
+import { getHandicapHoleBasis } from '../utils/league-hole-format';
+import { normalizeGender, type Gender } from '../utils/tee-rating';
+import { lockLeagueCapacity } from '../services/billingLock';
+import {
+  getAllocatedGolfersForAdmin,
+  getBillingState,
+  isBillingCapacityCovered,
+} from '../utils/billing';
 
 const getMissingRequiredPlayerFields = (payload: any) => {
   const missing: string[] = [];
@@ -12,12 +20,38 @@ const getMissingRequiredPlayerFields = (payload: any) => {
 
   if (!String(payload.firstName ?? '').trim()) missing.push('firstName');
   if (!String(payload.lastName ?? '').trim()) missing.push('lastName');
-  if (!String(payload.email ?? '').trim()) missing.push('email');
-  if (!String(payload.type ?? '').trim()) missing.push('type');
+  try {
+    normalizeGender(payload.gender);
+  } catch {
+    missing.push('gender');
+  }
   if (!Number.isFinite(handicap)) missing.push('handicap');
 
   return missing;
 };
+
+type BatchPlayerData = {
+  leagueId: number;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+  gender: Gender;
+  handicap: number;
+  startingHandicap: number;
+  seasonPoints: number;
+  seasonRank: null;
+  type: string;
+  teamId: null;
+};
+
+type PlayerCapacityResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; currentGolfers: number; maxGolfers: number };
+
+const duplicatePlayerEmailMessage = 'A player with this email already exists in the league.';
+const playerCapacityMessage = 'Payment is required before making this golfer a regular player.';
+const accountBillingMessage = 'The league owner must resolve the account billing balance first.';
 
 export default class PlayerController {
   static getPlayers = async (_req: Request, res: Response): Promise<any> => {
@@ -51,7 +85,8 @@ export default class PlayerController {
                 select: {
                   id: true,
                   name: true,
-                  date: true,
+                  startsAt: true,
+                  timeZone: true,
                   startSide: true,
                 },
               },
@@ -108,6 +143,7 @@ export default class PlayerController {
       }
 
       const handicap = Number(payload.handicap);
+      const gender = normalizeGender(payload.gender);
       if (handicap < -10 || handicap > 54) {
         return res.status(400).json({ message: 'Handicap must be between -10 and 54' });
       }
@@ -119,50 +155,82 @@ export default class PlayerController {
       if (teamId != null && (!Number.isInteger(teamId) || teamId <= 0)) {
         return res.status(400).json({ message: 'Team id is invalid' });
       }
-      const league = await prisma.league.findFirst({
-        where: { id: Number(leagueId), deletedAt: null },
-        select: { id: true, numPlayers: true },
-      });
-
-      if (!league) {
-        return res.status(404).json({ message: 'League not found' });
-      }
-
-      if (teamId) {
-        const team = await prisma.team.findFirst({
-          where: { id: teamId, leagueId: Number(leagueId), deletedAt: null },
-          select: { id: true },
+      const numericLeagueId = Number(leagueId);
+      const normalizedEmail = String(payload.email || '').trim().toLowerCase() || null;
+      const result = await prisma.$transaction(async (tx): Promise<PlayerCapacityResult<any>> => {
+        await lockLeagueCapacity(tx, numericLeagueId);
+        const league = await tx.league.findFirst({
+          where: { id: numericLeagueId, deletedAt: null },
+          select: { id: true, numPlayers: true, adminId: true },
         });
-        if (!team) {
-          return res.status(400).json({ message: 'Selected team does not belong to this league' });
+        if (!league) throw new Error('League not found');
+
+        if (teamId) {
+          const team = await tx.team.findFirst({
+            where: { id: teamId, leagueId: numericLeagueId, deletedAt: null },
+            select: { id: true },
+          });
+          if (!team) throw new Error('Selected team does not belong to this league');
         }
-      }
 
-      const activePlayers = await prisma.player.count({
-        where: { leagueId: Number(leagueId), deletedAt: null },
+        if (normalizedEmail) {
+          const duplicate = await tx.player.findFirst({
+            where: { leagueId: numericLeagueId, email: normalizedEmail, deletedAt: null },
+            select: { id: true },
+          });
+          if (duplicate) throw new Error(duplicatePlayerEmailMessage);
+        }
+
+        const activePlayers =
+          playerType === 'player'
+            ? await tx.player.count({
+                where: { leagueId: numericLeagueId, type: 'player', deletedAt: null },
+              })
+            : 0;
+        if (playerType === 'player') {
+          const [admin, allocatedGolfers] = await Promise.all([
+            tx.user.findFirst({
+              where: { id: league.adminId, deletedAt: null },
+              select: { metadata: true },
+            }),
+            getAllocatedGolfersForAdmin(league.adminId, undefined, tx),
+          ]);
+          const billingState = getBillingState(admin?.metadata, allocatedGolfers);
+          if (!isBillingCapacityCovered(billingState, allocatedGolfers)) {
+            throw new Error(accountBillingMessage);
+          }
+        }
+        if (playerType === 'player' && activePlayers >= league.numPlayers) {
+          return { ok: false, currentGolfers: activePlayers, maxGolfers: league.numPlayers };
+        }
+
+        const created = await tx.player.create({
+          data: {
+            leagueId: numericLeagueId,
+            firstName: String(payload.firstName).trim(),
+            lastName: String(payload.lastName).trim(),
+            email: normalizedEmail,
+            phone: payload.phone ? String(payload.phone).trim() : null,
+            gender,
+            handicap,
+            startingHandicap: handicap,
+            seasonPoints: 0,
+            seasonRank: null,
+            type: playerType,
+            teamId,
+          },
+        });
+        return { ok: true, value: created };
       });
 
-      if (activePlayers >= Number(league.numPlayers || 0)) {
+      if (!result.ok) {
         return res.status(402).json({
-          message: `This league is currently capped at ${league.numPlayers} golfers. Increase your paid golfer count before adding more players.`,
-          currentGolfers: activePlayers,
-          maxGolfers: league.numPlayers,
+          message: `This league is currently paid for ${result.maxGolfers} regular golfers. Increase its paid golfer count before adding another regular player.`,
+          currentGolfers: result.currentGolfers,
+          maxGolfers: result.maxGolfers,
         });
       }
-
-      const created = await PlayerService.create({
-        leagueId: Number(leagueId),
-        firstName: String(payload.firstName).trim(),
-        lastName: String(payload.lastName).trim(),
-        email: String(payload.email).trim().toLowerCase(),
-        phone: payload.phone ? String(payload.phone).trim() : null,
-        handicap,
-        startingHandicap: handicap,
-        seasonPoints: 0,
-        seasonRank: null,
-        type: playerType,
-        teamId,
-      });
+      const created = result.value;
 
       await writeAuditLog({
         userId: req.session.userId ?? null,
@@ -175,8 +243,151 @@ export default class PlayerController {
 
       return res.status(201).json(created);
     } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      if (message === 'League not found') return res.status(404).json({ message });
+      if (message === duplicatePlayerEmailMessage) return res.status(409).json({ message });
+      if (message === accountBillingMessage) return res.status(402).json({ message });
+      if (message.includes('does not belong')) return res.status(400).json({ message });
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });
+    }
+  };
+
+  static createPlayers = async (req: Request, res: Response): Promise<any> => {
+    try {
+      const leagueId = Number(req.params.leagueId);
+      const players = Array.isArray(req.body?.players) ? req.body.players : [];
+      if (!Number.isInteger(leagueId) || leagueId <= 0) {
+        return res.status(400).json({ message: 'leagueId is required' });
+      }
+      if (players.length < 1 || players.length > 250) {
+        return res.status(400).json({ message: 'Add between 1 and 250 players at a time' });
+      }
+
+      const normalizedPlayers: BatchPlayerData[] = players.map((payload: any, index: number) => {
+        const missing = getMissingRequiredPlayerFields(payload);
+        if (missing.length > 0) {
+          throw new Error(`Player ${index + 1} is missing required fields: ${missing.join(', ')}`);
+        }
+        const handicap = Number(payload.handicap);
+        const gender = normalizeGender(payload.gender);
+        if (handicap < -10 || handicap > 54) {
+          throw new Error(`Player ${index + 1} handicap must be between -10 and 54`);
+        }
+        const rawType = String(payload.type || 'player').trim().toLowerCase();
+        const type = rawType === 'sub' ? 'substitute' : rawType;
+        if (!['player', 'substitute', 'captain'].includes(type)) {
+          throw new Error(`Player ${index + 1} type is invalid`);
+        }
+        return {
+          leagueId,
+          firstName: String(payload.firstName).trim(),
+          lastName: String(payload.lastName).trim(),
+          email: String(payload.email || '').trim().toLowerCase() || null,
+          phone: payload.phone ? String(payload.phone).trim() : null,
+          gender,
+          handicap,
+          startingHandicap: handicap,
+          seasonPoints: 0,
+          seasonRank: null,
+          type,
+          teamId: null,
+        };
+      });
+
+      const incomingEmails = normalizedPlayers
+        .map((player) => player.email)
+        .filter((email): email is string => Boolean(email));
+      if (new Set(incomingEmails).size !== incomingEmails.length) {
+        return res.status(409).json({ message: 'Every player email in the batch must be unique.' });
+      }
+
+      const result = await prisma.$transaction(async (tx): Promise<PlayerCapacityResult<any[]>> => {
+        await lockLeagueCapacity(tx, leagueId);
+        const league = await tx.league.findFirst({
+          where: { id: leagueId, deletedAt: null },
+          select: { id: true, numPlayers: true, adminId: true },
+        });
+        if (!league) throw new Error('League not found');
+
+        if (incomingEmails.length > 0) {
+          const duplicate = await tx.player.findFirst({
+            where: { leagueId, email: { in: incomingEmails }, deletedAt: null },
+            select: { id: true },
+          });
+          if (duplicate) throw new Error(duplicatePlayerEmailMessage);
+        }
+
+        const regularPlayerCount = await tx.player.count({
+          where: { leagueId, type: 'player', deletedAt: null },
+        });
+        const incomingRegularPlayers = normalizedPlayers.filter(
+          (player) => player.type === 'player',
+        ).length;
+        if (incomingRegularPlayers > 0) {
+          const [admin, allocatedGolfers] = await Promise.all([
+            tx.user.findFirst({
+              where: { id: league.adminId, deletedAt: null },
+              select: { metadata: true },
+            }),
+            getAllocatedGolfersForAdmin(league.adminId, undefined, tx),
+          ]);
+          if (!isBillingCapacityCovered(
+            getBillingState(admin?.metadata, allocatedGolfers),
+            allocatedGolfers,
+          )) {
+            throw new Error(accountBillingMessage);
+          }
+        }
+        if (regularPlayerCount + incomingRegularPlayers > league.numPlayers) {
+          return {
+            ok: false,
+            currentGolfers: regularPlayerCount,
+            maxGolfers: league.numPlayers,
+          };
+        }
+
+        const created = [];
+        for (const player of normalizedPlayers) {
+          created.push(await tx.player.create({ data: player }));
+        }
+        return { ok: true, value: created };
+      });
+
+      if (!result.ok) {
+        const additionalGolfersRequired =
+          normalizedPlayers.filter((player) => player.type === 'player').length -
+          (result.maxGolfers - result.currentGolfers);
+        return res.status(402).json({
+          message: `Payment is required for ${additionalGolfersRequired} additional regular ${additionalGolfersRequired === 1 ? 'player' : 'players'}.`,
+          currentGolfers: result.currentGolfers,
+          maxGolfers: result.maxGolfers,
+          additionalGolfersRequired,
+        });
+      }
+      const created = result.value;
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'player',
+        entityId: null,
+        action: 'create_batch',
+        summary: `Added ${created.length} players to the league.`,
+      });
+      return res.status(201).json(created);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      const status = message === 'League not found'
+        ? 404
+          : message === duplicatePlayerEmailMessage
+          ? 409
+          : message === accountBillingMessage
+            ? 402
+          : message.startsWith('Player ')
+            ? 400
+            : 500;
+      if (status === 500) console.error(error);
+      return res.status(status).json({ message });
     }
   };
 
@@ -198,13 +409,14 @@ export default class PlayerController {
 
       const existingPlayer = await prisma.player.findFirst({
         where: { id: Number(id), deletedAt: null },
-        select: { id: true, leagueId: true },
+        select: { id: true, leagueId: true, type: true },
       });
       if (!existingPlayer) {
         return res.status(404).json({ message: 'Player not found' });
       }
 
       const handicap = Number(payload.handicap);
+      const gender = normalizeGender(payload.gender);
       if (handicap < -10 || handicap > 54) {
         return res.status(400).json({ message: 'Handicap must be between -10 and 54' });
       }
@@ -219,23 +431,16 @@ export default class PlayerController {
       if (teamId != null && (!Number.isInteger(teamId) || teamId <= 0)) {
         return res.status(400).json({ message: 'Team id is invalid' });
       }
-      if (payload.teamId !== undefined && teamId) {
-        const team = await prisma.team.findFirst({
-          where: { id: teamId, leagueId: existingPlayer.leagueId, deletedAt: null },
-          select: { id: true },
-        });
-        if (!team) {
-          return res.status(400).json({ message: 'Selected team does not belong to this league' });
-        }
-      }
-
       const data: any = {
         ...(payload.firstName != null ? { firstName: String(payload.firstName).trim() } : {}),
         ...(payload.lastName != null ? { lastName: String(payload.lastName).trim() } : {}),
-        ...(payload.email != null ? { email: String(payload.email).trim().toLowerCase() } : {}),
+        ...(payload.email !== undefined
+          ? { email: String(payload.email || '').trim().toLowerCase() || null }
+          : {}),
         ...(payload.phone !== undefined
           ? { phone: payload.phone ? String(payload.phone).trim() : null }
           : {}),
+        gender,
         ...(payload.type != null ? { type: playerType } : {}),
         ...(payload.handicap != null ? { handicap } : {}),
         ...(payload.teamId !== undefined
@@ -243,7 +448,73 @@ export default class PlayerController {
           : {}),
       };
 
-      const updated = await PlayerService.update(Number(id), data);
+      const updated = await prisma.$transaction(async (tx) => {
+        if (existingPlayer.leagueId) {
+          await lockLeagueCapacity(tx, existingPlayer.leagueId);
+        }
+
+        if (payload.teamId !== undefined && teamId) {
+          const team = await tx.team.findFirst({
+            where: { id: teamId, leagueId: existingPlayer.leagueId, deletedAt: null },
+            select: { id: true },
+          });
+          if (!team) throw new Error('Selected team does not belong to this league');
+        }
+
+        const normalizedEmail = data.email as string | null | undefined;
+        if (normalizedEmail && existingPlayer.leagueId) {
+          const duplicate = await tx.player.findFirst({
+            where: {
+              id: { not: existingPlayer.id },
+              leagueId: existingPlayer.leagueId,
+              email: normalizedEmail,
+              deletedAt: null,
+            },
+            select: { id: true },
+          });
+          if (duplicate) throw new Error(duplicatePlayerEmailMessage);
+        }
+
+        if (
+          playerType === 'player' &&
+          existingPlayer.type !== 'player' &&
+          existingPlayer.leagueId
+        ) {
+          const [league, regularPlayerCount] = await Promise.all([
+            tx.league.findFirst({
+              where: { id: existingPlayer.leagueId, deletedAt: null },
+              select: { numPlayers: true, adminId: true },
+            }),
+            tx.player.count({
+              where: {
+                leagueId: existingPlayer.leagueId,
+                type: 'player',
+                deletedAt: null,
+              },
+            }),
+          ]);
+          if (league) {
+            const [admin, allocatedGolfers] = await Promise.all([
+              tx.user.findFirst({
+                where: { id: league.adminId, deletedAt: null },
+                select: { metadata: true },
+              }),
+              getAllocatedGolfersForAdmin(league.adminId, undefined, tx),
+            ]);
+            if (!isBillingCapacityCovered(
+              getBillingState(admin?.metadata, allocatedGolfers),
+              allocatedGolfers,
+            )) {
+              throw new Error(accountBillingMessage);
+            }
+          }
+          if (league && regularPlayerCount >= league.numPlayers) {
+            throw new Error(playerCapacityMessage);
+          }
+        }
+
+        return tx.player.update({ where: { id: Number(id) }, data });
+      });
 
       await writeAuditLog({
         userId: req.session.userId ?? null,
@@ -259,6 +530,18 @@ export default class PlayerController {
       console.error(error);
       if (String(error?.message || '').includes('Player not found')) {
         return res.status(404).json({ message: 'Player not found' });
+      }
+      if (String(error?.message || '') === playerCapacityMessage) {
+        return res.status(402).json({ message: playerCapacityMessage });
+      }
+      if (String(error?.message || '') === accountBillingMessage) {
+        return res.status(402).json({ message: accountBillingMessage });
+      }
+      if (String(error?.message || '') === duplicatePlayerEmailMessage) {
+        return res.status(409).json({ message: duplicatePlayerEmailMessage });
+      }
+      if (String(error?.message || '').includes('does not belong')) {
+        return res.status(400).json({ message: error.message });
       }
       res.status(500).json({ message: 'Internal server error' });
     }
@@ -326,13 +609,16 @@ export default class PlayerController {
         where: { id: Number(playerId) },
         include: {
           team: true,
+          league: { select: { holeFormat: true } },
           rounds: {
             where: {
               event: { leagueId: Number(leagueId), isDeleted: false },
               status: 'completed',
             },
             include: {
-              event: { select: { id: true, name: true, date: true, startSide: true } },
+              event: {
+                select: { id: true, name: true, startsAt: true, timeZone: true, startSide: true },
+              },
               course: {
                 select: {
                   id: true,
@@ -359,6 +645,7 @@ export default class PlayerController {
       }
 
       const rounds = player.rounds;
+      const handicapHoleBasis = getHandicapHoleBasis(player.league?.holeFormat);
 
       if (rounds.length === 0) {
         return res.status(200).json({
@@ -375,6 +662,7 @@ export default class PlayerController {
           },
           stats: null,
           rounds: [],
+          handicapHoleBasis,
         });
       }
 
@@ -419,10 +707,13 @@ export default class PlayerController {
           id: r.id,
           eventId: r.event.id,
           eventName: r.event.name,
-          date: r.event.date,
+          date: r.date.toISOString().slice(0, 10),
+          startsAt: r.event.startsAt,
+          timeZone: r.event.timeZone,
           event: r.event,
           course: r.course,
           tee: r.tee,
+          holesPlayed: r.holesPlayed,
           gross: r.gross,
           net: r.net,
           adjusted: r.adjusted,
@@ -487,6 +778,7 @@ export default class PlayerController {
         },
         stats,
         rounds: roundSummaries,
+        handicapHoleBasis,
       });
     } catch (error) {
       console.error(error);

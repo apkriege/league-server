@@ -5,7 +5,7 @@ const shouldLogDebug = () =>
   process.env.LOG_LEVEL === 'debug' || process.env.SESSION_DEBUG === 'true';
 
 const baseLog = (req: Request) => ({
-  requestId: (req as any).requestId,
+  requestId: req.requestId,
   method: req.method,
   path: req.originalUrl,
   hasCookieHeader: Boolean(req.headers.cookie),
@@ -31,7 +31,7 @@ export const requestId = (req: Request, res: Response, next: NextFunction) => {
       ? incomingRequestId.trim()
       : crypto.randomUUID();
 
-  (req as any).requestId = id;
+  req.requestId = id;
   res.setHeader('X-Request-Id', id);
   next();
 };

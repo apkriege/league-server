@@ -2,6 +2,10 @@ import request from 'supertest';
 import { afterAll, describe, expect, it } from 'vitest';
 import app from '../../app';
 import { prisma } from '../../prisma';
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+import { localDateKey, localTimeKey } from '../utils/time-zone';
+import { lockAdminBilling, lockLeagueCapacity } from '../services/billingLock';
 
 const password = 'integration-test-password';
 
@@ -22,13 +26,58 @@ describe('API integration', () => {
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ status: 'ok', database: 'ok' });
     expect(Number.isNaN(Date.parse(response.body.timestamp))).toBe(false);
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['x-frame-options']).toBe('SAMEORIGIN');
+    expect(response.headers['x-powered-by']).toBeUndefined();
+  });
+
+  it('locks billing rows during capacity transactions', async () => {
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await lockAdminBilling(tx, 1);
+        await lockLeagueCapacity(tx, 1);
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('allows configured CORS preflights and rejects untrusted browser origins', async () => {
+    const trustedOrigin = new URL(String(process.env.CLIENT_URL)).origin;
+    const hostileOrigin = 'https://hostile.example.com';
+
+    const [trustedPreflight, hostilePreflight, hostileRequest, serverRequest] = await Promise.all([
+      request(app)
+        .options('/api/auth/login')
+        .set('Origin', trustedOrigin)
+        .set('Access-Control-Request-Method', 'POST')
+        .set('Access-Control-Request-Headers', 'content-type'),
+      request(app)
+        .options('/api/auth/login')
+        .set('Origin', hostileOrigin)
+        .set('Access-Control-Request-Method', 'POST'),
+      request(app).get('/api/courses').set('Origin', hostileOrigin),
+      request(app).get('/api/courses'),
+    ]);
+
+    expect(trustedPreflight.status).toBe(204);
+    expect(trustedPreflight.headers['access-control-allow-origin']).toBe(trustedOrigin);
+    expect(trustedPreflight.headers['access-control-allow-credentials']).toBe('true');
+    expect(trustedPreflight.headers.vary).toContain('Origin');
+
+    expect(hostilePreflight.status).toBe(403);
+    expect(hostilePreflight.headers['access-control-allow-origin']).toBeUndefined();
+    expect(hostileRequest.status).toBe(403);
+    expect(hostileRequest.body.message).toBe('Request origin is not allowed');
+
+    expect(serverRequest.status).toBe(200);
   });
 
   it('serves public course data but protects account data', async () => {
-    const [courses, profile, adminLeagues] = await Promise.all([
+    const [courses, profile, adminLeagues, removedTestRoute, missingCourse] = await Promise.all([
       request(app).get('/api/courses'),
       request(app).get('/api/auth/me'),
       request(app).get('/api/admin/leagues'),
+      request(app).get('/api/test-handicap'),
+      request(app).get('/api/courses/999999999'),
     ]);
 
     expect(courses.status).toBe(200);
@@ -37,6 +86,65 @@ describe('API integration', () => {
     );
     expect(profile.status).toBe(401);
     expect(adminLeagues.status).toBe(401);
+    expect(adminLeagues.type).toBe('application/json');
+    expect(adminLeagues.body).toMatchObject({ message: 'Not authenticated' });
+    expect(missingCourse.status).toBe(404);
+    expect(missingCourse.type).toBe('application/json');
+    expect(missingCourse.body).toMatchObject({ status: 404 });
+    expect(removedTestRoute.status).toBe(404);
+    expect(removedTestRoute.type).toBe('application/json');
+    expect(removedTestRoute.body).toMatchObject({
+      status: 404,
+      name: 'NotFound',
+      message: 'Route not found',
+      path: '/api/test-handicap',
+    });
+    expect(removedTestRoute.body.requestId).toEqual(expect.any(String));
+  });
+
+  it('returns JSON for unmatched routes and malformed request bodies', async () => {
+    const [missingRoute, malformedJson] = await Promise.all([
+      request(app).get('/does-not-exist').set('Accept', 'text/html'),
+      request(app)
+        .post('/api/auth/login')
+        .set('Content-Type', 'application/json')
+        .send('{"email":'),
+    ]);
+
+    expect(missingRoute.status).toBe(404);
+    expect(missingRoute.type).toBe('application/json');
+    expect(missingRoute.body).toMatchObject({
+      status: 404,
+      name: 'NotFound',
+      message: 'Route not found',
+      path: '/does-not-exist',
+    });
+
+    expect(malformedJson.status).toBe(400);
+    expect(malformedJson.type).toBe('application/json');
+    expect(malformedJson.body).toMatchObject({
+      status: 400,
+      name: 'SyntaxError',
+      message: 'Invalid JSON request body.',
+    });
+  });
+
+  it('stores schedules as UTC instants with the course timezone preserved', async () => {
+    const course = await prisma.course.findFirstOrThrow({
+      where: { name: 'Fortress' },
+    });
+    const event = await prisma.event.findFirstOrThrow({
+      where: { name: 'Week 1 - Team Stroke' },
+      include: { flights: { orderBy: { startsAt: 'asc' } } },
+    });
+
+    expect(course.timeZone).toBe('America/Detroit');
+    expect(event.timeZone).toBe(course.timeZone);
+    expect(event.startsAt.toISOString()).toBe('2026-05-07T21:30:00.000Z');
+    expect(event.flights.map((flight) => flight.startsAt.toISOString())).toEqual([
+      '2026-05-07T21:30:00.000Z',
+      '2026-05-07T21:40:00.000Z',
+    ]);
   });
 
   it('validates credentials and persists an authenticated admin session', async () => {
@@ -94,24 +202,184 @@ describe('API integration', () => {
 
     const league = await prisma.league.findFirstOrThrow({
       where: { name: 'Seeded Thursday Night League' },
-      include: { events: { include: { flights: true } } },
+      include: {
+        players: true,
+        teams: true,
+        events: { include: { flights: true } },
+      },
     });
     const activeFlight = league.events
       .find((event) => event.status === 'active')
       ?.flights.at(0);
     expect(activeFlight).toBeTruthy();
 
-    const [read, update, adminLeagues, superAdmin] = await Promise.all([
+    const [
+      read,
+      updateFlight,
+      updateLeague,
+      createPlayer,
+      updatePlayer,
+      createTeam,
+      updateTeam,
+      updateEvent,
+      updateScores,
+      createInvitation,
+      createAnnouncement,
+      rotateViewerCode,
+      createCheckout,
+      adminLeagues,
+      adminBilling,
+      superAdmin,
+    ] = await Promise.all([
       member.get(`/api/leagues/${league.id}`),
       member.put(`/api/flights/${activeFlight!.id}/players`).send({ players: [] }),
+      member.put(`/api/leagues/${league.id}`).send({ name: 'Unauthorized change' }),
+      member.post(`/api/leagues/${league.id}/players`).send({}),
+      member.put(`/api/players/${league.players[0].id}`).send({ handicap: 0 }),
+      member.post(`/api/leagues/${league.id}/teams`).send({}),
+      member.put(`/api/teams/${league.teams[0].id}`).send({ name: 'Unauthorized change' }),
+      member
+        .put(`/api/leagues/${league.id}/events/${league.events[0].id}`)
+        .send({ name: 'Unauthorized change' }),
+      member
+        .put(`/api/leagues/${league.id}/events/${league.events[0].id}/scores`)
+        .send({}),
+      member.post(`/api/leagues/${league.id}/invitations`).send({ playerIds: [] }),
+      member.post(`/api/leagues/${league.id}/announcements`).send({ title: 'No access' }),
+      member.post(`/api/leagues/${league.id}/viewer-access-code/rotate`),
+      member.post('/api/payments/checkout-session').send({ purpose: 'registration' }),
       member.get('/api/admin/leagues'),
+      member.get('/api/admin/billing'),
       member.get('/api/users'),
     ]);
 
     expect(read.status).toBe(200);
-    expect(update.status).toBe(403);
+    expect([
+      updateFlight,
+      updateLeague,
+      createPlayer,
+      updatePlayer,
+      createTeam,
+      updateTeam,
+      updateEvent,
+      updateScores,
+      createInvitation,
+      createAnnouncement,
+      rotateViewerCode,
+      createCheckout,
+      adminBilling,
+    ].map((response) => response.status)).toEqual(Array(13).fill(403));
     expect(adminLeagues.status).toBe(403);
     expect(superAdmin.status).toBe(403);
+  });
+
+  it('locks competitive league settings after scores have been recorded', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+    });
+
+    const read = await admin.get(`/api/leagues/${league.id}`);
+    expect(read.status).toBe(200);
+    expect(read.body.hasRecordedScores).toBe(true);
+
+    const update = await admin.put(`/api/leagues/${league.id}`).send({
+      name: league.name,
+      description: league.description,
+      type: league.type,
+      format: league.format,
+      holeFormat: league.holeFormat === '9' ? '18' : '9',
+      numPlayers: league.numPlayers,
+      startDate: league.startDate,
+      endDate: league.endDate,
+      contactFirstName: league.contactFirstName,
+      contactLastName: league.contactLastName,
+      contactEmail: league.contactEmail,
+      contactPhone: league.contactPhone,
+    });
+
+    expect(update.status).toBe(409);
+    expect(update.body.message).toMatch(/cannot change after scores have been recorded/i);
+
+    const changedEndDate = new Date(league.endDate);
+    changedEndDate.setUTCDate(changedEndDate.getUTCDate() - 1);
+    const dateUpdate = await admin.put(`/api/leagues/${league.id}`).send({
+      name: league.name,
+      description: league.description,
+      type: league.type,
+      format: league.format,
+      holeFormat: league.holeFormat,
+      numPlayers: league.numPlayers,
+      startDate: league.startDate,
+      endDate: changedEndDate,
+      contactFirstName: league.contactFirstName,
+      contactLastName: league.contactLastName,
+      contactEmail: league.contactEmail,
+      contactPhone: league.contactPhone,
+    });
+
+    expect(dateUpdate.status).toBe(409);
+    expect(dateUpdate.body.message).toMatch(/cannot change after the league has been created/i);
+  });
+
+  it('filters league statistics to a configured half', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+    });
+    const completedEvent = await prisma.event.findFirstOrThrow({
+      where: {
+        leagueId: league.id,
+        rounds: { some: { status: 'completed' } },
+      },
+      orderBy: { startsAt: 'asc' },
+    });
+    const cutoff = localDateKey(completedEvent.startsAt, completedEvent.timeZone);
+    const secondHalfStart = new Date(`${cutoff}T00:00:00.000Z`);
+    secondHalfStart.setUTCDate(secondHalfStart.getUTCDate() + 1);
+
+    await prisma.league_scoring_period.deleteMany({ where: { leagueId: league.id } });
+    await prisma.league_scoring_period.createMany({
+      data: [
+        {
+          leagueId: league.id,
+          name: '1st Half',
+          position: 1,
+          startDate: league.startDate,
+          endDate: new Date(`${cutoff}T00:00:00.000Z`),
+        },
+        {
+          leagueId: league.id,
+          name: '2nd Half',
+          position: 2,
+          startDate: secondHalfStart,
+          endDate: league.endDate,
+        },
+      ],
+    });
+
+    try {
+      const firstHalf = await prisma.league_scoring_period.findFirstOrThrow({
+        where: { leagueId: league.id, position: 1 },
+      });
+      const [overall, filtered] = await Promise.all([
+        admin.get(`/api/leagues/${league.id}/metrics`),
+        admin.get(`/api/leagues/${league.id}/metrics`).query({ periodId: firstHalf.id }),
+      ]);
+
+      expect(overall.status).toBe(200);
+      expect(filtered.status).toBe(200);
+      expect(filtered.body.selectedPeriod).toMatchObject({ id: firstHalf.id, name: '1st Half' });
+      expect(filtered.body.seasonSummary.totalRounds).toBeGreaterThan(0);
+      expect(filtered.body.seasonSummary.totalRounds).toBeLessThanOrEqual(
+        overall.body.seasonSummary.totalRounds,
+      );
+      expect(filtered.body.scoringPeriods).toHaveLength(2);
+    } finally {
+      await prisma.league_scoring_period.deleteMany({ where: { leagueId: league.id } });
+    }
   });
 
   it('keeps a newly registered admin isolated from another admins league', async () => {
@@ -146,9 +414,10 @@ describe('API integration', () => {
     const superAdmin = request.agent(app);
     await login(superAdmin, 'super@test.com');
 
-    const [leagues, users] = await Promise.all([
+    const [leagues, users, billing] = await Promise.all([
       superAdmin.get('/api/admin/leagues'),
       superAdmin.get('/api/users'),
+      superAdmin.get('/api/admin/billing'),
     ]);
     expect(leagues.status).toBe(200);
     expect(leagues.body).toEqual(
@@ -160,6 +429,107 @@ describe('API integration', () => {
     expect(users.body).toEqual(
       expect.arrayContaining([expect.objectContaining({ email: 'admin@test.com' })]),
     );
+    expect(billing.status).toBe(200);
+    expect(billing.body).toMatchObject({
+      summary: {
+        completedPayments: expect.any(Number),
+        purchasedSeats: expect.any(Number),
+        refundedSeats: expect.any(Number),
+        netRevenueCents: expect.any(Number),
+        currency: expect.any(String),
+      },
+      accounts: expect.arrayContaining([
+        expect.objectContaining({
+          email: 'admin@test.com',
+          includedGolfers: expect.any(Number),
+          allocatedGolfers: expect.any(Number),
+        }),
+      ]),
+      transactions: expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: 'cs_demo_registration',
+          status: 'paid',
+          quantity: 8,
+          userEmail: 'admin@test.com',
+        }),
+      ]),
+      transactionLimit: 250,
+    });
+  });
+
+  it('updates an event while preserving reordered match flights and opponent pairs', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const event = await prisma.event.findFirstOrThrow({
+      where: {
+        format: 'individual',
+        scoringFormat: 'match',
+        status: 'upcoming',
+        isComplete: false,
+        rounds: { none: {} },
+      },
+      include: {
+        flights: {
+          orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+          include: { players: { orderBy: { id: 'asc' } } },
+        },
+      },
+    });
+    expect(event.flights.length).toBeGreaterThan(1);
+
+    const reorderedFlights = [...event.flights].reverse().map((flight) => {
+      const playerIds = flight.players.map((entry) => entry.playerId);
+      return Array.from(
+        { length: playerIds.length / 2 },
+        (_, matchupIndex) => playerIds.slice(matchupIndex * 2, matchupIndex * 2 + 2),
+      );
+    });
+
+    const response = await admin
+      .put(`/api/leagues/${event.leagueId}/events/${event.id}`)
+      .send({
+        name: `${event.name} Updated`,
+        type: event.type,
+        date: localDateKey(event.startsAt, event.timeZone),
+        startTime: localTimeKey(event.startsAt, event.timeZone),
+        interval: event.interval,
+        courseId: event.courseId,
+        teeId: event.teeId,
+        startSide: event.startSide,
+        holes: event.holes,
+        format: event.format,
+        scoringFormat: event.scoringFormat,
+        pointsEnabled: event.pointsEnabled,
+        ptsPerHole: event.ptsPerHole,
+        ptsPerMatch: event.ptsPerMatch,
+        ptsPerTeamWin: event.ptsPerTeamWin,
+        strokePoints: event.strokePoints,
+        teams: [],
+        flights: reorderedFlights,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.name).toBe(`${event.name} Updated`);
+
+    const updatedFlights = await prisma.flight.findMany({
+      where: { eventId: event.id },
+      orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+      include: { players: { orderBy: { id: 'asc' } } },
+    });
+    expect(updatedFlights.map((flight) => flight.players.map((entry) => entry.playerId))).toEqual(
+      reorderedFlights.map((matchups) => matchups.flat()),
+    );
+    for (const flight of updatedFlights) {
+      expect(flight.players.every((entry) => Number(entry.opponentId) > 0)).toBe(true);
+      expect(
+        flight.players.every((entry) =>
+          flight.players.some(
+            (opponent) =>
+              opponent.playerId === entry.opponentId && opponent.opponentId === entry.playerId,
+          ),
+        ),
+      ).toBe(true);
+    }
   });
 
   it('creates and edits scores without changing other events or flights', async () => {
@@ -322,6 +692,123 @@ describe('API integration', () => {
     );
     expect(updatedUntouched.map((entry) => entry.playerId)).toEqual(untouchedIds);
     expect(audit).toMatchObject({ userId: user.id, leagueId: league.id });
+  });
+
+  it('rotates a viewer code and immediately revokes the previous code', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+    });
+    const oldCode = league.viewerAccessCode;
+    const existingViewer = request.agent(app);
+    expect(
+      (await existingViewer.post('/api/auth/league-code').send({ code: oldCode })).status,
+    ).toBe(200);
+
+    const rotation = await admin.post(
+      `/api/leagues/${league.id}/viewer-access-code/rotate`,
+    );
+    expect(rotation.status).toBe(200);
+    expect(rotation.body.viewerAccessCode).toEqual(expect.any(String));
+    expect(rotation.body.viewerAccessCode).not.toBe(oldCode);
+
+    const [oldLogin, newLogin, existingSession] = await Promise.all([
+      request(app).post('/api/auth/league-code').send({ code: oldCode }),
+      request(app)
+        .post('/api/auth/league-code')
+        .send({ code: rotation.body.viewerAccessCode }),
+      existingViewer.get(`/api/leagues/${league.id}`),
+    ]);
+    expect(oldLogin.status).toBe(400);
+    expect(newLogin.status).toBe(200);
+    expect(existingSession.status).toBe(401);
+  });
+
+  it('emails roster invitations and connects the matching account to its player', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+    });
+    const email = 'invited-player@test.com';
+    const player = await prisma.player.create({
+      data: {
+        firstName: 'Invited',
+        lastName: 'Player',
+        email,
+        handicap: 12,
+        startingHandicap: 12,
+        seasonPoints: 0,
+        type: 'substitute',
+        leagueId: league.id,
+      },
+    });
+
+    const invitationResponse = await admin
+      .post(`/api/leagues/${league.id}/invitations`)
+      .send({ playerIds: [player.id] });
+    expect(invitationResponse.status).toBe(201);
+    expect(invitationResponse.body.invitations).toHaveLength(1);
+    expect(invitationResponse.body.delivery).toHaveLength(1);
+
+    const member = request.agent(app);
+    const registration = await member.post('/api/auth/register').send({
+      firstName: 'Invited',
+      lastName: 'Player',
+      email,
+      password,
+      invitationToken: invitationResponse.body.invitations[0].token,
+    });
+    expect(registration.status).toBe(201);
+    expect(registration.body.user.role).toBe('USER');
+
+    const claim = await member.post(
+      `/api/invitations/${invitationResponse.body.invitations[0].token}/claim`,
+    );
+    expect(claim.status).toBe(200);
+    expect(claim.body).toMatchObject({ leagueId: league.id, playerId: player.id });
+    await expect(prisma.player.findUniqueOrThrow({ where: { id: player.id } })).resolves.toMatchObject({
+      userId: registration.body.user.id,
+    });
+  });
+
+  it('accepts a valid password reset token exactly once', async () => {
+    const email = 'password-reset@test.com';
+    const user = await prisma.user.create({
+      data: {
+        firstName: 'Password',
+        lastName: 'Reset',
+        email,
+        username: email,
+        password: await bcrypt.hash(password, 10),
+        role: 'USER',
+      },
+    });
+    const token = crypto.randomBytes(32).toString('hex');
+    await prisma.password_reset_token.create({
+      data: {
+        userId: user.id,
+        tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const newPassword = 'new-integration-password';
+    const reset = await request(app)
+      .post('/api/auth/password-reset/complete')
+      .send({ token, password: newPassword });
+    expect(reset.status).toBe(200);
+
+    const replay = await request(app)
+      .post('/api/auth/password-reset/complete')
+      .send({ token, password: newPassword });
+    expect(replay.status).toBe(400);
+
+    const loginResponse = await request(app)
+      .post('/api/auth/login')
+      .send({ email, password: newPassword });
+    expect(loginResponse.status).toBe(200);
   });
 
   it('destroys the server session on logout', async () => {

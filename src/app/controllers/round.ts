@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
 import { prisma } from '../../prisma';
 import { Round } from '../services/round';
+import { SeasonSync } from '../services/seasonSync';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
-import { getLeagueScoreOrder } from '../utils/score-order';
 import { writeAuditLog } from '../utils/audit';
-import { notifyLeagueAdmins } from '../utils/notifications';
 import { getPublicErrorResponse } from '../utils/error-response';
+import { resolveScoreSubmissionOpponents } from '../utils/score-opponents';
 
 type TeamPointsRow = { teamId: number; points: number };
 
@@ -413,6 +413,12 @@ const validateScoreSubmission = async (
   const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
   const maxHolePoints = Math.max(0, Number(event.ptsPerHole || 0)) * Number(event.holes || 0);
   const maxMatchPoints = Math.max(0, Number(event.ptsPerMatch || 0));
+  const resolvedOpponentByPlayerId = resolveScoreSubmissionOpponents({
+    eventFormat,
+    scoringFormat,
+    assignments: flight.players,
+    submittedPlayers: rawPlayers,
+  });
   const players = rawPlayers.map((player: any) => {
     const points = Number(player?.points || 0);
     const matchPoints = Number(player?.matchPoints || 0);
@@ -427,17 +433,10 @@ const validateScoreSubmission = async (
       throw new Error('Submitted player points are outside the event scoring rules.');
     }
 
-    const assignment: any = assignmentByPlayerId.get(Number(player.playerId));
-    const assignedOpponentId = assignment?.opponentId == null ? null : Number(assignment.opponentId);
-    const submittedOpponentId = player?.opponentId == null ? null : Number(player.opponentId);
-    if (submittedOpponentId !== assignedOpponentId) {
-      throw new Error('Player opponents must match the flight assignments.');
-    }
-
     return {
       ...player,
       playerId: Number(player.playerId),
-      opponentId: assignedOpponentId,
+      opponentId: resolvedOpponentByPlayerId.get(Number(player.playerId)) ?? null,
       points,
       matchPoints,
     };
@@ -548,13 +547,6 @@ export default class ScoreController {
         return res.status(409).json({ message: 'Completed events cannot receive new scores.' });
       }
 
-      const scoreOrder = await getLeagueScoreOrder(leagueId);
-      if (scoreOrder.nextScorableEventId !== eventId) {
-        return res.status(409).json({
-          message: 'Scores must be entered in event order. Complete earlier events first.',
-        });
-      }
-
       const eventFormat = normalizeEventFormat(event.format, 'individual');
       const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
       const pointsEnabled = event.pointsEnabled !== false;
@@ -610,6 +602,14 @@ export default class ScoreController {
           create: { leagueId, firstScoresEnteredAt: new Date() },
           update: { firstScoresEnteredAt: new Date() },
         });
+
+        const completedEvent = await tx.event.findUnique({
+          where: { id: eventId },
+          select: { isComplete: true },
+        });
+        if (completedEvent?.isComplete) {
+          await SeasonSync.recalculateLeague(leagueId, tx);
+        }
       });
 
       await writeAuditLog({
@@ -619,13 +619,6 @@ export default class ScoreController {
         entityId: eventId,
         action: 'create_scores',
         summary: `Entered scores for event ${event.name}.`,
-      });
-
-      await notifyLeagueAdmins(leagueId, {
-        type: 'scores_entered',
-        title: 'Scores entered',
-        body: `Scores were entered for ${event.name}.`,
-        metadata: { eventId, flightId },
       });
 
       return res.status(201).json({ message: 'Scores created successfully' });
@@ -654,13 +647,6 @@ export default class ScoreController {
       }
       if (String(event.status || '').toLowerCase() === 'canceled') {
         return res.status(409).json({ message: 'Canceled events cannot be updated.' });
-      }
-
-      const scoreOrder = await getLeagueScoreOrder(leagueId);
-      if (scoreOrder.latestScoredEventId !== eventId) {
-        return res.status(409).json({
-          message: 'Only the latest scored event can be updated.',
-        });
       }
 
       const eventFormat = normalizeEventFormat(event.format, 'individual');
@@ -723,6 +709,8 @@ export default class ScoreController {
             data: { status: 'completed', isComplete: true },
           });
         }
+
+        await SeasonSync.recalculateLeague(leagueId, tx);
       });
 
       await writeAuditLog({

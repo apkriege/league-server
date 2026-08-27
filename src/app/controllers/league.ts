@@ -3,11 +3,21 @@ import LeagueService from '../models/league';
 import { prisma } from '../../prisma';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
 import {
+  BILLING_MIN_GOLFERS,
   getAllocatedGolfersForAdmin,
   getBillingState,
+  getLeagueBillableGolfers,
+  isBillingCapacityCovered,
 } from '../utils/billing';
 import { writeAuditLog } from '../utils/audit';
 import { generateLeagueAccessCode } from './auth';
+import { localDateKey } from '../utils/time-zone';
+import { normalizeGender } from '../utils/tee-rating';
+import { lockAdminBilling } from '../services/billingLock';
+import { normalizeLeagueHoleFormat } from '../utils/league-hole-format';
+import { calculateSeasonSkinLeaderboards } from '../utils/season-skins';
+import { calculatePlayerResults } from '../utils/player-results';
+import { getLeagueRoundProgress } from '../utils/league-round-progress';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
@@ -18,9 +28,13 @@ const getMissingRequiredPlayerFields = (player: any) => {
 
   if (!String(player?.firstName ?? '').trim()) missing.push('firstName');
   if (!String(player?.lastName ?? '').trim()) missing.push('lastName');
-  if (!String(player?.email ?? '').trim()) missing.push('email');
-  const type = String(player?.type ?? '').trim().toLowerCase();
-  if (!['player', 'substitute', 'captain'].includes(type)) missing.push('type');
+  try {
+    normalizeGender(player?.gender);
+  } catch {
+    missing.push('gender');
+  }
+  const type = String(player?.type || 'player').trim().toLowerCase();
+  if (!['player', 'sub', 'substitute', 'captain'].includes(type)) missing.push('type');
   if (!Number.isFinite(handicap) || handicap < -10 || handicap > 54) missing.push('handicap');
 
   return missing;
@@ -40,7 +54,7 @@ class LeagueController {
   static normalizeLeaguePayload = (payload: any) => {
     const normalizedType = String(payload?.type || '').toLowerCase();
     const normalizedFormat = payload?.format ? String(payload.format).toLowerCase() : null;
-    const normalizedAccess = String(payload?.access || 'public').toLowerCase();
+    const holeFormat = normalizeLeagueHoleFormat(payload?.holeFormat);
 
     if (!['season', 'tournament'].includes(normalizedType)) {
       throw new Error('League type must be either "season" or "tournament".');
@@ -48,10 +62,6 @@ class LeagueController {
 
     if (normalizedType === 'season' && !['individual', 'team'].includes(normalizedFormat || '')) {
       throw new Error('Season leagues require format to be either "individual" or "team".');
-    }
-
-    if (!['public', 'private'].includes(normalizedAccess)) {
-      throw new Error('League access must be either "public" or "private".');
     }
 
     const requiredTextFields = [
@@ -74,7 +84,7 @@ class LeagueController {
       name: String(payload.name).trim(),
       description: payload.description ? String(payload.description).trim() : null,
       type: normalizedType,
-      access: normalizedAccess,
+      holeFormat,
       format: normalizedType === 'season' ? normalizedFormat : null,
       numPlayers,
       startDate: new Date(payload.startDate),
@@ -119,7 +129,7 @@ class LeagueController {
             },
           },
         },
-        orderBy: { date: 'desc' },
+        orderBy: { startsAt: 'desc' },
       });
 
       const result = {
@@ -127,7 +137,8 @@ class LeagueController {
         lastEvent: {
           id: lastEvent?.id,
           name: lastEvent?.name,
-          date: lastEvent?.date,
+          startsAt: lastEvent?.startsAt,
+          timeZone: lastEvent?.timeZone,
           course: lastEvent?.courseId,
           stats: calculateStats(lastEvent?.rounds || []),
           lowNet: calculateLowNet(lastEvent?.rounds || []),
@@ -167,6 +178,9 @@ class LeagueController {
               },
             },
           },
+          scoringPeriods: {
+            orderBy: { position: 'asc' },
+          },
         },
       });
 
@@ -175,16 +189,28 @@ class LeagueController {
         return;
       }
 
+      const recordedRoundCount = await prisma.round.count({
+        where: {
+          event: { leagueId: id, isDeleted: false, deletedAt: null },
+          deletedAt: null,
+          scores: { some: {} },
+        },
+      });
+      const leagueWithScoreState = {
+        ...league,
+        hasRecordedScores: recordedRoundCount > 0,
+      };
+
       const role = String((req as any).user?.role || '').toUpperCase();
       const canSeeAccessCode =
         role === 'SUPER' || Number(league.adminId) === Number(req.session.userId || 0);
 
       if (canSeeAccessCode) {
-        res.status(200).send(league);
+        res.status(200).send(leagueWithScoreState);
         return;
       }
 
-      const { viewerAccessCode: _viewerAccessCode, ...safeLeague } = league;
+      const { viewerAccessCode: _viewerAccessCode, ...safeLeague } = leagueWithScoreState;
       res.status(200).send(safeLeague);
     } catch (error) {
       console.error(error);
@@ -199,6 +225,32 @@ class LeagueController {
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });
+    }
+  };
+
+  static rotateViewerAccessCode = async (req: Request, res: Response) => {
+    try {
+      const leagueId = Number(req.params.leagueId);
+      const viewerAccessCode = await LeagueController.createUniqueViewerAccessCode();
+      const league = await prisma.league.update({
+        where: { id: leagueId },
+        data: { viewerAccessCode },
+        select: { id: true, viewerAccessCode: true },
+      });
+
+      await writeAuditLog({
+        userId: Number(req.session.userId),
+        leagueId,
+        entity: 'league',
+        entityId: leagueId,
+        action: 'rotate-viewer-access-code',
+        summary: 'Rotated the view-only league access code.',
+      });
+
+      return res.status(200).json(league);
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ message: 'Unable to rotate the league access code' });
     }
   };
 
@@ -276,14 +328,18 @@ class LeagueController {
       const leagueAccessIds = Array.isArray(req.session.leagueAccess?.leagueIds)
         ? req.session.leagueAccess.leagueIds.map(Number).filter(Boolean)
         : [];
+      const leagueAccessCodes = req.session.leagueAccess?.accessCodes || {};
+      const validLeagueAccess = leagueAccessIds
+        .map((id) => ({ id, code: leagueAccessCodes[String(id)] }))
+        .filter((entry): entry is { id: number; code: string } => Boolean(entry.code));
 
-      if (!userId && leagueAccessIds.length === 0) {
+      if (!userId && validLeagueAccess.length === 0) {
         return res.status(401).json({ message: 'Not authenticated' });
       }
 
       const playerIds = userId
         ? await prisma.player.findMany({
-            where: { userId },
+            where: { userId, deletedAt: null },
             select: { id: true },
           })
         : [];
@@ -294,7 +350,10 @@ class LeagueController {
         where: {
           deletedAt: null,
           OR: [
-            ...(leagueAccessIds.length > 0 ? [{ id: { in: leagueAccessIds } }] : []),
+            ...validLeagueAccess.map((entry) => ({
+              id: entry.id,
+              viewerAccessCode: entry.code,
+            })),
             { players: { some: { id: { in: playerIdValues } } } },
             {
               teams: {
@@ -313,6 +372,10 @@ class LeagueController {
               players: { where: { deletedAt: null } },
               events: { where: { isDeleted: false, deletedAt: null } },
             },
+          },
+          events: {
+            where: { isDeleted: false, deletedAt: null },
+            select: { status: true, type: true, isComplete: true },
           },
         },
         orderBy: {
@@ -333,13 +396,18 @@ class LeagueController {
         },
         orderBy: {
           event: {
-            date: 'asc',
+            startsAt: 'asc',
           },
         },
         take: 5,
       });
 
-      const safeLeagues = leagues.map(({ viewerAccessCode: _viewerAccessCode, ...league }) => league);
+      const safeLeagues = leagues.map(
+        ({ viewerAccessCode: _viewerAccessCode, events, ...league }) => ({
+          ...league,
+          ...getLeagueRoundProgress(events),
+        }),
+      );
 
       res.status(200).send({ leagues: safeLeagues, upcomingSchedule });
     } catch (error) {
@@ -366,11 +434,7 @@ class LeagueController {
         return res.status(404).json({ message: 'User not found' });
       }
 
-      const requestedGolfers = Math.max(
-        1,
-        Array.isArray(players) ? players.length : 0,
-        Number(leagueData?.numPlayers ?? 0)
-      );
+      const billableGolfers = getLeagueBillableGolfers(players);
       const invalidPlayerIndex = Array.isArray(players)
         ? players.findIndex((player: any) => getMissingRequiredPlayerFields(player).length > 0)
         : -1;
@@ -380,10 +444,19 @@ class LeagueController {
           message: `Player ${invalidPlayerIndex + 1} is missing required fields: ${missingFields.join(', ')}`,
         });
       }
+      const playerEmails = players
+        .map((player: any) => String(player?.email || '').trim().toLowerCase())
+        .filter(Boolean);
+      if (new Set(playerEmails).size !== playerEmails.length) {
+        return res.status(409).json({
+          message: 'Every player email in a league must be unique.',
+        });
+      }
 
       const normalizedLeagueData = LeagueController.normalizeLeaguePayload({
         ...leagueData,
-        numPlayers: requestedGolfers,
+        // numPlayers is the paid regular-player capacity, not total roster size.
+        numPlayers: billableGolfers,
       });
       LeagueController.validateLeagueDates(normalizedLeagueData);
 
@@ -416,18 +489,39 @@ class LeagueController {
         });
       }
 
-      if (billingState.includedGolfers < allocatedGolfers + requestedGolfers) {
+      if (!isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)) {
         return res.status(402).json({
-          message: `This league needs ${requestedGolfers} golfer slots, but your account only has ${billingState.availableGolfers} available.`,
+          message: `This league requires payment for ${billableGolfers} golfers.`,
           billing: billingState,
-          requiredGolfers: requestedGolfers,
+          requiredGolfers: billableGolfers,
           additionalGolfersRequired:
-            allocatedGolfers + requestedGolfers - billingState.includedGolfers,
+            allocatedGolfers + billableGolfers - billingState.includedGolfers,
         });
       }
 
       const viewerAccessCode = await LeagueController.createUniqueViewerAccessCode();
       const newLeague = await prisma.$transaction(async (tx) => {
+        await lockAdminBilling(tx, adminId);
+        const lockedAdmin = await tx.user.findFirst({
+          where: { id: adminId, deletedAt: null },
+          select: { metadata: true },
+        });
+        if (!lockedAdmin) throw new Error('User not found');
+        const lockedAllocatedGolfers = await getAllocatedGolfersForAdmin(adminId, undefined, tx);
+        const lockedBillingState = getBillingState(
+          lockedAdmin.metadata,
+          lockedAllocatedGolfers,
+        );
+        if (!lockedBillingState.hasCompletedRegistration) {
+          throw new Error('Registration payment is required.');
+        }
+        if (!isBillingCapacityCovered(
+          lockedBillingState,
+          lockedAllocatedGolfers + billableGolfers,
+        )) {
+          throw new Error(`Payment is required for ${billableGolfers} golfers.`);
+        }
+
         const createdLeague = await tx.league.create({
           data: {
             ...normalizedLeagueData,
@@ -446,9 +540,13 @@ class LeagueController {
               data: {
                 firstName: String(player.firstName).trim(),
                 lastName: String(player.lastName).trim(),
-                email: String(player.email).trim().toLowerCase(),
+                email: String(player.email || '').trim().toLowerCase() || null,
                 phone: player.phone ? String(player.phone).trim() : null,
-                type: String(player.type).trim().toLowerCase(),
+                gender: normalizeGender(player.gender),
+                type:
+                  String(player.type || 'player').trim().toLowerCase() === 'sub'
+                    ? 'substitute'
+                    : String(player.type || 'player').trim().toLowerCase(),
                 handicap: Number(player.handicap),
                 startingHandicap: Number(player.handicap),
                 seasonPoints: 0,
@@ -509,10 +607,12 @@ class LeagueController {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : 'Internal server error';
-      const status =
-        message.includes('League type') ||
+      const paymentRequired = message.toLowerCase().includes('payment is required');
+      const status = paymentRequired
+        ? 402
+        : message.includes('League type') ||
+        message.includes('League hole format') ||
         message.includes('Season leagues require format') ||
-        message.includes('League access') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
         message.includes('League dates are invalid') ||
@@ -543,12 +643,19 @@ class LeagueController {
       });
       LeagueController.validateLeagueDates(league);
 
-      const [activePlayerCount, activeTeamCount, activeEvents] = await Promise.all([
-        prisma.player.count({ where: { leagueId: id, deletedAt: null } }),
+      const [activePlayerCount, activeTeamCount, activeEvents, recordedRoundCount] = await Promise.all([
+        prisma.player.count({ where: { leagueId: id, type: 'player', deletedAt: null } }),
         prisma.team.count({ where: { leagueId: id, deletedAt: null } }),
         prisma.event.findMany({
           where: { leagueId: id, isDeleted: false, deletedAt: null },
-          select: { id: true, date: true },
+          select: { id: true, startsAt: true, timeZone: true },
+        }),
+        prisma.round.count({
+          where: {
+            event: { leagueId: id, isDeleted: false, deletedAt: null },
+            deletedAt: null,
+            scores: { some: {} },
+          },
         }),
       ]);
 
@@ -559,10 +666,20 @@ class LeagueController {
       }
 
       const structureChanged =
-        league.type !== existingLeague.type || league.format !== existingLeague.format;
-      if (structureChanged && activeEvents.length > 0) {
+        league.type !== existingLeague.type ||
+        league.format !== existingLeague.format ||
+        league.holeFormat !== existingLeague.holeFormat;
+      const datesChanged =
+        league.startDate.getTime() !== existingLeague.startDate.getTime() ||
+        league.endDate.getTime() !== existingLeague.endDate.getTime();
+      if (datesChanged) {
         return res.status(409).json({
-          message: 'League type and format cannot change after events have been created.',
+          message: 'League start and end dates cannot change after the league has been created.',
+        });
+      }
+      if (structureChanged && recordedRoundCount > 0) {
+        return res.status(409).json({
+          message: 'League type, season format, and holes and handicap settings cannot change after scores have been recorded.',
         });
       }
       if (structureChanged && activeTeamCount > 0 && league.format !== 'team') {
@@ -571,9 +688,12 @@ class LeagueController {
         });
       }
 
-      const outsideDateRange = activeEvents.some(
-        (event) => event.date < league.startDate || event.date > league.endDate,
-      );
+      const leagueStartKey = league.startDate.toISOString().slice(0, 10);
+      const leagueEndKey = league.endDate.toISOString().slice(0, 10);
+      const outsideDateRange = activeEvents.some((event) => {
+        const eventDateKey = localDateKey(event.startsAt, event.timeZone);
+        return eventDateKey < leagueStartKey || eventDateKey > leagueEndKey;
+      });
       if (outsideDateRange) {
         return res.status(409).json({
           message: 'League dates must continue to include every existing event.',
@@ -587,17 +707,39 @@ class LeagueController {
       const allocatedGolfers = await getAllocatedGolfersForAdmin(existingLeague.adminId, id);
       const billingState = getBillingState(adminUser?.metadata, allocatedGolfers);
 
-      if (billingState.includedGolfers < allocatedGolfers + nextNumPlayers) {
+      const billableGolfers = Math.max(BILLING_MIN_GOLFERS, nextNumPlayers);
+      if (!isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)) {
         return res.status(402).json({
-          message: `This change needs ${nextNumPlayers} golfer slots, but your account only has ${billingState.availableGolfers} available.`,
+          message: `This change requires payment for ${billableGolfers} golfers in this league.`,
           billing: billingState,
-          requiredGolfers: nextNumPlayers,
+          requiredGolfers: billableGolfers,
           additionalGolfersRequired:
-            allocatedGolfers + nextNumPlayers - billingState.includedGolfers,
+            allocatedGolfers + billableGolfers - billingState.includedGolfers,
         });
       }
 
-      const updatedLeague = await LeagueService.update(id, league);
+      const updatedLeague = await prisma.$transaction(async (tx) => {
+        await lockAdminBilling(tx, existingLeague.adminId);
+        const [lockedAdmin, lockedAllocatedGolfers] = await Promise.all([
+          tx.user.findFirst({
+            where: { id: existingLeague.adminId, deletedAt: null },
+            select: { metadata: true },
+          }),
+          getAllocatedGolfersForAdmin(existingLeague.adminId, id, tx),
+        ]);
+        const lockedBillingState = getBillingState(
+          lockedAdmin?.metadata,
+          lockedAllocatedGolfers,
+        );
+        if (!isBillingCapacityCovered(
+          lockedBillingState,
+          lockedAllocatedGolfers + billableGolfers,
+        )) {
+          throw new Error('Payment is required for this capacity change.');
+        }
+
+        return tx.league.update({ where: { id }, data: league });
+      });
 
       if (!updatedLeague) {
         res.status(404).send('League not found');
@@ -608,10 +750,11 @@ class LeagueController {
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : 'Internal server error';
-      const status =
-        message.includes('League type') ||
+      const status = message.toLowerCase().includes('payment is required')
+        ? 402
+        : message.includes('League type') ||
+        message.includes('League hole format') ||
         message.includes('Season leagues require format') ||
-        message.includes('League access') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
         message.includes('League dates are invalid') ||
@@ -625,11 +768,96 @@ class LeagueController {
   static deleteLeague = async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
+      const completedEvent = await prisma.event.findFirst({
+        where: {
+          leagueId: id,
+          isDeleted: false,
+          deletedAt: null,
+          OR: [{ isComplete: true }, { status: 'completed' }, { rounds: { some: {} } }],
+        },
+        select: { id: true },
+      });
+      if (completedEvent) {
+        return res.status(409).json({
+          message: 'A league with completed scoring cannot be deleted or reused.',
+        });
+      }
       await LeagueService.delete(id);
       res.status(204).json('League deleted');
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });
+    }
+  };
+
+  static transferLeagueOwnership = async (req: Request, res: Response) => {
+    try {
+      const leagueId = Number(req.params.leagueId);
+      const newAdminEmail = String(req.body?.newAdminEmail || '').trim().toLowerCase();
+      if (!newAdminEmail) {
+        return res.status(400).json({ message: 'New admin email is required.' });
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        const league = await tx.league.findFirst({
+          where: { id: leagueId, deletedAt: null },
+          select: { id: true, name: true, adminId: true, numPlayers: true },
+        });
+        if (!league) throw new Error('League not found');
+
+        const nextAdmin = await tx.user.findFirst({
+          where: { email: newAdminEmail, deletedAt: null },
+          select: { id: true, email: true, role: true, metadata: true },
+        });
+        if (!nextAdmin || !['ADMIN', 'SUPER'].includes(String(nextAdmin.role).toUpperCase())) {
+          throw new Error('The new owner must have an active admin account.');
+        }
+        if (nextAdmin.id === league.adminId) return { league, nextAdmin };
+
+        for (const adminId of [league.adminId, nextAdmin.id].sort((a, b) => a - b)) {
+          await lockAdminBilling(tx, adminId);
+        }
+
+        if (String(nextAdmin.role).toUpperCase() !== 'SUPER') {
+          const allocatedGolfers = await getAllocatedGolfersForAdmin(
+            nextAdmin.id,
+            undefined,
+            tx,
+          );
+          const billingState = getBillingState(nextAdmin.metadata, allocatedGolfers);
+          if (!isBillingCapacityCovered(billingState, allocatedGolfers + league.numPlayers)) {
+            throw new Error(
+              `The new owner needs paid capacity for ${league.numPlayers} golfers before this league can be transferred.`,
+            );
+          }
+        }
+
+        const updatedLeague = await tx.league.update({
+          where: { id: league.id },
+          data: { adminId: nextAdmin.id },
+          select: { id: true, name: true, adminId: true, numPlayers: true },
+        });
+        return { league: updatedLeague, nextAdmin };
+      });
+
+      await writeAuditLog({
+        userId: req.session.userId ?? null,
+        leagueId,
+        entity: 'league',
+        entityId: leagueId,
+        action: 'transfer_ownership',
+        summary: `Transferred ${result.league.name} to ${result.nextAdmin.email}.`,
+        metadata: { newAdminId: result.nextAdmin.id },
+      });
+
+      return res.status(200).json(result.league);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      if (message === 'League not found') return res.status(404).json({ message });
+      if (message.includes('active admin account')) return res.status(400).json({ message });
+      if (message.includes('paid capacity')) return res.status(402).json({ message });
+      console.error(error);
+      return res.status(500).json({ message: 'Internal server error' });
     }
   };
 
@@ -642,11 +870,22 @@ class LeagueController {
         select: {
           type: true,
           format: true,
+          scoringPeriods: {
+            orderBy: { position: 'asc' },
+          },
           teams: {
             where: { deletedAt: null },
             select: {
               id: true,
               name: true,
+            },
+          },
+          players: {
+            where: { deletedAt: null },
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
             },
           },
         },
@@ -656,6 +895,36 @@ class LeagueController {
         res.status(404).send('League not found');
         return;
       }
+
+      const requestedPeriodId = Number(req.query.periodId || 0);
+      const selectedPeriod = requestedPeriodId
+        ? leagueMeta.scoringPeriods.find((period) => period.id === requestedPeriodId)
+        : null;
+      if (requestedPeriodId && !selectedPeriod) {
+        res.status(400).json({ message: 'Scoring period does not belong to this league.' });
+        return;
+      }
+
+      const leagueEvents = await prisma.event.findMany({
+        where: { leagueId, isDeleted: false, deletedAt: null },
+        select: { id: true, startsAt: true, timeZone: true },
+      });
+      const selectedEventIds = selectedPeriod
+        ? leagueEvents
+            .filter((event) => {
+              const date = localDateKey(event.startsAt, event.timeZone);
+              const startDate = selectedPeriod.startDate.toISOString().slice(0, 10);
+              const endDate = selectedPeriod.endDate.toISOString().slice(0, 10);
+              return date >= startDate && date <= endDate;
+            })
+            .map((event) => event.id)
+        : leagueEvents.map((event) => event.id);
+      const scopedEventWhere = {
+        leagueId,
+        isDeleted: false,
+        deletedAt: null,
+        ...(selectedPeriod ? { id: { in: selectedEventIds } } : {}),
+      };
 
       const isTeamLeague =
         String(leagueMeta.format || '').toLowerCase() === 'team' ||
@@ -671,12 +940,12 @@ class LeagueController {
       const rounds = await prisma.round.findMany({
         where: {
           deletedAt: null,
-          event: { leagueId, isDeleted: false, deletedAt: null },
+          event: scopedEventWhere,
           status: 'completed',
         },
         include: {
           player: true,
-          event: { select: { id: true, name: true, date: true } },
+          event: { select: { id: true, name: true, startsAt: true, timeZone: true } },
         },
         orderBy: { date: 'asc' },
       });
@@ -720,7 +989,11 @@ class LeagueController {
             rounds: 1,
             birdies: r.birdies,
             eagles: r.eagles,
-            startingHandicap: Number(r.player.startingHandicap ?? r.preHandicap ?? 0),
+            startingHandicap: Number(
+              selectedPeriod
+                ? (r.preHandicap ?? r.player.handicap ?? 0)
+                : (r.player.startingHandicap ?? r.preHandicap ?? 0),
+            ),
             currentHandicap: Number(r.postHandicap ?? r.preHandicap ?? r.player.handicap ?? 0),
           });
         }
@@ -742,6 +1015,8 @@ class LeagueController {
         }))
         .sort((a, b) => b.points - a.points);
 
+      const playerResults = calculatePlayerResults(leagueMeta.players, rounds);
+
       let standingsMode: 'player' | 'team' = 'player';
       let teamStandings: Array<{
         teamId: number;
@@ -754,7 +1029,10 @@ class LeagueController {
         standingsMode = 'team';
 
         const teamPointsRows = await prisma.team_event_points.findMany({
-          where: { leagueId },
+          where: {
+            leagueId,
+            ...(selectedPeriod ? { eventId: { in: selectedEventIds } } : {}),
+          },
           include: {
             team: {
               select: {
@@ -826,22 +1104,31 @@ class LeagueController {
       );
 
       // ── Gross trend per event ────────────────────────
-      const eventMap = new Map<number, { name: string; date: Date; grossScores: number[] }>();
+      const eventMap = new Map<
+        number,
+        { name: string; startsAt: Date; timeZone: string; grossScores: number[] }
+      >();
       for (const r of rounds) {
         const eid = r.event.id;
         const existing = eventMap.get(eid);
         if (existing) {
           existing.grossScores.push(r.gross);
         } else {
-          eventMap.set(eid, { name: r.event.name, date: r.event.date, grossScores: [r.gross] });
+          eventMap.set(eid, {
+            name: r.event.name,
+            startsAt: r.event.startsAt,
+            timeZone: r.event.timeZone,
+            grossScores: [r.gross],
+          });
         }
       }
 
       const grossTrend = [...eventMap.values()]
-        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+        .sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime())
         .map((e) => ({
           name: e.name,
-          date: e.date,
+          startsAt: e.startsAt,
+          timeZone: e.timeZone,
           avgGross:
             Math.round((e.grossScores.reduce((s, v) => s + v, 0) / e.grossScores.length) * 10) / 10,
           lowGross: Math.min(...e.grossScores),
@@ -850,7 +1137,7 @@ class LeagueController {
       // ── Weekly player trend (avg gross/net by event week) ─────────────
       const weeklyEvents = [
         ...new Map(rounds.map((r) => [Number(r.event.id), r.event])).values(),
-      ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      ].sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
 
       const eventIdToIndex = new Map<number, number>();
       const weeklyLabels = weeklyEvents.map((e, idx) => {
@@ -938,7 +1225,8 @@ class LeagueController {
           playerName: `${round.player.firstName} ${round.player.lastName}`,
           value: round[scoreKey],
           eventName: round.event.name,
-          eventDate: round.event.date,
+          eventDate: round.event.startsAt,
+          eventTimeZone: round.event.timeZone,
         };
       };
 
@@ -968,7 +1256,8 @@ class LeagueController {
               playerName: `${mostPointsRound.player.firstName} ${mostPointsRound.player.lastName}`,
               value: getRoundTotalPoints(mostPointsRound),
               eventName: mostPointsRound.event.name,
-              eventDate: mostPointsRound.event.date,
+              eventDate: mostPointsRound.event.startsAt,
+              eventTimeZone: mostPointsRound.event.timeZone,
             }
           : null,
       };
@@ -983,8 +1272,7 @@ class LeagueController {
           round: {
             status: 'completed',
             event: {
-              leagueId,
-              isDeleted: false,
+              ...scopedEventWhere,
             },
           },
         },
@@ -1004,7 +1292,8 @@ class LeagueController {
               event: {
                 select: {
                   name: true,
-                  date: true,
+                  startsAt: true,
+                  timeZone: true,
                   format: true,
                   scoringFormat: true,
                 },
@@ -1019,8 +1308,7 @@ class LeagueController {
           deletedAt: null,
           flight: {
             event: {
-              leagueId,
-              isDeleted: false,
+              ...scopedEventWhere,
             },
           },
         },
@@ -1051,6 +1339,7 @@ class LeagueController {
           teamName: string;
           eventName: string;
           eventDate: Date;
+          eventTimeZone: string;
           grossByHole: Map<number, number>;
           netByHole: Map<number, number>;
         }
@@ -1072,7 +1361,8 @@ class LeagueController {
           teamId,
           teamName: teamNameMap.get(teamId) || `Team ${teamId}`,
           eventName: String(score.round.event?.name || `Event ${eventId}`),
-          eventDate: (score.round.event?.date as Date) || new Date(0),
+          eventDate: (score.round.event?.startsAt as Date) || new Date(0),
+          eventTimeZone: String(score.round.event?.timeZone || 'UTC'),
           grossByHole: new Map<number, number>(),
           netByHole: new Map<number, number>(),
         };
@@ -1103,6 +1393,7 @@ class LeagueController {
         teamName: entry.teamName,
         eventName: entry.eventName,
         eventDate: entry.eventDate,
+        eventTimeZone: entry.eventTimeZone,
         grossTotal: [...entry.grossByHole.values()].reduce((sum, val) => sum + val, 0),
         netTotal: [...entry.netByHole.values()].reduce((sum, val) => sum + val, 0),
       }));
@@ -1122,6 +1413,7 @@ class LeagueController {
           value: lowGrossTeam.grossTotal,
           eventName: lowGrossTeam.eventName,
           eventDate: lowGrossTeam.eventDate,
+          eventTimeZone: lowGrossTeam.eventTimeZone,
         };
       }
 
@@ -1131,12 +1423,13 @@ class LeagueController {
           value: lowNetTeam.netTotal,
           eventName: lowNetTeam.eventName,
           eventDate: lowNetTeam.eventDate,
+          eventTimeZone: lowNetTeam.eventTimeZone,
         };
       }
 
       // ── Season skins ─────────────────────────────────
       const allScores = await prisma.score.findMany({
-        where: { round: { event: { leagueId, isDeleted: false }, status: 'completed' } },
+        where: { round: { event: scopedEventWhere, status: 'completed' } },
         include: {
           round: {
             include: {
@@ -1147,154 +1440,16 @@ class LeagueController {
         },
       });
 
-      let grossSkinsLeaderboard: any[] = [];
-      let netSkinsLeaderboard: any[] = [];
-
-      if (standingsMode === 'team') {
-        const grossSkinCounts = new Map<number, { name: string; skins: number }>();
-        const netSkinCounts = new Map<number, { name: string; skins: number }>();
-        const grossTeamHoleMap = new Map<string, Map<number, number>>();
-        const netTeamHoleMap = new Map<string, Map<number, number>>();
-
-        for (const s of allScores) {
-          const eventFormat = normalizeEventFormat(s.round.event?.format, 'individual');
-          const scoringFormat = normalizeScoringFormat(s.round.event?.scoringFormat, 'stroke');
-          if (eventFormat !== 'team' || scoringFormat !== 'stroke') continue;
-
-          const eventId = Number(s.round.event.id);
-          const playerId = Number(s.round.playerId);
-          const teamId =
-            Number(s.round.player?.teamId || 0) ||
-            Number(eventPlayerTeamMap.get(`${eventId}-${playerId}`) || 0);
-          if (!teamId) continue;
-
-          const holeKey = `${eventId}-${s.hole}`;
-
-          const grossByTeam = grossTeamHoleMap.get(holeKey) || new Map<number, number>();
-          const gross = Number(s.gross);
-          if (Number.isFinite(gross) && gross > 0) {
-            const current = grossByTeam.get(teamId);
-            if (current == null || gross < current) {
-              grossByTeam.set(teamId, gross);
-            }
-            grossTeamHoleMap.set(holeKey, grossByTeam);
-          }
-
-          const netByTeam = netTeamHoleMap.get(holeKey) || new Map<number, number>();
-          const net = Number(s.net);
-          if (Number.isFinite(net) && net > 0) {
-            const current = netByTeam.get(teamId);
-            if (current == null || net < current) {
-              netByTeam.set(teamId, net);
-            }
-            netTeamHoleMap.set(holeKey, netByTeam);
-          }
-        }
-
-        for (const scoresByTeam of grossTeamHoleMap.values()) {
-          if (scoresByTeam.size < 2) continue;
-          const values = [...scoresByTeam.values()];
-          const min = Math.min(...values);
-          const winners = [...scoresByTeam.entries()].filter(([, score]) => score === min);
-          if (winners.length !== 1) continue;
-
-          const teamId = winners[0][0];
-          const existing = grossSkinCounts.get(teamId);
-          if (existing) existing.skins += 1;
-          else
-            grossSkinCounts.set(teamId, {
-              name: teamNameMap.get(teamId) || `Team ${teamId}`,
-              skins: 1,
-            });
-        }
-
-        for (const scoresByTeam of netTeamHoleMap.values()) {
-          if (scoresByTeam.size < 2) continue;
-          const values = [...scoresByTeam.values()];
-          const min = Math.min(...values);
-          const winners = [...scoresByTeam.entries()].filter(([, score]) => score === min);
-          if (winners.length !== 1) continue;
-
-          const teamId = winners[0][0];
-          const existing = netSkinCounts.get(teamId);
-          if (existing) existing.skins += 1;
-          else
-            netSkinCounts.set(teamId, {
-              name: teamNameMap.get(teamId) || `Team ${teamId}`,
-              skins: 1,
-            });
-        }
-
-        grossSkinsLeaderboard = [...grossSkinCounts.entries()]
-          .map(([teamId, d]) => ({ playerId: teamId, teamId, name: d.name, skins: d.skins }))
-          .sort((a, b) => b.skins - a.skins)
-          .slice(0, 3);
-
-        netSkinsLeaderboard = [...netSkinCounts.entries()]
-          .map(([teamId, d]) => ({ playerId: teamId, teamId, name: d.name, skins: d.skins }))
-          .sort((a, b) => b.skins - a.skins)
-          .slice(0, 3);
-      } else {
-        // Aggregate gross skins: count holes won per player across all events
-        const grossSkinCounts = new Map<number, { name: string; skins: number }>();
-        const grossHoleMap = new Map<
-          string,
-          { playerId: number; name: string; gross: number } | null
-        >();
-        for (const s of allScores) {
-          const key = `${s.round.event.id}-${s.hole}`;
-          const entry = grossHoleMap.get(key);
-          const playerName = `${s.round.player.firstName} ${s.round.player.lastName}`;
-          if (!entry) {
-            grossHoleMap.set(key, { playerId: s.round.playerId, name: playerName, gross: s.gross });
-          } else if (s.gross < entry.gross) {
-            grossHoleMap.set(key, { playerId: s.round.playerId, name: playerName, gross: s.gross });
-          } else if (s.gross === entry.gross) {
-            grossHoleMap.set(key, null);
-          }
-        }
-        for (const winner of grossHoleMap.values()) {
-          if (!winner) continue;
-          const existing = grossSkinCounts.get(winner.playerId);
-          if (existing) existing.skins++;
-          else grossSkinCounts.set(winner.playerId, { name: winner.name, skins: 1 });
-        }
-        grossSkinsLeaderboard = [...grossSkinCounts.entries()]
-          .map(([playerId, d]) => ({ playerId, name: d.name, skins: d.skins }))
-          .sort((a, b) => b.skins - a.skins)
-          .slice(0, 3);
-
-        // Aggregate net skins
-        const netSkinCounts = new Map<number, { name: string; skins: number }>();
-        const netHoleMap = new Map<
-          string,
-          { playerId: number; name: string; net: number } | null
-        >();
-        for (const s of allScores) {
-          const key = `${s.round.event.id}-${s.hole}`;
-          const entry = netHoleMap.get(key);
-          const playerName = `${s.round.player.firstName} ${s.round.player.lastName}`;
-          if (!entry) {
-            netHoleMap.set(key, { playerId: s.round.playerId, name: playerName, net: s.net });
-          } else if (s.net < entry.net) {
-            netHoleMap.set(key, { playerId: s.round.playerId, name: playerName, net: s.net });
-          } else if (s.net === entry.net) {
-            netHoleMap.set(key, null);
-          }
-        }
-        for (const winner of netHoleMap.values()) {
-          if (!winner) continue;
-          const existing = netSkinCounts.get(winner.playerId);
-          if (existing) existing.skins++;
-          else netSkinCounts.set(winner.playerId, { name: winner.name, skins: 1 });
-        }
-        netSkinsLeaderboard = [...netSkinCounts.entries()]
-          .map(([playerId, d]) => ({ playerId, name: d.name, skins: d.skins }))
-          .sort((a, b) => b.skins - a.skins)
-          .slice(0, 3);
-      }
-
-      const skins = { gross: grossSkinsLeaderboard, net: netSkinsLeaderboard };
+      const skins = calculateSeasonSkinLeaderboards(
+        allScores.map((score) => ({
+          eventId: Number(score.round.event.id),
+          hole: Number(score.hole),
+          playerId: Number(score.round.playerId),
+          playerName: `${score.round.player.firstName} ${score.round.player.lastName}`.trim(),
+          gross: Number(score.gross),
+          net: Number(score.net),
+        })),
+      );
 
       // ── Top-5 leaderboards ───────────────────────────
       const top5Points =
@@ -1347,8 +1502,26 @@ class LeagueController {
       };
 
       res.status(200).json({
+        scoringPeriods: leagueMeta.scoringPeriods.map((period) => ({
+          id: period.id,
+          name: period.name,
+          position: period.position,
+          startDate: period.startDate,
+          endDate: period.endDate,
+          eventCount: leagueEvents.filter((event) => {
+            const date = localDateKey(event.startsAt, event.timeZone);
+            return (
+              date >= period.startDate.toISOString().slice(0, 10) &&
+              date <= period.endDate.toISOString().slice(0, 10)
+            );
+          }).length,
+        })),
+        selectedPeriod: selectedPeriod
+          ? { id: selectedPeriod.id, name: selectedPeriod.name }
+          : null,
         standingsMode,
         standings,
+        playerResults,
         teamStandings,
         scoreDistribution,
         grossTrend,

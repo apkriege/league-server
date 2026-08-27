@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import UserService from '../models/user';
 import { prisma } from '../../prisma';
 import bcrypt from 'bcryptjs';
+import { getPublicErrorResponse } from '../utils/error-response';
 
 const serializeUser = (user: any) => ({
   id: user.id,
@@ -16,6 +17,11 @@ const serializeUser = (user: any) => ({
   updatedAt: user.updatedAt,
   deletedAt: user.deletedAt,
 });
+
+const sendPublicError = (res: Response, error: unknown) => {
+  const response = getPublicErrorResponse(error);
+  return res.status(response.status).json({ message: response.message });
+};
 
 class UserController {
   static sanitizeUserUpdatePayload = (payload: any, canManageRoles: boolean) => {
@@ -47,7 +53,7 @@ class UserController {
       res.status(200).json(users.map(serializeUser));
     } catch (error) {
       console.error(error);
-      res.status(500).send(error);
+      return sendPublicError(res, error);
     }
   };
 
@@ -64,7 +70,7 @@ class UserController {
       res.status(200).json(serializeUser(user));
     } catch (error) {
       console.error(error);
-      res.status(500).send(error);
+      return sendPublicError(res, error);
     }
   };
 
@@ -82,7 +88,7 @@ class UserController {
       res.status(200).json(serializeUser(user));
     } catch (error) {
       console.error(error);
-      res.status(500).send(error);
+      return sendPublicError(res, error);
     }
   };
 
@@ -92,8 +98,8 @@ class UserController {
       if (!newUser.firstName || !newUser.lastName || !newUser.email || !newUser.password) {
         return res.status(400).json({ message: 'First name, last name, email, and password are required' });
       }
-      if (String(newUser.password).length < 10) {
-        return res.status(400).json({ message: 'Password must be at least 10 characters' });
+      if (String(newUser.password).length < 8) {
+        return res.status(400).json({ message: 'Password must be at least 8 characters' });
       }
       if (newUser.password) {
         newUser.password = await bcrypt.hash(String(newUser.password), 10);
@@ -102,10 +108,7 @@ class UserController {
       res.status(201).json(serializeUser(user));
     } catch (error) {
       console.error(error);
-      if (error instanceof Error && error.message === 'Invalid user role') {
-        return res.status(400).json({ message: error.message });
-      }
-      res.status(500).send(error);
+      return sendPublicError(res, error);
     }
   };
 
@@ -122,8 +125,8 @@ class UserController {
       }
 
       if (updatedUser.password) {
-        if (String(updatedUser.password).length < 10) {
-          return res.status(400).json({ message: 'Password must be at least 10 characters' });
+        if (String(updatedUser.password).length < 8) {
+          return res.status(400).json({ message: 'Password must be at least 8 characters' });
         }
         updatedUser.password = await bcrypt.hash(String(updatedUser.password), 10);
       }
@@ -137,10 +140,7 @@ class UserController {
       res.status(200).json(serializeUser(user));
     } catch (error) {
       console.error(error);
-      if (error instanceof Error && error.message === 'Invalid user role') {
-        return res.status(400).json({ message: error.message });
-      }
-      res.status(500).send(error);
+      return sendPublicError(res, error);
     }
   };
 
@@ -159,7 +159,7 @@ class UserController {
       res.status(200).json({ message: 'User deleted' });
     } catch (error) {
       console.error(error);
-      res.status(500).send(error);
+      return sendPublicError(res, error);
     }
   };
 
@@ -183,7 +183,7 @@ class UserController {
       res.status(200).json(leagues);
     } catch (error) {
       console.error(error);
-      res.status(500).send(error);
+      return sendPublicError(res, error);
     }
   };
 }

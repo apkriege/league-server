@@ -26,9 +26,9 @@ import Flight from './controllers/flight';
 import Admin from './controllers/admin';
 import Payment from './controllers/payment';
 import Operations from './controllers/operations';
-import TestController from './controllers/test';
 import HealthController from './controllers/health';
 import SeasonSyncController from './controllers/seasonSync';
+import SupportController from './controllers/support';
 import { createRateLimiter } from './middleware/security';
 
 const router: Router = express.Router();
@@ -38,8 +38,12 @@ const paymentRateLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 10,
 });
+const supportRateLimiter = createRateLimiter({
+  keyPrefix: 'support',
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+});
 
-router.get('/test-handicap', admin, TestController.fullHandicapTest);
 router.get('/health', HealthController.getHealth);
 
 // =====================
@@ -48,21 +52,28 @@ router.get('/health', HealthController.getHealth);
 router.post('/auth/login', authRateLimiter, Auth.login);
 router.post('/auth/league-code', authRateLimiter, Auth.loginWithLeagueCode);
 router.post('/auth/register', authRateLimiter, Auth.register);
+router.post('/auth/password-reset/request', authRateLimiter, Auth.requestPasswordReset);
+router.post('/auth/password-reset/complete', authRateLimiter, Auth.completePasswordReset);
 router.post('/auth/logout', Auth.logout);
 router.get('/auth/me', user, Auth.getProfile);
+router.post('/support/messages', user, supportRateLimiter, SupportController.submitMessage);
 
 // =====================
 // PAYMENT ROUTES
 // =====================
-router.post('/payments/checkout-session', user, paymentRateLimiter, Payment.createCheckoutSession);
+router.post('/payments/checkout-session', admin, paymentRateLimiter, Payment.createCheckoutSession);
+router.post('/payments/bypass-code', admin, paymentRateLimiter, Payment.redeemPaymentBypassCode);
+router.get(
+  '/payments/checkout-session/:sessionId',
+  user,
+  paymentRateLimiter,
+  Payment.confirmCheckoutSession,
+);
 router.get('/payments/stripe-state', user, paymentRateLimiter, Payment.getStripeState);
 
 // =====================
 // OPERATIONS ROUTES
 // =====================
-router.get('/notifications', user, Operations.getNotifications);
-router.put('/notifications/:id/read', user, Operations.markNotificationRead);
-router.delete('/notifications/:id', user, Operations.clearNotification);
 router.get('/invitations/:token', Operations.getInvitationByToken);
 router.post('/invitations/:token/claim', user, Operations.claimInvitation);
 router.get('/leagues/:leagueId/invitations', leagueAdminGuard, Operations.getLeagueInvitations);
@@ -81,13 +92,12 @@ router.put(
 );
 router.delete(
   '/leagues/:leagueId/announcements/:announcementId',
-  leagueMemberGuard,
-  Operations.dismissLeagueAnnouncement,
+  leagueAdminGuard,
+  Operations.deleteLeagueAnnouncement,
 );
 router.get('/leagues/:leagueId/onboarding', leagueAdminGuard, Operations.getLeagueOnboarding);
 router.put('/leagues/:leagueId/onboarding', leagueAdminGuard, Operations.updateLeagueOnboarding);
 router.get('/leagues/:leagueId/audit-logs', leagueAdminGuard, Operations.getLeagueAuditLogs);
-router.post('/leagues/:leagueId/notifications', leagueAdminGuard, Operations.createLeagueNotification);
 
 // =====================
 // ADMIN ROUTES
@@ -95,6 +105,10 @@ router.post('/leagues/:leagueId/notifications', leagueAdminGuard, Operations.cre
 const adminRoutes = express.Router();
 router.get('/admin/leagues', admin, Admin.getLeagues);
 router.get('/admin/leagues/:id', admin, Admin.getLeague);
+adminRoutes.get('/billing', Admin.getBilling);
+adminRoutes.get('/payment-bypass-codes', Admin.getPaymentBypassCodes);
+adminRoutes.post('/payment-bypass-codes', Admin.createPaymentBypassCode);
+adminRoutes.delete('/payment-bypass-codes/:id', Admin.revokePaymentBypassCode);
 router.use('/admin', superAdmin, adminRoutes);
 
 // =====================
@@ -117,6 +131,10 @@ router.put('/clubs/:id', superAdmin, Club.updateClub);
 
 // Courses
 router.get('/courses', Course.getCourses);
+router.get('/courses/import/search', admin, Course.searchCourseDirectory);
+router.get('/courses/import/:externalId', admin, Course.importCourse);
+router.post('/courses/requests', admin, Course.requestCourse);
+router.post('/courses/requests/manual', admin, Course.requestManualCourse);
 router.get('/courses/:id', Course.getCourse);
 router.post('/courses', superAdmin, Course.createCourse);
 router.put('/courses/:id', superAdmin, Course.updateCourse);
@@ -129,11 +147,22 @@ router.get('/leagues/:id/metrics', leagueMemberGuard, League.getLeagueMetrics);
 router.post('/leagues', admin, League.createLeague);
 router.put('/leagues/:id', admin, leagueAdminGuard, League.updateLeague);
 router.delete('/leagues/:id', admin, leagueAdminGuard, League.deleteLeague);
+router.post(
+  '/leagues/:leagueId/viewer-access-code/rotate',
+  leagueAdminGuard,
+  League.rotateViewerAccessCode,
+);
+router.patch(
+  '/leagues/:leagueId/owner',
+  leagueAdminGuard,
+  League.transferLeagueOwnership,
+);
 router.post('/leagues/:leagueId/season-sync', leagueAdminGuard, SeasonSyncController.recalculateLeague);
 
 // League Players & Teams
 router.get('/leagues/:leagueId/players', leagueMemberGuard, Player.getLeaguePlayers);
 router.post('/leagues/:leagueId/players', leagueAdminGuard, Player.createPlayer);
+router.post('/leagues/:leagueId/players/batch', leagueAdminGuard, Player.createPlayers);
 router.get('/leagues/:leagueId/teams', leagueMemberGuard, Team.getLeagueTeams);
 router.post('/leagues/:leagueId/teams', leagueAdminGuard, Team.createTeam);
 

@@ -28,7 +28,8 @@ export default class Dashboard {
           event: {
             select: {
               id: true,
-              date: true,
+              startsAt: true,
+              timeZone: true,
               name: true,
               startSide: true,
               type: true,

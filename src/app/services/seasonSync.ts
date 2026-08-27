@@ -1,6 +1,16 @@
 import { prisma } from '../../prisma';
-import { modelTeeForRound } from '../utils/tee-rating';
+import { dateOnlyInTimeZone } from '../utils/time-zone';
+import {
+  calculateLeaguePlayingHandicap,
+  calculateMatchPops,
+  calculateRoundDifferential,
+  calculateStrokePops,
+  modelTeeForRound,
+  selectRoundHoles,
+} from '../utils/tee-rating';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
+import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
+import { getHandicapHoleBasis, type HandicapHoleBasis } from '../utils/league-hole-format';
 
 type PrismaTx = any;
 
@@ -53,6 +63,7 @@ type RoundCalculation = {
   teamId: number | null;
   opponentId: number | null;
   preHandicap: number;
+  courseHandicap: number;
   postHandicap: number;
   differential: number;
   gross: number;
@@ -62,6 +73,7 @@ type RoundCalculation = {
   scores: ModeledScore[];
   pointsEarned: number;
   matchPoints: number;
+  tee: ReturnType<typeof modelTeeForRound>;
 };
 
 type TeamEventPointsAccumulator = Map<string, { leagueId: number; eventId: number; teamId: number; points: number }>;
@@ -85,6 +97,19 @@ const roundToOneDecimal = (value: number) => Math.round(value * 10) / 10;
 
 const roundToTwoDecimals = (value: number) => Number(value.toFixed(2));
 
+const toStrokePointsArray = (raw: unknown): number[] => {
+  if (Array.isArray(raw)) {
+    return raw.map(Number).filter((value) => Number.isFinite(value) && value >= 0);
+  }
+  if (typeof raw === 'string') {
+    return raw
+      .split(',')
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isFinite(value) && value >= 0);
+  }
+  return [];
+};
+
 const getHoleNumber = (hole: any) => Number(hole?.num ?? hole?.hole ?? 0);
 
 const normalizeHoles = (holes: any): HoleDefinition[] => {
@@ -101,64 +126,11 @@ const normalizeHoles = (holes: any): HoleDefinition[] => {
 };
 
 const calculateStrokeplayPops = (handicap: number, holes: HoleDefinition[]) => {
-  let remainingPops = Math.round(toNumber(handicap, 0));
-  const sortedHoles = [...holes].sort((a, b) => a.hcp - b.hcp);
-  const popsMap = new Map<number, number>();
-
-  while (remainingPops > 0 && sortedHoles.length > 0) {
-    for (const hole of sortedHoles) {
-      if (remainingPops <= 0) break;
-      popsMap.set(hole.num, (popsMap.get(hole.num) || 0) + 1);
-      remainingPops -= 1;
-    }
-  }
-
-  return popsMap;
+  return calculateStrokePops(handicap, holes);
 };
 
 const calculateMatchplayPops = (leftHandicap: number, rightHandicap: number, holes: HoleDefinition[]) => {
-  const leftRounded = Math.round(toNumber(leftHandicap, 0));
-  const rightRounded = Math.round(toNumber(rightHandicap, 0));
-  let remainingPops = Math.abs(leftRounded - rightRounded);
-  const sortedHoles = [...holes].sort((a, b) => a.hcp - b.hcp);
-  const leftPops = new Map<number, number>();
-  const rightPops = new Map<number, number>();
-  let holeIndex = 0;
-
-  while (remainingPops > 0 && sortedHoles.length > 0) {
-    const hole = sortedHoles[holeIndex % sortedHoles.length];
-
-    if (leftRounded > rightRounded) {
-      leftPops.set(hole.num, (leftPops.get(hole.num) || 0) + 1);
-    } else if (rightRounded > leftRounded) {
-      rightPops.set(hole.num, (rightPops.get(hole.num) || 0) + 1);
-    }
-
-    remainingPops -= 1;
-    holeIndex += 1;
-  }
-
-  return [leftPops, rightPops] as const;
-};
-
-const getEquitableStrokeControlMax = (handicap: number, par: number, holesPlayed: number) => {
-  const roundedHandicap = Math.round(toNumber(handicap, 0));
-  let maxAllowed = par + 2;
-
-  if (Number(holesPlayed) === 9) {
-    if (roundedHandicap >= 5 && roundedHandicap <= 9) maxAllowed = 7;
-    else if (roundedHandicap >= 10 && roundedHandicap <= 14) maxAllowed = 8;
-    else if (roundedHandicap >= 15 && roundedHandicap <= 19) maxAllowed = 9;
-    else if (roundedHandicap >= 20) maxAllowed = 10;
-    return maxAllowed;
-  }
-
-  if (roundedHandicap >= 10 && roundedHandicap <= 19) maxAllowed = 7;
-  else if (roundedHandicap >= 20 && roundedHandicap <= 29) maxAllowed = 8;
-  else if (roundedHandicap >= 30 && roundedHandicap <= 39) maxAllowed = 9;
-  else if (roundedHandicap >= 40) maxAllowed = 10;
-
-  return maxAllowed;
+  return calculateMatchPops(leftHandicap, rightHandicap, holes);
 };
 
 const stablefordPoints = (net: number, par: number) => {
@@ -218,34 +190,28 @@ const calculateNextHandicap = ({
   state,
   adjustedScore,
   tee,
+  handicapHoleBasis,
 }: {
   state: PlayerSeasonState;
   adjustedScore: number;
   tee: any;
+  handicapHoleBasis: HandicapHoleBasis;
 }) => {
-  const slope = toNumber(tee?.slope, 113);
-  const rating = toNumber(tee?.rating, 0);
-  const par = toNumber(tee?.par, 0);
-  const differential = roundToTwoDecimals(((adjustedScore - rating) * 113) / slope);
-  const previousDifferentials = state.differentials.slice(-5);
+  const differential = calculateRoundDifferential(
+    adjustedScore,
+    tee,
+    state.currentHandicap,
+    handicapHoleBasis,
+  );
+  const previousDifferentials = state.differentials.slice(-19);
   const differentials = [...previousDifferentials, differential];
-  const sorted = [...differentials].sort((a, b) => a - b);
-  const roundsToUse = 5;
   const preHandicap = state.currentHandicap;
-
-  let nextHandicap: number;
-  if (!preHandicap) {
-    nextHandicap = roundToTwoDecimals(differential * 0.96);
-  } else if (sorted.length < roundsToUse) {
-    const sum = sorted.reduce((total, value) => total + value, 0) + preHandicap;
-    nextHandicap = roundToTwoDecimals((sum / (sorted.length + 1)) * 0.96);
-  } else {
-    const lowestFive = sorted.slice(0, roundsToUse);
-    const avg = lowestFive.reduce((total, value) => total + value, 0) / roundsToUse;
-    nextHandicap = roundToTwoDecimals(avg * 0.96);
-  }
-
-  nextHandicap = roundToTwoDecimals(nextHandicap + (rating - par || 0));
+  const nextHandicap =
+    calculateHandicapIndexFromDifferentials(
+      differentials,
+      preHandicap,
+      state.startingHandicap,
+    ) ?? preHandicap;
 
   return {
     differential,
@@ -257,12 +223,10 @@ const buildModeledScores = ({
   scoreRows,
   holes,
   handicap,
-  holesPlayed,
 }: {
   scoreRows: any[];
   holes: HoleDefinition[];
   handicap: number;
-  holesPlayed: number;
 }) => {
   const holeByNumber = new Map(holes.map((hole) => [hole.num, hole]));
   const pops = calculateStrokeplayPops(handicap, holes);
@@ -281,7 +245,7 @@ const buildModeledScores = ({
         hole: holeNumber,
         par: hole.par,
         gross,
-        adjusted: Math.min(gross, getEquitableStrokeControlMax(handicap, hole.par, holesPlayed)),
+        adjusted: Math.min(gross, hole.par + 2 + Math.max(0, popCount)),
         net: Math.max(0, gross - popCount),
         pops: popCount,
       } satisfies ModeledScore;
@@ -331,7 +295,11 @@ const calculateMatchPointsForPair = ({
   left: RoundCalculation;
   right: RoundCalculation;
 }) => {
-  const [leftPops, rightPops] = calculateMatchplayPops(left.preHandicap, right.preHandicap, holes);
+  const [leftPops, rightPops] = calculateMatchplayPops(
+    left.courseHandicap,
+    right.courseHandicap,
+    holes,
+  );
   const pointsPerHole = toNumber(event?.ptsPerHole, 0);
   const pointsPerMatch = toNumber(event?.ptsPerMatch, 0);
   let leftHolePoints = 0;
@@ -387,7 +355,37 @@ const calculateMatchPointsForPair = ({
   };
 };
 
-const assignIndividualStrokePoints = (calculations: RoundCalculation[]) => {
+const assignIndividualStrokePoints = (event: any, calculations: RoundCalculation[]) => {
+  const strokePoints = toStrokePointsArray(event?.strokePoints);
+  if (strokePoints.length > 0) {
+    const ranked = [...calculations].sort((left, right) => {
+      if (left.net !== right.net) return left.net - right.net;
+      return left.gross - right.gross;
+    });
+    let cursor = 0;
+    while (cursor < ranked.length) {
+      let end = cursor;
+      while (
+        end + 1 < ranked.length &&
+        ranked[end + 1].net === ranked[cursor].net &&
+        ranked[end + 1].gross === ranked[cursor].gross
+      ) {
+        end += 1;
+      }
+      let pointsSum = 0;
+      for (let index = cursor; index <= end; index += 1) {
+        pointsSum += Number(strokePoints[index] ?? 0);
+      }
+      const tiedPoints = roundToOneDecimal(pointsSum / (end - cursor + 1));
+      for (let index = cursor; index <= end; index += 1) {
+        ranked[index].pointsEarned = tiedPoints;
+        ranked[index].matchPoints = 0;
+      }
+      cursor = end + 1;
+    }
+    return;
+  }
+
   for (const calculation of calculations) {
     calculation.pointsEarned = calculation.scores.reduce((sum, score) => {
       return sum + stablefordPoints(score.net, score.par);
@@ -537,14 +535,12 @@ const assignTeamStrokePoints = ({
   calculationsByPlayerId: Map<number, RoundCalculation>;
   teamPoints: TeamEventPointsAccumulator;
 }) => {
-  const pointsPerHole = toNumber(event?.ptsPerHole, 0);
-
   for (const calculation of calculationsByPlayerId.values()) {
     calculation.pointsEarned = 0;
     calculation.matchPoints = 0;
   }
 
-  if (pointsPerHole <= 0) return;
+  const strokePoints = toStrokePointsArray(event?.strokePoints);
 
   for (const flight of flights) {
     const teamIds = getFlightTeamIds(flight);
@@ -552,12 +548,16 @@ const assignTeamStrokePoints = ({
 
     const [leftTeamId, rightTeamId] = teamIds;
     const leftPlayers = (flight.players || [])
-      .filter((player: any) => Number(player?.teamId ?? player?.player?.teamId) === leftTeamId)
+      .filter(
+        (player: any) => Number(player?.teamId ?? player?.player?.teamId) === leftTeamId,
+      )
       .map((player: any) => calculationsByPlayerId.get(Number(player?.playerId)))
       .filter((calculation: RoundCalculation | undefined): calculation is RoundCalculation => Boolean(calculation));
 
     const rightPlayers = (flight.players || [])
-      .filter((player: any) => Number(player?.teamId ?? player?.player?.teamId) === rightTeamId)
+      .filter(
+        (player: any) => Number(player?.teamId ?? player?.player?.teamId) === rightTeamId,
+      )
       .map((player: any) => calculationsByPlayerId.get(Number(player?.playerId)))
       .filter((calculation: RoundCalculation | undefined): calculation is RoundCalculation => Boolean(calculation));
 
@@ -565,6 +565,8 @@ const assignTeamStrokePoints = ({
 
     let leftPoints = 0;
     let rightPoints = 0;
+    let leftNetTotal = 0;
+    let rightNetTotal = 0;
 
     for (const hole of holes) {
       const bestLeft = getBestNetForHole(leftPlayers, hole.num);
@@ -572,13 +574,28 @@ const assignTeamStrokePoints = ({
 
       if (bestLeft == null || bestRight == null) continue;
 
-      if (bestLeft === bestRight) {
-        leftPoints += pointsPerHole / 2;
-        rightPoints += pointsPerHole / 2;
-      } else if (bestLeft < bestRight) {
-        leftPoints += pointsPerHole;
+      leftNetTotal += bestLeft;
+      rightNetTotal += bestRight;
+
+      if (strokePoints.length === 0) {
+        leftPoints += stablefordPoints(bestLeft, hole.par);
+        rightPoints += stablefordPoints(bestRight, hole.par);
+      }
+    }
+
+    if (strokePoints.length > 0) {
+      if (leftNetTotal === rightNetTotal) {
+        const tiedPoints = roundToOneDecimal(
+          (Number(strokePoints[0] ?? 0) + Number(strokePoints[1] ?? 0)) / 2,
+        );
+        leftPoints = tiedPoints;
+        rightPoints = tiedPoints;
+      } else if (leftNetTotal < rightNetTotal) {
+        leftPoints = Number(strokePoints[0] ?? 0);
+        rightPoints = Number(strokePoints[1] ?? 0);
       } else {
-        rightPoints += pointsPerHole;
+        leftPoints = Number(strokePoints[1] ?? 0);
+        rightPoints = Number(strokePoints[0] ?? 0);
       }
     }
 
@@ -642,14 +659,22 @@ const recalculateEvent = async ({
   event,
   playerStates,
   teamPoints,
+  handicapHoleBasis,
 }: {
   tx: PrismaTx;
   event: any;
   playerStates: Map<number, PlayerSeasonState>;
   teamPoints: TeamEventPointsAccumulator;
+  handicapHoleBasis: HandicapHoleBasis;
 }) => {
-  const tee = modelTeeForRound(event.tee, Number(event.holes), String(event.startSide || ''));
-  const holes = normalizeHoles(tee.holes);
+  const holes = normalizeHoles(
+    selectRoundHoles(
+      event.tee,
+      event.course?.numHoles,
+      Number(event.holes),
+      String(event.startSide || ''),
+    ).holes,
+  );
   const flightPlayerLookup = getFlightPlayerLookup(event);
   const calculations: RoundCalculation[] = [];
   const calculationsByPlayerId = new Map<number, RoundCalculation>();
@@ -660,11 +685,19 @@ const recalculateEvent = async ({
 
     const playerState = getOrCreatePlayerState(playerStates, round.player);
     const preHandicap = playerState.currentHandicap;
+    const tee = modelTeeForRound(event.tee, Number(event.holes), event.startSide, {
+      courseHoles: event.course?.numHoles,
+      gender: round.player?.gender,
+    });
+    const courseHandicap = calculateLeaguePlayingHandicap(
+      preHandicap,
+      tee,
+      handicapHoleBasis,
+    );
     const scores = buildModeledScores({
       scoreRows,
       holes,
-      handicap: preHandicap,
-      holesPlayed: Number(event.holes),
+      handicap: courseHandicap,
     });
 
     if (scores.length === 0) continue;
@@ -674,6 +707,7 @@ const recalculateEvent = async ({
       state: playerState,
       adjustedScore: stats.totalAdjusted,
       tee,
+      handicapHoleBasis,
     });
     const flightPlayer = flightPlayerLookup.get(Number(round.playerId));
     const opponentId = toNumber(round.opponentId ?? flightPlayer?.opponentId, 0) || null;
@@ -685,6 +719,7 @@ const recalculateEvent = async ({
       teamId,
       opponentId,
       preHandicap,
+      courseHandicap,
       postHandicap: handicapData.handicap,
       differential: handicapData.differential,
       gross: stats.totalGross,
@@ -694,6 +729,7 @@ const recalculateEvent = async ({
       scores,
       pointsEarned: 0,
       matchPoints: 0,
+      tee,
     };
 
     calculations.push(calculation);
@@ -721,7 +757,7 @@ const recalculateEvent = async ({
       calculation.matchPoints = 0;
     }
   } else if (eventFormat === 'individual' && scoringFormat === 'stroke') {
-    assignIndividualStrokePoints(calculations);
+    assignIndividualStrokePoints(event, calculations);
   } else if (eventFormat === 'individual' && scoringFormat === 'match') {
     assignMatchPoints({ event, holes, calculations });
   } else if (eventFormat === 'team' && scoringFormat === 'match') {
@@ -758,8 +794,9 @@ const recalculateEvent = async ({
         net: calculation.net,
         adjusted: calculation.adjusted,
         putts: toNumber(calculation.round.putts, 0),
-        courseRating: toNumber(tee.rating, 0),
-        courseSlope: toNumber(tee.slope, 0),
+        courseRating: toNumber(calculation.tee.rating, 0),
+        courseSlope: toNumber(calculation.tee.slope, 0),
+        courseHandicap: calculation.courseHandicap,
         differential: calculation.differential,
         preHandicap: roundToTwoDecimals(calculation.preHandicap),
         postHandicap: calculation.postHandicap,
@@ -777,7 +814,7 @@ const recalculateEvent = async ({
         netBogeys: calculation.stats.netBogeys,
         netDoubleBogeys: calculation.stats.netDoubleBogeys,
         netTripleBogeys: calculation.stats.netTripleBogeys,
-        date: event.date,
+        date: dateOnlyInTimeZone(event.startsAt, event.timeZone),
       },
     });
 
@@ -834,13 +871,15 @@ const rankByPoints = (rows: Array<{ id: number; points: number }>) => {
 };
 
 export class SeasonSync {
-  static async recalculateLeague(leagueId: number): Promise<SeasonSyncResult> {
+  static async recalculateLeague(
+    leagueId: number,
+    transactionClient?: PrismaTx,
+  ): Promise<SeasonSyncResult> {
     if (!Number.isFinite(leagueId) || leagueId <= 0) {
       throw new Error('A valid league id is required.');
     }
 
-    return prisma.$transaction(
-      async (tx) => {
+    const recalculate = async (tx: PrismaTx) => {
         const league = await tx.league.findFirst({
           where: {
             id: leagueId,
@@ -859,8 +898,9 @@ export class SeasonSync {
                 deletedAt: null,
                 status: { not: 'canceled' },
               },
-              orderBy: [{ date: 'asc' }, { id: 'asc' }],
+              orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
               include: {
+                course: true,
                 tee: true,
                 flights: {
                   where: { deletedAt: null },
@@ -903,6 +943,7 @@ export class SeasonSync {
         }
 
         const teamPoints: TeamEventPointsAccumulator = new Map();
+        const handicapHoleBasis = getHandicapHoleBasis(league.holeFormat);
         const skippedEvents: SeasonSyncResult['skippedEvents'] = [];
 
         await tx.team_event_points.deleteMany({
@@ -939,6 +980,7 @@ export class SeasonSync {
             event,
             playerStates,
             teamPoints,
+            handicapHoleBasis,
           });
 
           if (eventResult.roundsUpdated === 0) {
@@ -1016,7 +1058,14 @@ export class SeasonSync {
           teamPointRowsUpdated: teamPoints.size,
           skippedEvents,
         };
-      },
+    };
+
+    if (transactionClient) {
+      return recalculate(transactionClient);
+    }
+
+    return prisma.$transaction(
+      recalculate,
       {
         maxWait: 10000,
         timeout: 120000,

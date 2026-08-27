@@ -1,6 +1,13 @@
 import { prisma } from '../../prisma';
 import { Request, Response } from 'express';
 import CourseService from '../models/course';
+import { loadCourseFromDirectory, searchCourseDirectory } from '../services/courseImport';
+import {
+  buildCourseRequestEmail,
+  buildManualCourseRequestEmail,
+} from '../emailTemplates/courseRequest';
+import { sendAppEmail } from '../services/email';
+import { normalizeTimeZone } from '../utils/time-zone';
 
 const normalizeHole = (hole: any, index: number) => ({
   num: Number(hole?.num ?? index + 1),
@@ -64,6 +71,7 @@ const buildCourseData = (course: any) => {
     description: course.description,
     location: course.location,
     phone: course.phone,
+    timeZone: normalizeTimeZone(course.timeZone),
     accessType: course.accessType ?? course.courseAccessType,
     numHoles: course.numHoles,
     par: course.par,
@@ -72,6 +80,136 @@ const buildCourseData = (course: any) => {
 };
 
 class CourseController {
+  static searchCourseDirectory = async (req: Request, res: Response) => {
+    const name = String(req.query.name || '').trim();
+
+    if (name.length < 2 || name.length > 120) {
+      return res.status(400).json({ message: 'A course name is required.' });
+    }
+
+    try {
+      const results = await searchCourseDirectory(name);
+      return res.status(200).json({
+        results,
+        attribution: 'Course search provided by OpenGolfAPI (ODbL 1.0).',
+      });
+    } catch (error) {
+      console.error(error);
+      return res.status(502).json({ message: 'Unable to search the course directory right now.' });
+    }
+  };
+
+  static importCourse = async (req: Request, res: Response) => {
+    const externalId = String(req.params.externalId || '').trim();
+    if (!/^[a-z0-9-]{1,100}$/i.test(externalId)) {
+      return res.status(400).json({ message: 'A course directory ID is required.' });
+    }
+
+    try {
+      const importedCourse = await loadCourseFromDirectory(externalId);
+      return res.status(200).json(importedCourse);
+    } catch (error) {
+      console.error(error);
+      return res.status(502).json({ message: 'Unable to load that course from the directory.' });
+    }
+  };
+
+  static requestCourse = async (req: Request, res: Response) => {
+    const externalId = String(req.body?.externalId || '').trim();
+    if (!/^[a-z0-9-]{1,100}$/i.test(externalId)) {
+      return res.status(400).json({ message: 'A valid course directory ID is required.' });
+    }
+
+    const requester = req.user as
+      | {
+          id: number;
+          firstName: string;
+          lastName: string;
+          email: string;
+        }
+      | undefined;
+    if (!requester?.id || !requester.email) {
+      return res.status(401).json({ message: 'Not authenticated.' });
+    }
+
+    try {
+      const importedCourse = await loadCourseFromDirectory(externalId);
+      const result = await sendAppEmail({
+        ...buildCourseRequestEmail({ externalId, requester, importedCourse }),
+        from: process.env.COURSE_REQUEST_FROM,
+      });
+
+      if (result.status === 'skipped') {
+        return res.status(503).json({
+          message: 'Course request email is not configured. Please contact support.',
+        });
+      }
+      if (result.status === 'failed') {
+        throw new Error(`Verified course request email failed: ${result.reason}`);
+      }
+
+      return res.status(200).json({ message: 'Course request sent.' });
+    } catch (error) {
+      console.error(error);
+      return res.status(502).json({
+        message: 'Unable to verify and request that course right now.',
+      });
+    }
+  };
+
+  static requestManualCourse = async (req: Request, res: Response) => {
+    const courseName = String(req.body?.courseName || '').trim();
+    const city = String(req.body?.city || '').trim();
+    const state = String(req.body?.state || '').trim();
+    if (
+      courseName.length < 2 ||
+      courseName.length > 120 ||
+      city.length < 2 ||
+      city.length > 80 ||
+      state.length < 2 ||
+      state.length > 50
+    ) {
+      return res.status(400).json({
+        message: 'Course name, city, and state are required.',
+      });
+    }
+
+    const requester = req.user as
+      | {
+          id: number;
+          firstName: string;
+          lastName: string;
+          email: string;
+        }
+      | undefined;
+    if (!requester?.id || !requester.email) {
+      return res.status(401).json({ message: 'Not authenticated.' });
+    }
+
+    try {
+      const result = await sendAppEmail({
+        ...buildManualCourseRequestEmail({ requester, courseName, city, state }),
+        from: process.env.COURSE_REQUEST_FROM,
+      });
+
+      if (result.status === 'skipped') {
+        return res.status(503).json({
+          message: 'Course request email is not configured. Please contact support.',
+        });
+      }
+      if (result.status === 'failed') {
+        throw new Error(`Manual course request email failed: ${result.reason}`);
+      }
+
+      return res.status(200).json({ message: 'Manual course request sent.' });
+    } catch (error) {
+      console.error(error);
+      return res.status(502).json({
+        message: 'Unable to send that manual course request right now.',
+      });
+    }
+  };
+
   static getCourse = async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
@@ -124,6 +262,9 @@ class CourseController {
       res.status(201).send(newCourse);
     } catch (error) {
       console.error(error);
+      if (error instanceof Error && error.message.startsWith('Invalid IANA timezone')) {
+        return res.status(400).json({ message: error.message });
+      }
       res.status(500).json({ message: 'Internal server error' });
     }
   };
@@ -139,6 +280,7 @@ class CourseController {
         description: course.description,
         location: course.location,
         phone: course.phone,
+        timeZone: normalizeTimeZone(course.timeZone),
         accessType: course.accessType ?? course.courseAccessType,
         numHoles: course.numHoles,
         par: course.par,
@@ -175,34 +317,26 @@ class CourseController {
           throw new Error('One or more tees do not belong to this course');
         }
 
-        // 4. Existing tees absent from the incoming payload — candidates for deletion
-        const deleteCandidates = existingTeeIds.filter((eid) => !incomingIds.has(eid));
-
-        if (deleteCandidates.length > 0) {
-          // Only delete tees not referenced by event, round, or score
-          const [evtRefs, roundRefs, scoreRefs] = await Promise.all([
-            tx.event.findMany({
-              where: { teeId: { in: deleteCandidates } },
-              select: { teeId: true },
-            }),
-            tx.round.findMany({
-              where: { teeId: { in: deleteCandidates } },
-              select: { teeId: true },
-            }),
-            tx.score.findMany({
-              where: { teeId: { in: deleteCandidates } },
-              select: { teeId: true },
-            }),
-          ]);
-          const referencedIds = new Set([
-            ...evtRefs.map((e: { teeId: number }) => e.teeId),
-            ...roundRefs.map((r: { teeId: number }) => r.teeId),
-            ...scoreRefs.map((s: { teeId: number }) => s.teeId),
-          ]);
-          const safeToDelete = deleteCandidates.filter((eid) => !referencedIds.has(eid));
-          if (safeToDelete.length > 0) {
-            await tx.tee.deleteMany({ where: { id: { in: safeToDelete } } });
+        // 4. Hide tees removed from the form while preserving historical event and score relations.
+        const removedTeeIds = existingTeeIds.filter((existingId) => !incomingIds.has(existingId));
+        if (removedTeeIds.length > 0) {
+          const scheduledEvent = await tx.event.findFirst({
+            where: {
+              teeId: { in: removedTeeIds },
+              isDeleted: false,
+              deletedAt: null,
+              isComplete: false,
+              status: { notIn: ['completed', 'canceled'] },
+            },
+            select: { id: true },
+          });
+          if (scheduledEvent) {
+            throw new Error('A selected tee is assigned to an upcoming event. Update that event first.');
           }
+          await tx.tee.updateMany({
+            where: { id: { in: removedTeeIds }, courseId: id, deletedAt: null },
+            data: { deletedAt: new Date() },
+          });
         }
 
         // 5. Update existing tees
@@ -231,8 +365,15 @@ class CourseController {
       res.status(200).send(updatedCourse);
     } catch (error) {
       console.error(error);
-      if (error instanceof Error && error.message.includes('do not belong')) {
+      if (
+        error instanceof Error &&
+        (error.message.includes('do not belong') ||
+          error.message.startsWith('Invalid IANA timezone'))
+      ) {
         return res.status(400).json({ message: error.message });
+      }
+      if (error instanceof Error && error.message.includes('upcoming event')) {
+        return res.status(409).json({ message: error.message });
       }
       res.status(500).json({ message: 'Internal server error' });
     }
@@ -241,6 +382,21 @@ class CourseController {
   static deleteCourse = async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
+      const scheduledEvent = await prisma.event.findFirst({
+        where: {
+          courseId: id,
+          isDeleted: false,
+          deletedAt: null,
+          isComplete: false,
+          status: { notIn: ['completed', 'canceled'] },
+        },
+        select: { id: true },
+      });
+      if (scheduledEvent) {
+        return res.status(409).json({
+          message: 'This course is assigned to an upcoming event. Update that event first.',
+        });
+      }
       const deletedCourse = await CourseService.delete(id);
       res.status(200).json(deletedCourse);
     } catch (error) {

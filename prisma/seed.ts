@@ -1,116 +1,14 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { seedLeagueScenarioMatrix } from './seeds/scenario-matrix';
+import { fortressMaroonHoles, seedMichiganGolfCourses } from './seeds/michigan-courses';
+import { dateOnlyInTimeZone } from '../src/app/utils/time-zone';
 
 const prisma = new PrismaClient();
 
-const password = String(process.env.DEMO_SEED_PASSWORD || '');
+const password = String(process.env.DEMO_SEED_PASSWORD || 'testing1');
 
-const fortressParByHole = [5, 3, 4, 3, 4, 5, 4, 4, 4, 4, 4, 3, 4, 5, 4, 4, 3, 5];
-const fortressHandicapByHole = [6, 12, 2, 14, 18, 16, 8, 10, 4, 17, 15, 11, 1, 9, 13, 5, 7, 3];
-
-const fortressDistancesByTee = {
-  Black: [522, 167, 456, 149, 353, 501, 437, 409, 453, 369, 391, 209, 443, 523, 350, 380, 172, 529],
-  Maroon: [494, 140, 431, 119, 324, 467, 390, 378, 437, 336, 363, 181, 410, 496, 309, 333, 153, 510],
-  Combo: [415, 140, 342, 119, 324, 390, 288, 278, 325, 336, 363, 181, 315, 398, 309, 333, 153, 436],
-  Gold: [415, 82, 342, 83, 275, 390, 288, 278, 325, 272, 254, 109, 315, 398, 239, 247, 89, 436],
-};
-
-const buildFortressHoles = (teeName: keyof typeof fortressDistancesByTee) =>
-  fortressDistancesByTee[teeName].map((dis, index) => ({
-    num: index + 1,
-    par: fortressParByHole[index],
-    dis,
-    hcp: fortressHandicapByHole[index],
-  }));
-
-const fortressTeeSeed = [
-  {
-    name: 'Black',
-    color: 'black',
-    ratingMen: 74.2,
-    slopeMen: 142,
-    ratingFrontMen: 37.2,
-    slopeFrontMen: 139,
-    ratingBackMen: 37.0,
-    slopeBackMen: 144,
-    ratingWomen: 80.3,
-    slopeWomen: 150,
-    ratingFrontWomen: 40.3,
-    slopeFrontWomen: 148,
-    ratingBackWomen: 40.0,
-    slopeBackWomen: 152,
-    holes: buildFortressHoles('Black'),
-  },
-  {
-    name: 'Maroon',
-    color: 'maroon',
-    ratingMen: 71.4,
-    slopeMen: 139,
-    ratingFrontMen: 35.9,
-    slopeFrontMen: 138,
-    ratingBackMen: 35.5,
-    slopeBackMen: 139,
-    ratingWomen: 77.4,
-    slopeWomen: 145,
-    ratingFrontWomen: 38.9,
-    slopeFrontWomen: 144,
-    ratingBackWomen: 38.5,
-    slopeBackWomen: 146,
-    holes: buildFortressHoles('Maroon'),
-  },
-  {
-    name: 'Combo',
-    color: 'combo',
-    ratingMen: 67.1,
-    slopeMen: 127,
-    ratingFrontMen: 33.0,
-    slopeFrontMen: 124,
-    ratingBackMen: 34.1,
-    slopeBackMen: 129,
-    ratingWomen: 72.7,
-    slopeWomen: 137,
-    ratingFrontWomen: 35.7,
-    slopeFrontWomen: 134,
-    ratingBackWomen: 37.0,
-    slopeBackWomen: 139,
-    holes: buildFortressHoles('Combo'),
-  },
-  {
-    name: 'Gold',
-    color: 'gold',
-    ratingMen: 64.3,
-    slopeMen: 115,
-    ratingFrontMen: 32.3,
-    slopeFrontMen: 121,
-    ratingBackMen: 32.0,
-    slopeBackMen: 109,
-    ratingWomen: 69.4,
-    slopeWomen: 129,
-    ratingFrontWomen: 35.0,
-    slopeFrontWomen: 130,
-    ratingBackWomen: 34.4,
-    slopeBackWomen: 128,
-    holes: buildFortressHoles('Gold'),
-  },
-] satisfies {
-  name: string;
-  color: string;
-  ratingMen: number;
-  slopeMen: number;
-  ratingFrontMen: number;
-  slopeFrontMen: number;
-  ratingBackMen: number;
-  slopeBackMen: number;
-  ratingWomen: number;
-  slopeWomen: number;
-  ratingFrontWomen: number;
-  slopeFrontWomen: number;
-  ratingBackWomen: number;
-  slopeBackWomen: number;
-  holes: ReturnType<typeof buildFortressHoles>;
-}[];
-
-const holes = buildFortressHoles('Maroon');
+const holes = fortressMaroonHoles;
 
 const playerSeeds = [
   ['Adam', 'Admin', 'admin@test.com', 6],
@@ -122,6 +20,8 @@ const playerSeeds = [
   ['Frank', 'Foster', 'frank@test.com', 19],
   ['Grant', 'Gibson', 'grant@test.com', 9],
 ] as const;
+
+const primaryTeamNames = ['Red Foxes', 'Blue Herons', 'Golden Eagles', 'Black Bears'];
 
 async function hashPassword() {
   return bcrypt.hash(password, 10);
@@ -135,7 +35,7 @@ async function clearData() {
   await prisma.flight.deleteMany();
   await prisma.team_event_points.deleteMany();
   await prisma.league_invitation.deleteMany();
-  await prisma.notification.deleteMany();
+  await prisma.league_announcement.deleteMany();
   await prisma.audit_log.deleteMany();
   await prisma.league_onboarding.deleteMany();
   await prisma.player.deleteMany();
@@ -146,6 +46,7 @@ async function clearData() {
   await prisma.course.deleteMany();
   await prisma.club.deleteMany();
   await prisma.session.deleteMany();
+  await prisma.stripe_checkout_completion.deleteMany();
   await prisma.user.deleteMany();
 }
 
@@ -242,10 +143,10 @@ async function createRound({
 
 async function main() {
   if (process.env.NODE_ENV === 'production') {
-    throw new Error('Demo seed is disabled in production. Use npm run db:seed:users instead.');
+    throw new Error('Demo seed is disabled in production. Use npm run db:provision:super instead.');
   }
-  if (password.length < 10) {
-    throw new Error('DEMO_SEED_PASSWORD must be at least 10 characters.');
+  if (password.length < 8) {
+    throw new Error('DEMO_SEED_PASSWORD must be at least 8 characters.');
   }
 
   await clearData();
@@ -271,6 +172,13 @@ async function main() {
       password: hashedPassword,
       role: 'ADMIN',
       metadata: {
+        stripe: {
+          customerId: 'cus_demo_admin',
+          lastCheckoutSessionId: 'cs_demo_registration',
+          lastCheckoutStatus: 'completed',
+          lastCheckoutPurpose: 'registration',
+          lastPaymentIntentId: 'pi_demo_registration',
+        },
         billing: {
           includedGolfers: 8,
           minimumGolfers: 8,
@@ -279,6 +187,17 @@ async function main() {
           registrationCompletedAt: new Date().toISOString(),
         },
       },
+    },
+  });
+
+  await prisma.stripe_checkout_completion.create({
+    data: {
+      sessionId: 'cs_demo_registration',
+      paymentIntentId: 'pi_demo_registration',
+      userId: adminUser.id,
+      purpose: 'registration',
+      quantity: 8,
+      targetGolfers: 8,
     },
   });
 
@@ -293,58 +212,8 @@ async function main() {
     },
   });
 
-  const club = await prisma.club.create({
-    data: {
-      name: 'The Fortress Golf Course',
-      description: "Zehnder's public golf course in Frankenmuth, Michigan.",
-      location: 'Frankenmuth, MI',
-      phone: '989-652-0460',
-      link: 'https://www.zehnders.com/golf/',
-      accessType: 'public',
-    },
-  });
-
-  const course = await prisma.course.create({
-    data: {
-      clubId: club.id,
-      name: 'Fortress',
-      description: 'The Fortress 18-hole championship course.',
-      location: 'Frankenmuth, MI',
-      phone: '989-652-0460',
-      accessType: 'public',
-      numHoles: 18,
-      par: 72,
-    },
-  });
-
-  const tees = await Promise.all(
-    fortressTeeSeed.map((tee) =>
-      prisma.tee.create({
-        data: {
-          courseId: course.id,
-          name: tee.name,
-          color: tee.color,
-          distance: tee.holes.reduce((sum, hole) => sum + hole.dis, 0),
-          par: 72,
-          frontPar: 36,
-          backPar: 36,
-          slopeMen: tee.slopeMen,
-          slopeFrontMen: tee.slopeFrontMen,
-          slopeBackMen: tee.slopeBackMen,
-          slopeWomen: tee.slopeWomen,
-          slopeFrontWomen: tee.slopeFrontWomen,
-          slopeBackWomen: tee.slopeBackWomen,
-          ratingMen: tee.ratingMen,
-          ratingFrontMen: tee.ratingFrontMen,
-          ratingBackMen: tee.ratingBackMen,
-          ratingWomen: tee.ratingWomen,
-          ratingFrontWomen: tee.ratingFrontWomen,
-          ratingBackWomen: tee.ratingBackWomen,
-          holes: tee.holes,
-        },
-      }),
-    ),
-  );
+  const { fortressCourse: course, fortressTees: tees } =
+    await seedMichiganGolfCourses(prisma);
 
   const tee = tees.find((seededTee) => seededTee.name === 'Maroon') ?? tees[0];
   if (!tee) {
@@ -356,7 +225,7 @@ async function main() {
       name: 'Seeded Thursday Night League',
       description: 'Complete test league with players, teams, events, flights, and scores.',
       type: 'season',
-      access: 'public',
+      holeFormat: 'mixed',
       viewerAccessCode: 'TESTCODE',
       format: 'team',
       numPlayers: 8,
@@ -389,13 +258,18 @@ async function main() {
         lastName,
         email,
         phone: `555-02${String(index).padStart(2, '0')}`,
+        gender: index % 4 === 3 ? 'female' : 'male',
         handicap,
         startingHandicap: handicap,
         seasonPoints: 0,
         type: index === 0 ? 'captain' : 'player',
         leagueId: league.id,
         userId:
-          email === adminUser.email ? adminUser.id : email === regularUser.email ? regularUser.id : null,
+          email === adminUser.email
+            ? adminUser.id
+            : email === regularUser.email
+              ? regularUser.id
+              : null,
       },
     });
     players.push(player);
@@ -405,7 +279,7 @@ async function main() {
   for (let teamIndex = 0; teamIndex < 4; teamIndex += 1) {
     const team = await prisma.team.create({
       data: {
-        name: `Team ${teamIndex + 1}`,
+        name: primaryTeamNames[teamIndex],
         leagueId: league.id,
         seasonPoints: 0,
       },
@@ -415,9 +289,7 @@ async function main() {
     await prisma.player.updateMany({
       where: {
         id: {
-          in: players
-            .slice(teamIndex * 2, teamIndex * 2 + 2)
-            .map((player) => player.id),
+          in: players.slice(teamIndex * 2, teamIndex * 2 + 2).map((player) => player.id),
         },
       },
       data: { teamId: team.id },
@@ -440,8 +312,8 @@ async function main() {
       type: 'regular',
       holes: 18,
       startSide: 'front',
-      date: new Date('2026-05-07T22:00:00.000Z'),
-      startTime: '17:30',
+      startsAt: new Date('2026-05-07T21:30:00.000Z'),
+      timeZone: 'America/Detroit',
       interval: 10,
       scoringFormat: 'stroke',
       ptsPerHole: 1,
@@ -463,8 +335,8 @@ async function main() {
       type: 'regular',
       holes: 18,
       startSide: 'front',
-      date: new Date('2026-05-14T22:00:00.000Z'),
-      startTime: '17:30',
+      startsAt: new Date('2026-05-14T21:30:00.000Z'),
+      timeZone: 'America/Detroit',
       interval: 10,
       scoringFormat: 'match',
       ptsPerHole: 1,
@@ -485,8 +357,8 @@ async function main() {
       type: 'regular',
       holes: 9,
       startSide: 'back',
-      date: new Date('2026-05-21T22:00:00.000Z'),
-      startTime: '17:30',
+      startsAt: new Date('2026-05-21T21:30:00.000Z'),
+      timeZone: 'America/Detroit',
       interval: 10,
       scoringFormat: 'stroke',
       ptsPerHole: 0,
@@ -507,7 +379,7 @@ async function main() {
     const flight = await prisma.flight.create({
       data: {
         eventId: eventOne.id,
-        startTime: flightIndex === 0 ? '17:30' : '17:40',
+        startsAt: new Date(eventOne.startsAt.getTime() + flightIndex * 10 * 60_000),
         status: 'completed',
       },
     });
@@ -521,8 +393,16 @@ async function main() {
 
     await prisma.flight_player.createMany({
       data: [
-        ...teamA.players.map((player) => ({ flightId: flight.id, teamId: teamA.id, playerId: player.id })),
-        ...teamB.players.map((player) => ({ flightId: flight.id, teamId: teamB.id, playerId: player.id })),
+        ...teamA.players.map((player) => ({
+          flightId: flight.id,
+          teamId: teamA.id,
+          playerId: player.id,
+        })),
+        ...teamB.players.map((player) => ({
+          flightId: flight.id,
+          teamId: teamB.id,
+          playerId: player.id,
+        })),
       ],
     });
   }
@@ -531,7 +411,7 @@ async function main() {
     const flight = await prisma.flight.create({
       data: {
         eventId: eventTwo.id,
-        startTime: flightIndex === 0 ? '17:30' : '17:40',
+        startsAt: new Date(eventTwo.startsAt.getTime() + flightIndex * 10 * 60_000),
         status: 'not_started',
       },
     });
@@ -565,7 +445,7 @@ async function main() {
     const flight = await prisma.flight.create({
       data: {
         eventId: eventThree.id,
-        startTime: `17:${30 + flightIndex * 10}`,
+        startsAt: new Date(eventThree.startsAt.getTime() + flightIndex * 10 * 60_000),
         status: 'not_started',
       },
     });
@@ -588,7 +468,7 @@ async function main() {
       player,
       courseId: course.id,
       teeId: tee.id,
-      eventDate: eventOne.date,
+      eventDate: dateOnlyInTimeZone(eventOne.startsAt, eventOne.timeZone),
       playerIndex: index,
       pointsEarned,
     });
@@ -622,16 +502,6 @@ async function main() {
     });
   }
 
-  await prisma.notification.create({
-    data: {
-      userId: adminUser.id,
-      leagueId: league.id,
-      type: 'seed',
-      title: 'Seed league ready',
-      body: 'Your seeded Thursday Night League is ready for testing.',
-    },
-  });
-
   await prisma.audit_log.create({
     data: {
       userId: adminUser.id,
@@ -643,12 +513,26 @@ async function main() {
     },
   });
 
+  const scenarioMatrix = await seedLeagueScenarioMatrix({
+    prisma,
+    adminId: adminUser.id,
+    courseId: course.id,
+    teeId: tee.id,
+  });
+
   console.log('Seed complete.');
   console.log('Users:');
   console.log(`  SUPER: super@test.com / ${password}`);
   console.log(`  ADMIN: admin@test.com / ${password}`);
   console.log(`  USER:  user@test.com / ${password}`);
   console.log(`League: ${league.name} (${league.id})`);
+  console.log('Scenario matrix:');
+  for (const scenario of scenarioMatrix) {
+    console.log(`  ${scenario.league}`);
+    for (const eventName of scenario.events) {
+      console.log(`    - ${eventName}`);
+    }
+  }
 }
 
 main()

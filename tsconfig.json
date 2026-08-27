@@ -19,7 +19,6 @@
     "node_modules",
     "src/app/__tests__/**/*",
     "src/app/__tests/**/*",
-    "src/app/__template/**/*",
-    "src/app/utils/scoring-old.ts"
+    "src/app/__template/**/*"
   ]
 }
