@@ -50,7 +50,7 @@ async function main() {
   const hasAnyTestAdminValue = testAdminValues.some(Boolean);
   const hasEveryTestAdminValue = testAdminValues.every(Boolean);
 
-  if (process.env.NODE_ENV === 'production' && hasAnyTestAdminValue) {
+  if (hasAnyTestAdminValue) {
     throw new Error('TEST_ADMIN_* variables must not be configured in production');
   }
 
