@@ -15,7 +15,18 @@ export default class UserService {
   }
 
   static async findAll() {
-    const users = await prisma.user.findMany({ where: { deletedAt: null } });
+    const users = await prisma.user.findMany({
+      where: { deletedAt: null },
+      include: {
+        _count: {
+          select: {
+            manager: { where: { deletedAt: null } },
+            players: { where: { deletedAt: null } },
+          },
+        },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
     return users;
   }
 

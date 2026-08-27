@@ -723,7 +723,15 @@ describe('API integration', () => {
     );
     expect(users.status).toBe(200);
     expect(users.body).toEqual(
-      expect.arrayContaining([expect.objectContaining({ email: 'admin@test.com' })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          email: 'admin@test.com',
+          role: 'ADMIN',
+          emailVerifiedAt: expect.any(String),
+          managedLeagueCount: expect.any(Number),
+          playerProfileCount: expect.any(Number),
+        }),
+      ]),
     );
     expect(billing.status).toBe(200);
     expect(billing.body).toMatchObject({
