@@ -15,7 +15,17 @@ import {
 import { lockAdminBilling, lockLeagueCapacity } from '../services/billingLock';
 import { redeemPaymentBypassCode } from '../services/paymentBypassCode';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
+let stripeClient: Stripe | null = null;
+
+const getStripeClient = () => {
+  const secretKey = String(process.env.STRIPE_SECRET_KEY || '').trim();
+  if (!secretKey) {
+    throw new Error('Missing STRIPE_SECRET_KEY');
+  }
+
+  stripeClient ??= new Stripe(secretKey);
+  return stripeClient;
+};
 
 const defaultClientOrigin = getPrimaryClientOrigin() || 'http://localhost:5173';
 
@@ -101,7 +111,7 @@ const createStripeCustomer = (user: {
   firstName: string;
   lastName: string;
 }) =>
-  stripe.customers.create({
+  getStripeClient().customers.create({
     email: user.email,
     name: `${user.firstName} ${user.lastName}`,
     metadata: { userId: String(user.id) },
@@ -113,7 +123,7 @@ const resolveStripeCustomerId = async (
 ) => {
   if (customerId) {
     try {
-      const customer = await stripe.customers.retrieve(customerId);
+      const customer = await getStripeClient().customers.retrieve(customerId);
       if (!customer.deleted) return customer.id;
     } catch (error) {
       if (!isMissingStripeResource(error)) throw error;
@@ -502,7 +512,7 @@ class PaymentController {
             quantity,
           };
 
-      const checkoutSession = await stripe.checkout.sessions.create({
+      const checkoutSession = await getStripeClient().checkout.sessions.create({
         line_items: [lineItem],
         mode: 'payment',
         success_url: successUrl,
@@ -602,7 +612,7 @@ class PaymentController {
     }
 
     try {
-      const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId, {
+      const checkoutSession = await getStripeClient().checkout.sessions.retrieve(sessionId, {
         expand: ['payment_intent'],
       });
 
@@ -681,7 +691,9 @@ class PaymentController {
         lastCheckoutSessionId &&
         initialStripeState?.lastCheckoutStatus !== 'completed'
       ) {
-        const checkoutSession = await stripe.checkout.sessions.retrieve(lastCheckoutSessionId);
+        const checkoutSession = await getStripeClient().checkout.sessions.retrieve(
+          lastCheckoutSessionId,
+        );
         const updatedUser = await applyCompletedCheckoutSession(checkoutSession);
         if (updatedUser && updatedUser.id === user?.id) {
           user = { id: updatedUser.id, metadata: updatedUser.metadata };
@@ -715,7 +727,7 @@ class PaymentController {
     let event: Stripe.Event;
 
     try {
-      event = stripe.webhooks.constructEvent(req.body, signature, webhookSecret);
+      event = getStripeClient().webhooks.constructEvent(req.body, signature, webhookSecret);
     } catch (err: any) {
       return res.status(400).send(`Webhook signature verification failed: ${err.message}`);
     }
