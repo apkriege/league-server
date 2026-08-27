@@ -44,7 +44,6 @@
     "stripe": "^20.4.1"
   },
   "devDependencies": {
-    "@faker-js/faker": "^10.1.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/connect-pg-simple": "^7.0.3",
     "@types/cors": "^2.8.17",
@@ -53,7 +52,6 @@
     "@types/node": "^24.10.0",
     "@types/pg": "^8.11.11",
     "@types/supertest": "^6.0.2",
-    "nanoid": "^5.1.6",
     "nodemon": "^3.1.9",
     "supertest": "^7.0.0",
     "ts-node": "^10.9.2",

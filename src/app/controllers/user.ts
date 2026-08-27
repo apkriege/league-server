@@ -47,7 +47,7 @@ class UserController {
     return data;
   };
 
-  static getUsers = async (req: Request, res: Response) => {
+  static getUsers = async (_req: Request, res: Response) => {
     try {
       const users = await UserService.findAll();
       res.status(200).json(users.map(serializeUser));
@@ -155,7 +155,7 @@ class UserController {
           message: 'Transfer or delete active leagues before deleting this account',
         });
       }
-      const user = await UserService.delete(id);
+      await UserService.delete(id);
       res.status(200).json({ message: 'User deleted' });
     } catch (error) {
       console.error(error);

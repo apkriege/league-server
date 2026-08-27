@@ -1,6 +1,5 @@
 import { prisma } from '../../prisma';
 import { Request, Response } from 'express';
-import EventService from '../models/event';
 import LeagueService from '../models/league';
 import { extractTeamId, FlightGen } from '../services/flightGen';
 import {
@@ -45,32 +44,6 @@ const canManageLeagueScores = async (req: Request, leagueId: number) => {
 };
 
 class EventController {
-  static getAdminEvent = async (req: Request, res: Response) => {
-    try {
-      const event = await EventService.findById(Number(req.params.eventId));
-      if (!event) {
-        res.status(404).send('Event not found');
-        return;
-      }
-      res.status(200).send(event);
-    } catch (error) {
-      console.error(error);
-      const { status, message } = getPublicErrorResponse(error);
-      res.status(status).json({ message });
-    }
-  };
-
-  static getEvents = async (req: Request, res: Response) => {
-    try {
-      const events = await EventService.findAll();
-      res.status(200).send(events);
-    } catch (error) {
-      console.error(error);
-      const { status, message } = getPublicErrorResponse(error);
-      res.status(status).json({ message });
-    }
-  };
-
   // GET LEAGUE EVENTS
   static getLeagueEvents = async (req: Request, res: Response) => {
     try {

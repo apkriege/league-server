@@ -8,8 +8,92 @@ import {
   revokePaymentBypassCode,
 } from '../services/paymentBypassCode';
 import { getLeagueRoundProgress } from '../utils/league-round-progress';
+import { writeAuditLog } from '../utils/audit';
 
 class AdminController {
+  static updateLeagueLifecycle = async (req: Request, res: Response) => {
+    const leagueId = Number(req.params.id);
+    const requestedStatus = String(req.body?.status || '').toLowerCase();
+    if (!Number.isInteger(leagueId) || leagueId <= 0) {
+      return res.status(400).json({ message: 'Invalid league ID.' });
+    }
+    if (!['archived', 'reopened'].includes(requestedStatus)) {
+      return res.status(400).json({ message: 'Status must be archived or reopened.' });
+    }
+    const league = await prisma.league.findFirst({
+      where: { id: leagueId, deletedAt: null },
+      select: { id: true, name: true, seasonStatus: true },
+    });
+    if (!league) return res.status(404).json({ message: 'League not found.' });
+
+    const updated = await prisma.league.update({
+      where: { id: league.id },
+      data: {
+        seasonStatus: requestedStatus,
+        archivedAt: requestedStatus === 'archived' ? new Date() : null,
+      },
+    });
+    await writeAuditLog({
+      userId: req.session.userId ?? null,
+      leagueId,
+      entity: 'league',
+      entityId: leagueId,
+      action: `lifecycle_${requestedStatus}`,
+      summary: `${requestedStatus === 'archived' ? 'Archived' : 'Reopened'} ${league.name}.`,
+      metadata: { previousStatus: league.seasonStatus, nextStatus: requestedStatus },
+    });
+    return res.json(updated);
+  };
+
+  static correctLeagueRenewalLink = async (req: Request, res: Response) => {
+    const leagueId = Number(req.params.id);
+    if (!Number.isInteger(leagueId) || leagueId <= 0) {
+      return res.status(400).json({ message: 'Invalid league ID.' });
+    }
+    const league = await prisma.league.findFirst({
+      where: { id: leagueId, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        renewedFromLeagueId: true,
+        entitlementId: true,
+        _count: { select: { events: { where: { deletedAt: null, isDeleted: false } } } },
+      },
+    });
+    if (!league) return res.status(404).json({ message: 'League not found.' });
+    if (!league.renewedFromLeagueId) {
+      return res.status(409).json({ message: 'This league is not linked as a renewal.' });
+    }
+    if (league._count.events > 0) {
+      return res.status(409).json({
+        message: 'A renewal link can only be corrected before events are created in the new season.',
+      });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.league.update({
+        where: { id: league.id },
+        data: { renewedFromLeagueId: null },
+      });
+      if (league.entitlementId) {
+        await tx.league_season_entitlement.update({
+          where: { id: league.entitlementId },
+          data: { renewedFromLeagueId: null },
+        });
+      }
+    });
+    await writeAuditLog({
+      userId: req.session.userId ?? null,
+      leagueId,
+      entity: 'league',
+      entityId: leagueId,
+      action: 'correct_renewal_link',
+      summary: `Removed the incorrect previous-season link from ${league.name}.`,
+      metadata: { previousLeagueId: league.renewedFromLeagueId },
+    });
+    return res.json({ message: 'The renewal link was removed. Both leagues and their billing records were preserved.' });
+  };
+
   static getPaymentBypassCodes = async (_req: Request, res: Response) => {
     try {
       const codes = await listPaymentBypassCodes();
@@ -92,6 +176,12 @@ class AdminController {
             where: { deletedAt: null, isDeleted: false },
             select: { status: true, type: true, isComplete: true },
           },
+          renewedFromLeague: {
+            select: { id: true, name: true, startDate: true, endDate: true },
+          },
+          renewedLeague: {
+            select: { id: true, name: true, startDate: true, endDate: true },
+          },
         },
         orderBy: {
           id: 'desc',
@@ -131,6 +221,12 @@ class AdminController {
             include: {
               players: { where: { deletedAt: null } },
             },
+          },
+          renewedFromLeague: {
+            select: { id: true, name: true, startDate: true, endDate: true },
+          },
+          renewedLeague: {
+            select: { id: true, name: true, startDate: true, endDate: true },
           },
         },
       });

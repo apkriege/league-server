@@ -78,7 +78,14 @@ describe('authorization guards', async () => {
 
     expect(mocks.findLeague).toHaveBeenCalledWith({
       where: { id: 12, deletedAt: null },
-      select: { adminId: true },
+      select: {
+        id: true,
+        adminId: true,
+        type: true,
+        endDate: true,
+        seasonStatus: true,
+        billingStatus: true,
+      },
     });
     expect(res.status).toHaveBeenCalledWith(404);
     expect(next).not.toHaveBeenCalled();
@@ -86,15 +93,29 @@ describe('authorization guards', async () => {
 
   it('allows a super admin to manage any active league', async () => {
     mocks.findUserById.mockResolvedValue({ id: 1, role: 'SUPER' });
-    mocks.findLeague.mockResolvedValue({ adminId: 42 });
-    const req = { session: { userId: 1 }, params: { leagueId: '12' } } as any;
+    mocks.findLeague.mockResolvedValue({
+      id: 12,
+      adminId: 42,
+      type: 'season',
+      endDate: new Date('2027-01-01'),
+      seasonStatus: 'active',
+      billingStatus: 'active',
+    });
+    const req = { session: { userId: 1 }, params: { leagueId: '12' }, method: 'GET', path: '' } as any;
     const next = vi.fn();
 
     await leagueAdminGuard(req, buildRes(), next);
 
     expect(mocks.findLeague).toHaveBeenCalledWith({
       where: { id: 12, deletedAt: null },
-      select: { adminId: true },
+      select: {
+        id: true,
+        adminId: true,
+        type: true,
+        endDate: true,
+        seasonStatus: true,
+        billingStatus: true,
+      },
     });
     expect(next).toHaveBeenCalledOnce();
   });

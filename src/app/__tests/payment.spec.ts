@@ -11,6 +11,7 @@ const mockTx: any = {
   },
   user: {
     findFirst: vi.fn(),
+    findUnique: vi.fn(),
     update: vi.fn(),
   },
   league: {
@@ -19,6 +20,11 @@ const mockTx: any = {
   },
   player: {
     count: vi.fn(),
+  },
+  league_season_entitlement: {
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    update: vi.fn(),
   },
 };
 const transactionMock = vi.fn(async (callback: any) => callback(mockTx));
@@ -58,8 +64,14 @@ describe('Stripe checkout completion', async () => {
       id: 7,
       metadata: { billing: { includedGolfers: 10 }, stripe: {} },
     });
+    mockTx.user.findUnique.mockResolvedValue({
+      id: 7,
+      metadata: { billing: { includedGolfers: 10 }, stripe: {} },
+    });
     mockTx.user.update.mockImplementation(async ({ data }: any) => ({ id: 7, ...data }));
     mockTx.stripe_checkout_completion.create.mockResolvedValue({});
+    mockTx.league_season_entitlement.findFirst.mockResolvedValue(null);
+    mockTx.league_season_entitlement.findUnique.mockResolvedValue(null);
   });
 
   it('adds paid seats and records the unique session in the same transaction', async () => {
@@ -76,6 +88,7 @@ describe('Stripe checkout completion', async () => {
         paymentIntentId: 'pi_1',
         userId: 7,
         leagueId: null,
+        entitlementId: null,
         purpose: 'seat_upgrade',
         quantity: 2,
         targetGolfers: 12,
@@ -95,8 +108,22 @@ describe('Stripe checkout completion', async () => {
 
   it('applies an additional-player payment only to its league capacity', async () => {
     mockTx.stripe_checkout_completion.findUnique.mockResolvedValue(null);
-    mockTx.league.findFirst.mockResolvedValue({ id: 3, numPlayers: 8 });
-    mockTx.league.update.mockResolvedValue({ id: 3, numPlayers: 9 });
+    mockTx.league.findFirst.mockResolvedValue({ id: 3, numPlayers: 8, billingPaidGolfers: 8 });
+    mockTx.league.update.mockResolvedValue({ id: 3, numPlayers: 9, billingPaidGolfers: 9 });
+    mockTx.league_season_entitlement.findUnique.mockResolvedValue({
+      id: 21,
+      billingOwnerId: 7,
+      requiredGolfers: 8,
+      paidGolfers: 8,
+      refundedGolfers: 0,
+      league: { id: 3 },
+    });
+    mockTx.league_season_entitlement.update.mockResolvedValue({
+      id: 21,
+      requiredGolfers: 8,
+      paidGolfers: 9,
+      refundedGolfers: 0,
+    });
 
     await applyCompletedCheckoutSession({
       ...session,
@@ -106,12 +133,21 @@ describe('Stripe checkout completion', async () => {
         quantity: '1',
         targetGolfers: '9',
         leagueId: '3',
+        entitlementId: '21',
       },
     });
 
     expect(mockTx.league.update).toHaveBeenCalledWith({
       where: { id: 3 },
-      data: { numPlayers: 9 },
+      data: { numPlayers: 9, billingPaidGolfers: 9, billingStatus: 'active' },
+    });
+    expect(mockTx.league_season_entitlement.update).toHaveBeenCalledWith({
+      where: { id: 21 },
+      data: {
+        paidGolfers: { increment: 1 },
+        requiredGolfers: 9,
+        status: 'consumed',
+      },
     });
     expect(mockTx.user.update.mock.calls[0][0].data.metadata.billing.includedGolfers).toBe(11);
     expect(mockTx.stripe_checkout_completion.create).toHaveBeenCalledWith({
@@ -120,6 +156,7 @@ describe('Stripe checkout completion', async () => {
         paymentIntentId: 'pi_1',
         userId: 7,
         leagueId: 3,
+        entitlementId: 21,
         purpose: 'league_capacity',
         quantity: 1,
         targetGolfers: 9,
@@ -171,9 +208,28 @@ describe('Stripe checkout completion', async () => {
       purpose: 'league_capacity',
       quantity: 2,
       refundedQuantity: 0,
+      entitlementId: 21,
     });
-    mockTx.league.findFirst.mockResolvedValue({ id: 3, numPlayers: 10 });
+    mockTx.league.findFirst.mockResolvedValue({
+      id: 3,
+      numPlayers: 10,
+      billingPaidGolfers: 10,
+    });
     mockTx.player.count.mockResolvedValue(9);
+    mockTx.league_season_entitlement.findUnique.mockResolvedValue({
+      id: 21,
+      requiredGolfers: 10,
+      paidGolfers: 10,
+      refundedGolfers: 0,
+      league: { id: 3 },
+    });
+    mockTx.league_season_entitlement.update.mockResolvedValue({
+      id: 21,
+      requiredGolfers: 10,
+      paidGolfers: 10,
+      refundedGolfers: 2,
+      status: 'partially_refunded',
+    });
     mockTx.stripe_checkout_completion.update.mockResolvedValue({ id: 12 });
 
     await applyRefundedCharge({
@@ -185,7 +241,14 @@ describe('Stripe checkout completion', async () => {
     expect(mockTx.user.update.mock.calls[0][0].data.metadata.billing.includedGolfers).toBe(8);
     expect(mockTx.league.update).toHaveBeenCalledWith({
       where: { id: 3 },
-      data: { numPlayers: 9 },
+      data: { numPlayers: 9, billingPaidGolfers: 8, billingStatus: 'payment_due' },
+    });
+    expect(mockTx.league_season_entitlement.update).toHaveBeenCalledWith({
+      where: { id: 21 },
+      data: {
+        refundedGolfers: 2,
+        status: 'partially_refunded',
+      },
     });
     expect(mockTx.stripe_checkout_completion.update).toHaveBeenCalledWith({
       where: { id: 12 },

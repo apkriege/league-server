@@ -210,7 +210,7 @@ export class Round {
       throw new Error('Scores must contain one valid stroke total for every hole.');
     }
     const netScores = this.getNetScores(hcp, grossScores);
-    const ecsScores = this.calulateEquitableStrokeControl(hcp, grossScores);
+    const ecsScores = this.calculateEquitableStrokeControl(hcp, grossScores);
 
     return Object.entries(grossScores).map(([holeNum, score]) => {
       const h = this.tee.holes.find((h: any) => h.num === Number(holeNum));
@@ -242,8 +242,7 @@ export class Round {
     return netScores;
   }
 
-  // TODO: ADJUST LATER IF NEEDED
-  private calulateEquitableStrokeControl(playerHcp: number, scores: any) {
+  private calculateEquitableStrokeControl(playerHcp: number, scores: any) {
     const adjustedHoles: Record<number, number> = {};
     const pops = this.getPops(playerHcp);
 

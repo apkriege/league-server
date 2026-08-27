@@ -156,8 +156,6 @@ export class FlightGen {
   // individual stroke play
   // [1, 2, 3, 4], [5, 6, 7, 8]
   async individualStroke() {
-    const players = this.league.players;
-
     for (const i in this.event.flights) {
       const f = this.event.flights[i];
       const playerIds = f.map((p: any) => Number(p));

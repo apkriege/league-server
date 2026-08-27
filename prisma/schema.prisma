@@ -27,20 +27,20 @@ enum Gender {
 }
 
 model user {
-  id        Int       @id @default(autoincrement())
-  firstName String    @map("first_name")
-  lastName  String    @map("last_name")
-  email     String    @unique
-  username  String?   @unique
-  googleId  String?   @unique @map("google_id")
-  password  String
-  role      String    @default("USER") // USER, ADMIN, SUPER
-  phone     String?
-  metadata  Json?
+  id              Int       @id @default(autoincrement())
+  firstName       String    @map("first_name")
+  lastName        String    @map("last_name")
+  email           String    @unique
+  username        String?   @unique
+  googleId        String?   @unique @map("google_id")
+  password        String
+  role            String    @default("USER") // USER, ADMIN, SUPER
+  phone           String?
+  metadata        Json?
   emailVerifiedAt DateTime? @default(now()) @map("email_verified_at") @db.Timestamptz(3)
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(3)
 
   manager                      league[]
   players                      player[]
@@ -52,8 +52,9 @@ model user {
   leagueAnnouncementDismissals league_announcement_dismissal[]
   auditLogs                    audit_log[]
   supportMessages              support_message[]
-  createdPaymentBypassCodes    payment_bypass_code[] @relation("payment_bypass_code_created_by")
-  redeemedPaymentBypassCodes   payment_bypass_code[] @relation("payment_bypass_code_redeemed_by")
+  createdPaymentBypassCodes    payment_bypass_code[]           @relation("payment_bypass_code_created_by")
+  redeemedPaymentBypassCodes   payment_bypass_code[]           @relation("payment_bypass_code_redeemed_by")
+  seasonEntitlements           league_season_entitlement[]     @relation("league_season_entitlement_billing_owner")
 
   @@index([email])
   @@index([deletedAt])
@@ -113,6 +114,7 @@ model stripe_checkout_completion {
   paymentIntentId  String?   @unique @map("payment_intent_id")
   userId           Int       @map("user_id")
   leagueId         Int?      @map("league_id")
+  entitlementId    Int?      @map("entitlement_id")
   purpose          String
   quantity         Int
   targetGolfers    Int       @map("target_golfers")
@@ -120,8 +122,33 @@ model stripe_checkout_completion {
   refundedAt       DateTime? @map("refunded_at") @db.Timestamptz(3)
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
 
+  entitlement league_season_entitlement? @relation(fields: [entitlementId], references: [id], onDelete: SetNull)
+
   @@index([userId])
   @@index([leagueId])
+  @@index([entitlementId])
+}
+
+model league_season_entitlement {
+  id                  Int      @id @default(autoincrement())
+  billingOwnerId      Int      @map("billing_owner_id")
+  draftKey            String   @map("draft_key")
+  renewedFromLeagueId Int?     @map("renewed_from_league_id")
+  requiredGolfers     Int      @map("required_golfers")
+  paidGolfers         Int      @default(0) @map("paid_golfers")
+  refundedGolfers     Int      @default(0) @map("refunded_golfers")
+  status              String   @default("pending_payment")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  billingOwner user                         @relation("league_season_entitlement_billing_owner", fields: [billingOwnerId], references: [id], onDelete: Restrict)
+  league       league?
+  checkouts    stripe_checkout_completion[]
+
+  @@unique([billingOwnerId, draftKey])
+  @@index([billingOwnerId])
+  @@index([renewedFromLeagueId])
+  @@index([status])
 }
 
 model payment_bypass_code {
@@ -227,27 +254,37 @@ model tee {
 }
 
 model league {
-  id               Int       @id @default(autoincrement())
-  name             String
-  description      String?
-  type             String
-  holeFormat       String    @default("18") @map("hole_format")
-  viewerAccessCode String?   @unique @map("viewer_access_code")
-  format           String? // e.g. "individual", "team"
-  numPlayers       Int       @map("num_players")
-  adminId          Int       @map("admin_id")
-  billingExempt    Boolean   @default(false) @map("billing_exempt")
-  startDate        DateTime  @map("start_date") @db.Date
-  endDate          DateTime  @map("end_date") @db.Date
-  contactFirstName String    @map("contact_first")
-  contactLastName  String    @map("contact_last")
-  contactEmail     String    @map("contact_email")
-  contactPhone     String?   @map("contact_phone")
-  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
-  deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)
+  id                    Int       @id @default(autoincrement())
+  name                  String
+  description           String?
+  type                  String
+  holeFormat            String    @default("18") @map("hole_format")
+  viewerAccessCode      String?   @unique @map("viewer_access_code")
+  format                String? // e.g. "individual", "team"
+  numPlayers            Int       @map("num_players")
+  adminId               Int       @map("admin_id")
+  renewedFromLeagueId   Int?      @unique @map("renewed_from_league_id")
+  entitlementId         Int?      @unique @map("entitlement_id")
+  billingPaidGolfers    Int       @default(0) @map("billing_paid_golfers")
+  billingExempt         Boolean   @default(false) @map("billing_exempt")
+  billingStatus         String    @default("active") @map("billing_status")
+  seasonStatus          String    @default("active") @map("season_status")
+  archivedAt            DateTime? @map("archived_at") @db.Timestamptz(3)
+  renewalReminderSentAt DateTime? @map("renewal_reminder_sent_at") @db.Timestamptz(3)
+  startDate             DateTime  @map("start_date") @db.Date
+  endDate               DateTime  @map("end_date") @db.Date
+  contactFirstName      String    @map("contact_first")
+  contactLastName       String    @map("contact_last")
+  contactEmail          String    @map("contact_email")
+  contactPhone          String?   @map("contact_phone")
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt             DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  admin             user                    @relation(fields: [adminId], references: [id])
+  admin             user                       @relation(fields: [adminId], references: [id])
+  renewedFromLeague league?                    @relation("LeagueSeasonRenewal", fields: [renewedFromLeagueId], references: [id], onDelete: Restrict)
+  renewedLeague     league?                    @relation("LeagueSeasonRenewal")
+  entitlement       league_season_entitlement? @relation(fields: [entitlementId], references: [id], onDelete: Restrict)
   events            event[]
   players           player[]
   teams             team[]
@@ -260,6 +297,10 @@ model league {
   paymentBypassCode payment_bypass_code?
 
   @@index([adminId])
+  @@index([renewedFromLeagueId])
+  @@index([entitlementId])
+  @@index([seasonStatus])
+  @@index([billingStatus])
   @@index([startDate])
   @@index([deletedAt])
 }
@@ -419,14 +460,14 @@ model flight {
 }
 
 model flight_player {
-  id                  Int       @id @default(autoincrement())
-  flightId            Int       @map("flight_id")
-  playerId            Int       @map("player_id")
-  teamId              Int?      @map("team_id")
-  opponentId          Int?      @map("opponent_id")
-  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt           DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
-  deletedAt           DateTime? @map("deleted_at") @db.Timestamptz(3)
+  id         Int       @id @default(autoincrement())
+  flightId   Int       @map("flight_id")
+  playerId   Int       @map("player_id")
+  teamId     Int?      @map("team_id")
+  opponentId Int?      @map("opponent_id")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz(3)
 
   flight flight @relation(fields: [flightId], references: [id])
   player player @relation(fields: [playerId], references: [id])

@@ -16,14 +16,12 @@ import { getPublicErrorResponse } from './app/utils/error-response';
 import { getConfiguredClientOrigins, isCorsOriginAllowed } from './app/utils/origins';
 import {
   isProductionRuntime,
-  isRailwayEnvironment,
   validateRuntimeConfig,
 } from './app/utils/runtime-config';
 
 const app: Express = express();
 validateRuntimeConfig();
 const sessionSecret = process.env.SESSION_SECRET;
-const isRailway = isRailwayEnvironment();
 const isProduction = isProductionRuntime();
 const useSecureCookies =
   process.env.COOKIE_SECURE === 'true' || isProduction;
@@ -102,7 +100,7 @@ app.use(
   }),
 );
 
-app.get('/', (req: Request, res: Response) => {
+app.get('/', (_req: Request, res: Response) => {
   res.send('Hello, TypeScript with Express!');
 });
 

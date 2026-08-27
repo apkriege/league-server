@@ -268,6 +268,14 @@ export async function seedLeagueScenarioMatrix({
 
   for (const [scenarioIndex, scenario] of leagueScenarios.entries()) {
     const tournamentPlayerCount = scenario.type === 'tournament' ? 32 : 16;
+    const entitlement = await prisma.league_season_entitlement.create({
+      data: {
+        billingOwnerId: adminId,
+        draftKey: `scenario-matrix-${scenario.key}`,
+        requiredGolfers: tournamentPlayerCount,
+        status: 'bypassed',
+      },
+    });
     const league = await prisma.league.create({
       data: {
         name: scenario.name,
@@ -278,6 +286,9 @@ export async function seedLeagueScenarioMatrix({
         viewerAccessCode: `MATRIX${scenarioIndex + 1}`,
         numPlayers: tournamentPlayerCount,
         adminId,
+        entitlementId: entitlement.id,
+        billingExempt: true,
+        billingStatus: 'exempt',
         startDate: new Date('2026-01-01T00:00:00.000Z'),
         endDate: new Date('2026-12-31T00:00:00.000Z'),
         contactFirstName: 'Test',

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import './app/utils/suppress-local-logs';
 import app, { closeAppResources } from './app';
 import { prisma } from './prisma';
+import { startLeagueSeasonLifecycleScheduler } from './app/services/leagueLifecycle';
 
 const port = Number(process.env.PORT || 3000);
 
@@ -16,12 +17,14 @@ const server = app.listen(port, '0.0.0.0', () => {
     }),
   );
 });
+const stopLeagueSeasonLifecycleScheduler = startLeagueSeasonLifecycleScheduler();
 
 let shuttingDown = false;
 
 const shutdown = (signal: NodeJS.Signals) => {
   if (shuttingDown) return;
   shuttingDown = true;
+  stopLeagueSeasonLifecycleScheduler();
 
   console.log(JSON.stringify({ level: 'info', event: 'server:shutdown', signal }));
 

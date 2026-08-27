@@ -32,7 +32,12 @@ import SupportController from './controllers/support';
 import { createRateLimiter } from './middleware/security';
 
 const router: Router = express.Router();
-const authRateLimiter = createRateLimiter({ keyPrefix: 'auth', windowMs: 15 * 60 * 1000, max: 20 });
+const authRateLimiter = createRateLimiter({
+  keyPrefix: 'auth',
+  windowMs: 15 * 60 * 1000,
+  // Integration requests share one loopback IP. Production retains the strict per-client limit.
+  max: process.env.NODE_ENV === 'test' ? 200 : 20,
+});
 const paymentRateLimiter = createRateLimiter({
   keyPrefix: 'payment',
   windowMs: 15 * 60 * 1000,
@@ -111,6 +116,8 @@ adminRoutes.get('/billing', Admin.getBilling);
 adminRoutes.get('/payment-bypass-codes', Admin.getPaymentBypassCodes);
 adminRoutes.post('/payment-bypass-codes', Admin.createPaymentBypassCode);
 adminRoutes.delete('/payment-bypass-codes/:id', Admin.revokePaymentBypassCode);
+adminRoutes.patch('/leagues/:id/lifecycle', Admin.updateLeagueLifecycle);
+adminRoutes.delete('/leagues/:id/renewal-link', Admin.correctLeagueRenewalLink);
 router.use('/admin', superAdmin, adminRoutes);
 
 // =====================
@@ -145,6 +152,7 @@ router.delete('/courses/:id', superAdmin, Course.deleteCourse);
 // Leagues
 router.get('/leagues', League.getLeagues);
 router.get('/leagues/:id', leagueMemberGuard, League.getLeague);
+router.get('/leagues/:id/renewal-template', leagueAdminGuard, League.getRenewalTemplate);
 router.get('/leagues/:id/metrics', leagueMemberGuard, League.getLeagueMetrics);
 router.post('/leagues', admin, League.createLeague);
 router.put('/leagues/:id', admin, leagueAdminGuard, League.updateLeague);

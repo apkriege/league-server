@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma';
-import { getPublicErrorResponse } from '../utils/error-response';
 import { buildTeamEventResults } from '../utils/team-event-results';
 
 class TeamController {
@@ -41,21 +40,6 @@ class TeamController {
       .filter((value) => Number.isInteger(value) && value > 0);
 
     return [...new Set(ids)];
-  };
-
-  static getTeams = async (req: Request, res: Response) => {
-    try {
-      const teams = await prisma.team.findMany({
-        where: { deletedAt: null },
-        include: TeamController.buildTeamInclude(),
-        orderBy: [{ name: 'asc' }],
-      });
-      res.status(200).json(teams);
-    } catch (error) {
-      console.error(error);
-      const response = getPublicErrorResponse(error);
-      res.status(response.status).json({ message: response.message });
-    }
   };
 
   static getLeagueTeams = async (req: Request, res: Response): Promise<any> => {

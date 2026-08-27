@@ -2,6 +2,35 @@ import { Request, Response, NextFunction } from 'express';
 import UserService from '../models/user';
 import { prisma } from '../../prisma';
 import { logAuthFailure } from './logging';
+import { getLeagueMutationBlock, isLeagueSeasonExpired } from '../services/leagueLifecycle';
+
+type MutableLeagueState = {
+  id: number;
+  type: string;
+  endDate: Date;
+  seasonStatus: string;
+  billingStatus: string;
+};
+
+const allowLeagueMutation = async (
+  req: Request,
+  res: Response,
+  league: MutableLeagueState,
+) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return true;
+  const requestPath = String(req.path || '');
+  if (requestPath.endsWith('/owner') || requestPath.endsWith('/lifecycle')) return true;
+  const blocked = getLeagueMutationBlock(league);
+  if (!blocked) return true;
+  if (league.seasonStatus !== 'archived' && isLeagueSeasonExpired(league)) {
+    await prisma.league.updateMany({
+      where: { id: league.id, seasonStatus: 'active' },
+      data: { seasonStatus: 'archived', archivedAt: new Date() },
+    });
+  }
+  res.status(blocked.status).json({ code: blocked.code, message: blocked.message });
+  return false;
+};
 
 const getSessionUser = async (req: Request) => {
   const userId = req.session.userId;
@@ -165,7 +194,14 @@ export const leagueAdminGuard = async (req: Request, res: Response, next: NextFu
 
     const league = await prisma.league.findFirst({
       where: { id: leagueId, deletedAt: null },
-      select: { adminId: true },
+      select: {
+        id: true,
+        adminId: true,
+        type: true,
+        endDate: true,
+        seasonStatus: true,
+        billingStatus: true,
+      },
     });
 
     if (!league) {
@@ -173,6 +209,7 @@ export const leagueAdminGuard = async (req: Request, res: Response, next: NextFu
     }
 
     if (role === 'SUPER' || league.adminId === user.id) {
+      if (!(await allowLeagueMutation(req, res, league))) return;
       return next();
     }
 
@@ -265,7 +302,18 @@ export const eventAdminGuard = async (req: Request, res: Response, next: NextFun
 
     const event = await prisma.event.findFirst({
       where: { id: eventId, isDeleted: false, deletedAt: null, league: { deletedAt: null } },
-      include: { league: { select: { adminId: true } } },
+      include: {
+        league: {
+          select: {
+            id: true,
+            adminId: true,
+            type: true,
+            endDate: true,
+            seasonStatus: true,
+            billingStatus: true,
+          },
+        },
+      },
     });
 
     if (!event) {
@@ -273,6 +321,7 @@ export const eventAdminGuard = async (req: Request, res: Response, next: NextFun
     }
 
     if (role === 'SUPER' || event.league.adminId === user.id) {
+      if (!(await allowLeagueMutation(req, res, event.league))) return;
       return next();
     }
 
@@ -433,7 +482,18 @@ export const playerAdminGuard = async (req: Request, res: Response, next: NextFu
 
     const player = await prisma.player.findFirst({
       where: { id: playerId, deletedAt: null, league: { deletedAt: null } },
-      include: { league: { select: { adminId: true } } },
+      include: {
+        league: {
+          select: {
+            id: true,
+            adminId: true,
+            type: true,
+            endDate: true,
+            seasonStatus: true,
+            billingStatus: true,
+          },
+        },
+      },
     });
 
     if (!player) {
@@ -441,6 +501,7 @@ export const playerAdminGuard = async (req: Request, res: Response, next: NextFu
     }
 
     if (role === 'SUPER' || player.league?.adminId === user.id) {
+      if (!(await allowLeagueMutation(req, res, player.league!))) return;
       return next();
     }
 
@@ -473,7 +534,18 @@ export const teamAdminGuard = async (req: Request, res: Response, next: NextFunc
 
     const team = await prisma.team.findFirst({
       where: { id: teamId, deletedAt: null, league: { deletedAt: null } },
-      include: { league: { select: { adminId: true } } },
+      include: {
+        league: {
+          select: {
+            id: true,
+            adminId: true,
+            type: true,
+            endDate: true,
+            seasonStatus: true,
+            billingStatus: true,
+          },
+        },
+      },
     });
 
     if (!team) {
@@ -481,6 +553,7 @@ export const teamAdminGuard = async (req: Request, res: Response, next: NextFunc
     }
 
     if (role === 'SUPER' || team.league?.adminId === user.id) {
+      if (!(await allowLeagueMutation(req, res, team.league!))) return;
       return next();
     }
 
@@ -517,7 +590,22 @@ export const flightAdminGuard = async (req: Request, res: Response, next: NextFu
         deletedAt: null,
         event: { isDeleted: false, deletedAt: null, league: { deletedAt: null } },
       },
-      include: { event: { include: { league: { select: { adminId: true } } } } },
+      include: {
+        event: {
+          include: {
+            league: {
+              select: {
+                id: true,
+                adminId: true,
+                type: true,
+                endDate: true,
+                seasonStatus: true,
+                billingStatus: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!flight) {
@@ -525,6 +613,7 @@ export const flightAdminGuard = async (req: Request, res: Response, next: NextFu
     }
 
     if (role === 'SUPER' || flight.event.league.adminId === user.id) {
+      if (!(await allowLeagueMutation(req, res, flight.event.league))) return;
       return next();
     }
 

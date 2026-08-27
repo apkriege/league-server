@@ -9,10 +9,18 @@ import {
   getBillingMetadata,
   getAllocatedGolfersForAdmin,
   getBillingState,
+  getLeagueCapacityPurchase,
   mergeBillingMetadata,
 } from '../utils/billing';
-import { lockAdminBilling, lockLeagueCapacity } from '../services/billingLock';
+import { lockAdminBilling, lockLeagueCapacity, lockSeasonEntitlement } from '../services/billingLock';
 import { redeemPaymentBypassCode } from '../services/paymentBypassCode';
+import {
+  getEntitlementStatus,
+  getNetPaidGolfers,
+  normalizeBillingDraftKey,
+  prepareSeasonEntitlement,
+} from '../services/seasonEntitlement';
+import { getLeagueMutationBlock } from '../services/leagueLifecycle';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
@@ -30,6 +38,7 @@ const PRODUCT_TAX_CODE = process.env.STRIPE_PRODUCT_TAX_CODE || 'txcd_10103000';
 const CHECKOUT_PURPOSES = [
   'registration',
   'seat_upgrade',
+  'league_season',
   'league_capacity',
 ] as const;
 type CheckoutPurpose = (typeof CHECKOUT_PURPOSES)[number];
@@ -38,16 +47,25 @@ export type CheckoutConfirmationStatus = 'succeeded' | 'processing' | 'failed';
 const isCheckoutPurpose = (value: string): value is CheckoutPurpose =>
   CHECKOUT_PURPOSES.some((purpose) => purpose === value);
 
+const isCreatableCheckoutPurpose = (
+  purpose: CheckoutPurpose,
+): purpose is Extract<CheckoutPurpose, 'league_season' | 'league_capacity'> =>
+  purpose === 'league_season' || purpose === 'league_capacity';
+
 const getProductName = (purpose: CheckoutPurpose, quantity: number) => {
   if (purpose === 'registration') {
-    return `League Admin Registration (${quantity} golfers included)`;
+    return `League season golfer access (${quantity} golfers)`;
   }
 
   if (purpose === 'league_capacity') {
-    return `Additional league golfer capacity (${quantity})`;
+    return `Additional golfers for current league season (${quantity})`;
   }
 
-  return `Additional golfer seats (${quantity})`;
+  if (purpose === 'league_season') {
+    return `League season access (${quantity} golfers)`;
+  }
+
+  return `League season golfer access (${quantity} golfers)`;
 };
 
 const getCheckoutRedirectUrl = (value: unknown, fallback: string) => {
@@ -134,6 +152,7 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
   const completedQuantity = Math.max(0, Number(session.metadata?.quantity || 0));
   const requestedTargetGolfers = Math.max(0, Number(session.metadata?.targetGolfers || 0));
   const leagueId = Math.max(0, Number(session.metadata?.leagueId || 0));
+  const entitlementId = Math.max(0, Number(session.metadata?.entitlementId || 0));
   const completedPurpose = String(session.metadata?.purpose || 'seat_upgrade');
   if (!Number.isInteger(completedQuantity) || completedQuantity <= 0) return null;
 
@@ -145,17 +164,51 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
           if (completedPurpose === 'league_capacity' && leagueId > 0) {
             await lockLeagueCapacity(tx, leagueId);
           }
+          if (entitlementId > 0) await lockSeasonEntitlement(tx, entitlementId);
           const processed = await tx.stripe_checkout_completion.findUnique({
             where: { sessionId: session.id },
           });
           if (processed) {
-            return tx.user.findFirst({ where: { id: userIdFromReference, deletedAt: null } });
+            return tx.user.findUnique({ where: { id: userIdFromReference } });
           }
 
-          const user = await tx.user.findFirst({
-            where: { id: userIdFromReference, deletedAt: null },
-          });
+          const user = await tx.user.findUnique({ where: { id: userIdFromReference } });
           if (!user) return null;
+
+          const entitlement = entitlementId
+            ? await tx.league_season_entitlement.findUnique({
+                where: { id: entitlementId },
+                include: { league: { select: { id: true } } },
+              })
+            : null;
+          if (entitlementId && !entitlement) return null;
+          if (
+            completedPurpose === 'league_capacity' &&
+            leagueId > 0 &&
+            entitlement?.league?.id !== leagueId
+          ) {
+            return null;
+          }
+
+          const nextRequiredGolfers =
+            entitlement && completedPurpose === 'league_capacity'
+              ? Math.max(entitlement.requiredGolfers, requestedTargetGolfers)
+              : entitlement?.requiredGolfers || 0;
+          const updatedEntitlement = entitlement
+            ? await tx.league_season_entitlement.update({
+                where: { id: entitlement.id },
+                data: {
+                  paidGolfers: { increment: completedQuantity },
+                  requiredGolfers: nextRequiredGolfers,
+                  status: getEntitlementStatus({
+                    paidGolfers: entitlement.paidGolfers + completedQuantity,
+                    refundedGolfers: entitlement.refundedGolfers,
+                    requiredGolfers: nextRequiredGolfers,
+                    consumed: Boolean(entitlement.league),
+                  }),
+                },
+              })
+            : null;
 
           const currentMetadata =
             user.metadata && typeof user.metadata === 'object' ? user.metadata : {};
@@ -179,13 +232,20 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
 
           if (completedPurpose === 'league_capacity' && leagueId > 0) {
             const league = await tx.league.findFirst({
-              where: { id: leagueId, adminId: user.id, deletedAt: null },
-              select: { id: true, numPlayers: true },
+              where: { id: leagueId, entitlementId: entitlement?.id, deletedAt: null },
+              select: { id: true, numPlayers: true, billingPaidGolfers: true },
             });
             if (league) {
+              const paidCapacity = updatedEntitlement
+                ? getNetPaidGolfers(updatedEntitlement)
+                : requestedTargetGolfers;
               await tx.league.update({
                 where: { id: league.id },
-                data: { numPlayers: Math.max(league.numPlayers, requestedTargetGolfers) },
+                data: {
+                  numPlayers: Math.max(league.numPlayers, requestedTargetGolfers),
+                  billingPaidGolfers: Math.max(Number(league.billingPaidGolfers || 0), paidCapacity),
+                  billingStatus: 'active',
+                },
               });
             }
           }
@@ -234,6 +294,7 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
                 typeof session.payment_intent === 'string' ? session.payment_intent : null,
               userId: user.id,
               leagueId: leagueId > 0 ? leagueId : null,
+              entitlementId: entitlement?.id || null,
               purpose: completedPurpose,
               quantity: completedQuantity,
               targetGolfers: requestedTargetGolfers,
@@ -246,7 +307,16 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
       );
     } catch (error: any) {
       if (error?.code === 'P2002') {
-        return prisma.user.findFirst({ where: { id: userIdFromReference, deletedAt: null } });
+        const recordedSession = await prisma.stripe_checkout_completion.findUnique({
+          where: { sessionId: session.id },
+          select: { userId: true },
+        });
+        if (recordedSession?.userId === userIdFromReference) {
+          return prisma.user.findFirst({
+            where: { id: userIdFromReference },
+          });
+        }
+        throw error;
       }
       if (error?.code !== 'P2034' || attempt === 2) throw error;
     }
@@ -271,6 +341,7 @@ export const applyRefundedCharge = async (charge: Stripe.Charge) => {
       if (completion.purpose === 'league_capacity' && completion.leagueId) {
         await lockLeagueCapacity(tx, completion.leagueId);
       }
+      if (completion.entitlementId) await lockSeasonEntitlement(tx, completion.entitlementId);
 
       const totalRefundedQuantity = charge.refunded
         ? completion.quantity
@@ -306,23 +377,54 @@ export const applyRefundedCharge = async (charge: Stripe.Charge) => {
         },
       });
 
-      if (completion.purpose === 'league_capacity' && completion.leagueId) {
+      const entitlement = completion.entitlementId
+        ? await tx.league_season_entitlement.findUnique({
+            where: { id: completion.entitlementId },
+            include: { league: { select: { id: true } } },
+          })
+        : null;
+      const nextEntitlementRefunded = entitlement
+        ? Math.min(entitlement.paidGolfers, entitlement.refundedGolfers + quantityToRevoke)
+        : 0;
+      const updatedEntitlement = entitlement
+        ? await tx.league_season_entitlement.update({
+            where: { id: entitlement.id },
+            data: {
+              refundedGolfers: nextEntitlementRefunded,
+              status: getEntitlementStatus({
+                paidGolfers: entitlement.paidGolfers,
+                refundedGolfers: nextEntitlementRefunded,
+                requiredGolfers: entitlement.requiredGolfers,
+                consumed: Boolean(entitlement.league),
+              }),
+            },
+          })
+        : null;
+
+      const affectedLeagueId = entitlement?.league?.id || completion.leagueId;
+      if (affectedLeagueId) {
         const league = await tx.league.findFirst({
-          where: { id: completion.leagueId, adminId: completion.userId, deletedAt: null },
-          select: { id: true, numPlayers: true },
+          where: { id: affectedLeagueId, deletedAt: null },
+          select: { id: true, numPlayers: true, billingPaidGolfers: true },
         });
         if (league) {
           const activeRegularPlayers = await tx.player.count({
             where: { leagueId: league.id, type: 'player', deletedAt: null },
           });
+          const nextPaidGolfers = updatedEntitlement
+            ? getNetPaidGolfers(updatedEntitlement)
+            : Math.max(0, Number(league.billingPaidGolfers || 0) - quantityToRevoke);
+          const nextCapacity = Math.max(
+            BILLING_MIN_GOLFERS,
+            activeRegularPlayers,
+            Math.min(league.numPlayers, nextPaidGolfers),
+          );
           await tx.league.update({
             where: { id: league.id },
             data: {
-              numPlayers: Math.max(
-                BILLING_MIN_GOLFERS,
-                activeRegularPlayers,
-                league.numPlayers - quantityToRevoke,
-              ),
+              numPlayers: nextCapacity,
+              billingPaidGolfers: nextPaidGolfers,
+              billingStatus: nextPaidGolfers >= nextCapacity ? 'active' : 'payment_due',
             },
           });
         }
@@ -355,6 +457,22 @@ export const applyLostDispute = async (dispute: Stripe.Dispute) => {
   } as Stripe.Charge);
 };
 
+const ensureCheckoutCompletionForPaymentIntent = async (paymentIntentId: string | null) => {
+  if (!paymentIntentId) return;
+  const existing = await prisma.stripe_checkout_completion.findUnique({
+    where: { paymentIntentId },
+    select: { id: true },
+  });
+  if (existing) return;
+
+  const sessions = await stripe.checkout.sessions.list({
+    payment_intent: paymentIntentId,
+    limit: 1,
+  });
+  const checkoutSession = sessions.data[0];
+  if (checkoutSession) await applyCompletedCheckoutSession(checkoutSession);
+};
+
 class PaymentController {
   static async createCheckoutSession(req: Request, res: Response) {
     try {
@@ -370,6 +488,8 @@ class PaymentController {
 
       const requestedPurpose = String(req.body?.purpose || 'seat_upgrade');
       const leagueId = Number(req.body?.leagueId || 0);
+      const renewedFromLeagueId = Number(req.body?.renewedFromLeagueId || 0);
+      const billingDraftKey = normalizeBillingDraftKey(req.body?.billingDraftKey);
       const requestedGolfers = Math.max(
         0,
         Number(req.body?.requestedGolfers ?? req.body?.quantity ?? BILLING_MIN_GOLFERS)
@@ -383,6 +503,14 @@ class PaymentController {
         return res.status(400).json({ message: 'Invalid checkout purpose' });
       }
       const purpose = requestedPurpose;
+      if (!isCreatableCheckoutPurpose(purpose)) {
+        return res.status(400).json({
+          message: 'New checkout sessions must be attached to a specific league season.',
+        });
+      }
+      if (purpose === 'league_season' && !billingDraftKey) {
+        return res.status(400).json({ message: 'A valid saved league draft is required for checkout.' });
+      }
       if (!Number.isInteger(requestedGolfers) || requestedGolfers < 1 || requestedGolfers > 10000) {
         return res.status(400).json({ message: 'Requested golfers must be a whole number from 1 to 10000' });
       }
@@ -401,35 +529,107 @@ class PaymentController {
         typeof (currentMetadata as any).stripe === 'object'
           ? (currentMetadata as any).stripe
           : {};
-      const currentBillingMetadata = getBillingMetadata(currentMetadata);
-      const currentIncludedGolfers = Math.max(0, Number(currentBillingMetadata.includedGolfers || 0));
-
-      let capacityLeague: { id: number; numPlayers: number; billingExempt: boolean } | null = null;
+      let capacityLeague: {
+        id: number;
+        numPlayers: number;
+        billingPaidGolfers: number;
+        billingExempt: boolean;
+        type: string;
+        endDate: Date;
+        seasonStatus: string;
+        billingStatus: string;
+        entitlementId: number | null;
+        entitlement: {
+          id: number;
+          billingOwnerId: number;
+          paidGolfers: number;
+          refundedGolfers: number;
+          requiredGolfers: number;
+        } | null;
+      } | null = null;
       if (purpose === 'league_capacity') {
         if (!Number.isInteger(leagueId) || leagueId <= 0) {
           return res.status(400).json({ message: 'League ID is required for a capacity upgrade' });
         }
         capacityLeague = await prisma.league.findFirst({
           where: { id: leagueId, adminId: user.id, deletedAt: null },
-          select: { id: true, numPlayers: true, billingExempt: true },
+          select: {
+            id: true,
+            numPlayers: true,
+            billingPaidGolfers: true,
+            billingExempt: true,
+            type: true,
+            endDate: true,
+            seasonStatus: true,
+            billingStatus: true,
+            entitlementId: true,
+            entitlement: {
+              select: {
+                id: true,
+                billingOwnerId: true,
+                paidGolfers: true,
+                refundedGolfers: true,
+                requiredGolfers: true,
+              },
+            },
+          },
         });
         if (!capacityLeague) {
           return res.status(404).json({ message: 'League not found' });
         }
+        const mutationBlock = getLeagueMutationBlock(capacityLeague);
+        const archivedBlock =
+          capacityLeague.billingStatus === 'payment_due'
+            ? getLeagueMutationBlock({ ...capacityLeague, billingStatus: 'active' })
+            : mutationBlock;
+        if (archivedBlock) {
+          return res.status(archivedBlock.status).json({
+            code: archivedBlock.code,
+            message: archivedBlock.message,
+          });
+        }
+        if (!capacityLeague.billingExempt && !capacityLeague.entitlement) {
+          return res.status(409).json({ message: 'This league is missing its season billing entitlement.' });
+        }
       }
 
-      const targetGolfers =
-        purpose === 'league_capacity' && capacityLeague
-          ? Math.max(capacityLeague.numPlayers, requestedGolfers)
-          : purpose === 'registration'
-          ? Math.max(BILLING_MIN_GOLFERS, requestedGolfers || BILLING_MIN_GOLFERS)
-          : Math.max(currentIncludedGolfers, requestedGolfers);
-      const quantity = Math.max(
-        0,
-        purpose === 'league_capacity' && capacityLeague
-          ? targetGolfers - capacityLeague.numPlayers
-          : targetGolfers - currentIncludedGolfers,
-      );
+      if (purpose === 'league_season' && renewedFromLeagueId > 0) {
+        const source = await prisma.league.findFirst({
+          where: { id: renewedFromLeagueId, adminId: user.id, deletedAt: null },
+          select: { id: true, type: true, renewedLeague: { select: { id: true } } },
+        });
+        if (!source) return res.status(404).json({ message: 'Previous league season not found.' });
+        if (source.type !== 'season') {
+          return res.status(409).json({ message: 'Only season leagues can be renewed.' });
+        }
+        if (source.renewedLeague) {
+          return res.status(409).json({ message: 'This league already has a next season.' });
+        }
+      }
+
+      const seasonEntitlement =
+        purpose === 'league_season' && billingDraftKey
+          ? await prepareSeasonEntitlement({
+              billingOwnerId: user.id,
+              draftKey: billingDraftKey,
+              requiredGolfers: requestedGolfers,
+              renewedFromLeagueId: renewedFromLeagueId || null,
+            })
+          : capacityLeague?.entitlement || null;
+
+      const capacityPurchase = capacityLeague
+        ? getLeagueCapacityPurchase(
+            capacityLeague.numPlayers,
+            capacityLeague.billingPaidGolfers,
+            requestedGolfers,
+          )
+        : null;
+      const targetGolfers = capacityPurchase
+        ? capacityPurchase.targetGolfers
+        : requestedGolfers;
+      const quantity = capacityPurchase
+        ? Math.max(0, targetGolfers - (seasonEntitlement ? getNetPaidGolfers(seasonEntitlement) : 0))
+        : Math.max(0, targetGolfers - (seasonEntitlement ? getNetPaidGolfers(seasonEntitlement) : 0));
 
       const allocatedGolfers = await getAllocatedGolfersForAdmin(user.id);
       const billingState = getBillingState(currentMetadata, allocatedGolfers);
@@ -443,7 +643,12 @@ class PaymentController {
             await lockLeagueCapacity(tx, capacityLeague.id);
             const lockedLeague = await tx.league.findFirst({
               where: { id: capacityLeague.id, adminId: user.id, deletedAt: null },
-              select: { id: true, numPlayers: true, billingExempt: true },
+              select: {
+                id: true,
+                numPlayers: true,
+                billingPaidGolfers: true,
+                billingExempt: true,
+              },
             });
             if (!lockedLeague) throw new Error('League not found');
             if (!lockedLeague.billingExempt) {
@@ -469,6 +674,50 @@ class PaymentController {
       }
 
       if (quantity <= 0) {
+        if (
+          purpose === 'league_capacity' &&
+          capacityLeague &&
+          targetGolfers > capacityLeague.numPlayers
+        ) {
+          await prisma.$transaction(async (tx) => {
+            await lockAdminBilling(tx, user.id);
+            await lockLeagueCapacity(tx, capacityLeague.id);
+            if (capacityLeague.entitlementId) {
+              await lockSeasonEntitlement(tx, capacityLeague.entitlementId);
+            }
+            const lockedLeague = await tx.league.findFirst({
+              where: { id: capacityLeague.id, adminId: user.id, deletedAt: null },
+              select: {
+                id: true,
+                numPlayers: true,
+                billingPaidGolfers: true,
+                entitlement: true,
+              },
+            });
+            if (!lockedLeague) throw new Error('League not found');
+            const lockedPaidGolfers = lockedLeague.entitlement
+              ? getNetPaidGolfers(lockedLeague.entitlement)
+              : lockedLeague.billingPaidGolfers;
+            if (lockedPaidGolfers < targetGolfers) {
+              throw new Error('Payment is required for this capacity change.');
+            }
+            if (lockedLeague.entitlement) {
+              await tx.league_season_entitlement.update({
+                where: { id: lockedLeague.entitlement.id },
+                data: {
+                  requiredGolfers: Math.max(
+                    lockedLeague.entitlement.requiredGolfers,
+                    targetGolfers,
+                  ),
+                },
+              });
+            }
+            await tx.league.update({
+              where: { id: lockedLeague.id },
+              data: { numPlayers: Math.max(lockedLeague.numPlayers, targetGolfers) },
+            });
+          });
+        }
         return res.status(200).json({
           alreadyCovered: true,
           sessionId: null,
@@ -508,20 +757,36 @@ class PaymentController {
             quantity,
           };
 
-      const checkoutSession = await stripe.checkout.sessions.create({
-        line_items: [lineItem],
-        mode: 'payment',
-        success_url: successUrl,
-        cancel_url: cancelUrl,
-        customer: customerId,
-        client_reference_id: String(user.id),
-        metadata: {
-          purpose,
-          quantity: String(quantity),
-          targetGolfers: String(targetGolfers),
-          ...(capacityLeague ? { leagueId: String(capacityLeague.id) } : {}),
+      const checkoutSession = await stripe.checkout.sessions.create(
+        {
+          line_items: [lineItem],
+          mode: 'payment',
+          success_url: successUrl,
+          cancel_url: cancelUrl,
+          customer: customerId,
+          client_reference_id: String(user.id),
+          metadata: {
+            purpose,
+            quantity: String(quantity),
+            targetGolfers: String(targetGolfers),
+            ...(capacityLeague ? { leagueId: String(capacityLeague.id) } : {}),
+            ...(seasonEntitlement ? { entitlementId: String(seasonEntitlement.id) } : {}),
+            ...(billingDraftKey ? { billingDraftKey } : {}),
+            ...(renewedFromLeagueId > 0 ? { renewedFromLeagueId: String(renewedFromLeagueId) } : {}),
+          },
         },
-      });
+        {
+          idempotencyKey: [
+            'league-checkout',
+            purpose,
+            user.id,
+            seasonEntitlement?.id || capacityLeague?.id,
+            seasonEntitlement?.paidGolfers || 0,
+            seasonEntitlement?.refundedGolfers || 0,
+            targetGolfers,
+          ].join('-'),
+        },
+      );
 
       await prisma.user.update({
         where: { id: user.id },
@@ -559,6 +824,7 @@ class PaymentController {
         targetGolfers,
       });
     } catch (error: any) {
+      const message = error instanceof Error ? error.message : 'Failed to create checkout session';
       console.error(
         JSON.stringify({
           level: 'error',
@@ -567,9 +833,12 @@ class PaymentController {
           type: error?.type ?? null,
           code: error?.code ?? null,
           statusCode: error?.statusCode ?? null,
-          message: error?.message || 'Unknown Stripe checkout error',
+          message,
         }),
       );
+      if (message.includes('already used') || message.includes('different league season')) {
+        return res.status(409).json({ message });
+      }
       return res.status(500).json({ message: 'Failed to create checkout session' });
     }
   }
@@ -695,8 +964,21 @@ class PaymentController {
 
       const metadata = user?.metadata && typeof user.metadata === 'object' ? user.metadata : {};
       const stripeState = (metadata as any)?.stripe || null;
-      const allocatedGolfers = user?.id ? await getAllocatedGolfersForAdmin(user.id) : 0;
-      const billingState = getBillingState(metadata, allocatedGolfers);
+      const [allocatedGolfers, entitlements] = user?.id
+        ? await Promise.all([
+            getAllocatedGolfersForAdmin(user.id),
+            prisma.league_season_entitlement.findMany({
+              where: { billingOwnerId: user.id },
+              select: { paidGolfers: true, refundedGolfers: true },
+            }),
+          ])
+        : [0, []];
+      const includedGolfers = entitlements.reduce(
+        (total, entitlement) =>
+          total + Math.max(0, entitlement.paidGolfers - entitlement.refundedGolfers),
+        0,
+      );
+      const billingState = getBillingState(metadata, allocatedGolfers, { includedGolfers });
 
       return res.status(200).json({ stripe: stripeState, billing: billingState });
     } catch (error: any) {
@@ -733,9 +1015,21 @@ class PaymentController {
         const session = event.data.object as Stripe.Checkout.Session;
         await applyCompletedCheckoutSession(session);
       } else if (event.type === 'charge.refunded') {
-        await applyRefundedCharge(event.data.object as Stripe.Charge);
+        const charge = event.data.object as Stripe.Charge;
+        const paymentIntentId =
+          typeof charge.payment_intent === 'string'
+            ? charge.payment_intent
+            : charge.payment_intent?.id || null;
+        await ensureCheckoutCompletionForPaymentIntent(paymentIntentId);
+        await applyRefundedCharge(charge);
       } else if (event.type === 'charge.dispute.closed') {
-        await applyLostDispute(event.data.object as Stripe.Dispute);
+        const dispute = event.data.object as Stripe.Dispute;
+        const paymentIntentId =
+          typeof dispute.payment_intent === 'string'
+            ? dispute.payment_intent
+            : dispute.payment_intent?.id || null;
+        await ensureCheckoutCompletionForPaymentIntent(paymentIntentId);
+        await applyLostDispute(dispute);
       }
 
       return res.json({ received: true });

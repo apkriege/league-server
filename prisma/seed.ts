@@ -152,7 +152,7 @@ async function main() {
   await clearData();
   const hashedPassword = await hashPassword();
 
-  const superUser = await prisma.user.create({
+  await prisma.user.create({
     data: {
       firstName: 'Super',
       lastName: 'Admin',
@@ -190,7 +190,17 @@ async function main() {
     },
   });
 
-  await prisma.stripe_checkout_completion.create({
+  const seededEntitlement = await prisma.league_season_entitlement.create({
+    data: {
+      billingOwnerId: adminUser.id,
+      draftKey: 'seeded-thursday-night-league',
+      requiredGolfers: 8,
+      paidGolfers: 8,
+      status: 'paid',
+    },
+  });
+
+  const seededCheckout = await prisma.stripe_checkout_completion.create({
     data: {
       sessionId: 'cs_demo_registration',
       paymentIntentId: 'pi_demo_registration',
@@ -198,6 +208,7 @@ async function main() {
       purpose: 'registration',
       quantity: 8,
       targetGolfers: 8,
+      entitlementId: seededEntitlement.id,
     },
   });
 
@@ -230,6 +241,8 @@ async function main() {
       format: 'team',
       numPlayers: 8,
       adminId: adminUser.id,
+      entitlementId: seededEntitlement.id,
+      billingPaidGolfers: 8,
       startDate: new Date('2026-05-01T00:00:00.000Z'),
       endDate: new Date('2026-09-01T00:00:00.000Z'),
       contactFirstName: 'Adam',
@@ -238,6 +251,17 @@ async function main() {
       contactPhone: '555-0110',
     },
   });
+
+  await prisma.$transaction([
+    prisma.league_season_entitlement.update({
+      where: { id: seededEntitlement.id },
+      data: { status: 'consumed' },
+    }),
+    prisma.stripe_checkout_completion.update({
+      where: { id: seededCheckout.id },
+      data: { leagueId: league.id },
+    }),
+  ]);
 
   await prisma.league_onboarding.create({
     data: {

@@ -1,25 +1,34 @@
 import { Request, Response } from 'express';
+import crypto from 'node:crypto';
 import LeagueService from '../models/league';
 import { prisma } from '../../prisma';
 import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
 import {
   BILLING_MIN_GOLFERS,
-  getAllocatedGolfersForAdmin,
-  getBillingState,
   getLeagueBillableGolfers,
   getPendingLeagueBypassCodeId,
-  isBillingCapacityCovered,
 } from '../utils/billing';
 import { writeAuditLog } from '../utils/audit';
 import { generateLeagueAccessCode } from './auth';
 import { localDateKey } from '../utils/time-zone';
 import { normalizeGender } from '../utils/tee-rating';
-import { lockAdminBilling } from '../services/billingLock';
+import { lockAdminBilling, lockSeasonEntitlement } from '../services/billingLock';
 import { attachPendingPaymentBypassToLeague } from '../services/paymentBypassCode';
 import { normalizeLeagueHoleFormat } from '../utils/league-hole-format';
 import { calculateSeasonSkinLeaderboards } from '../utils/season-skins';
 import { calculatePlayerResults } from '../utils/player-results';
 import { getLeagueRoundProgress } from '../utils/league-round-progress';
+import {
+  LeagueSeasonRenewalError,
+  prepareLeagueRenewalTemplate,
+  shiftSeasonDate,
+} from '../services/leagueSeasonRenewal';
+import {
+  getNetPaidGolfers,
+  normalizeBillingDraftKey,
+  SEASON_ENTITLEMENT_STATUSES,
+} from '../services/seasonEntitlement';
+import { sendLeagueInvitationEmail } from '../services/leagueInvitationEmail';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
@@ -98,7 +107,10 @@ class LeagueController {
     };
   };
 
-  static validateLeagueDates = (payload: any) => {
+  static validateLeagueDates = (
+    payload: any,
+    options: { enforceSeasonLength?: boolean } = {},
+  ) => {
     if (!payload?.startDate || !payload?.endDate) return;
 
     const startDate = new Date(payload.startDate);
@@ -110,9 +122,15 @@ class LeagueController {
       throw new Error('End date must be after the start date.');
     }
 
-    const maxEndDate = new Date(startDate);
-    maxEndDate.setFullYear(maxEndDate.getFullYear() + 1);
-    if (endDate > maxEndDate) {
+    const oneCalendarYearLater = shiftSeasonDate(startDate);
+    if (
+      options.enforceSeasonLength !== false &&
+      payload.type === 'season' &&
+      endDate.getTime() !== oneCalendarYearLater.getTime()
+    ) {
+      throw new Error('A league season must cover exactly one calendar year.');
+    }
+    if (payload.type !== 'season' && endDate > oneCalendarYearLater) {
       throw new Error('End date cannot be more than one year after the start date.');
     }
   };
@@ -183,6 +201,12 @@ class LeagueController {
           scoringPeriods: {
             orderBy: { position: 'asc' },
           },
+          renewedFromLeague: {
+            select: { id: true, name: true, startDate: true, endDate: true },
+          },
+          renewedLeague: {
+            select: { id: true, name: true, startDate: true, endDate: true },
+          },
         },
       });
 
@@ -220,13 +244,32 @@ class LeagueController {
     }
   };
 
-  static getAllLeagues = async (req: Request, res: Response) => {
+  static getRenewalTemplate = async (req: Request, res: Response) => {
     try {
-      const leagues = await LeagueService.findAll();
-      res.status(200).send(leagues);
+      const leagueId = Number(req.params.id);
+      const adminId = Number(req.session.userId);
+      const role = String((req as any).user?.role || '').toUpperCase();
+      if (role === 'SUPER') {
+        const source = await prisma.league.findFirst({
+          where: { id: leagueId, deletedAt: null },
+          select: { adminId: true },
+        });
+        if (source && source.adminId !== adminId) {
+          return res.status(403).json({
+            message: 'Super administrators cannot purchase a renewal on behalf of another owner. Transfer ownership first if support needs to complete the renewal.',
+          });
+        }
+      }
+      return res.status(200).json(await prepareLeagueRenewalTemplate(adminId, leagueId));
     } catch (error) {
-      console.error(error);
-      res.status(500).json({ message: 'Internal server error' });
+      if (error instanceof LeagueSeasonRenewalError) {
+        return res.status(error.status).json({
+          message: error.message,
+          ...(error.renewedLeague ? { renewedLeague: error.renewedLeague } : {}),
+        });
+      }
+      console.error('getRenewalTemplate error:', error);
+      return res.status(500).json({ message: 'Unable to prepare the next season' });
     }
   };
 
@@ -420,8 +463,16 @@ class LeagueController {
 
   static createLeague = async (req: Request, res: Response) => {
     try {
-      const { players = [], teams = [], ...leagueData } = req.body;
+      const {
+        players = [],
+        teams = [],
+        scoringPeriods = [],
+        renewedFromLeagueId,
+        billingDraftKey: rawBillingDraftKey,
+        ...leagueData
+      } = req.body;
       const adminId = req.session.userId;
+      const billingDraftKey = normalizeBillingDraftKey(rawBillingDraftKey);
 
       if (!adminId) {
         return res.status(401).json({ message: 'Not authenticated' });
@@ -434,6 +485,32 @@ class LeagueController {
 
       if (!adminUser) {
         return res.status(404).json({ message: 'User not found' });
+      }
+      if (!billingDraftKey) {
+        return res.status(400).json({ message: 'A valid saved league draft is required.' });
+      }
+
+      const renewalSourceId = Number(renewedFromLeagueId || 0);
+      const renewalSource = renewalSourceId
+        ? await prisma.league.findFirst({
+            where: { id: renewalSourceId, adminId, deletedAt: null },
+            include: {
+              players: {
+                where: { deletedAt: null },
+                select: { id: true, userId: true },
+              },
+              renewedLeague: { select: { id: true } },
+            },
+          })
+        : null;
+      if (renewalSourceId && !renewalSource) {
+        return res.status(404).json({ message: 'The previous league season was not found.' });
+      }
+      if (renewalSource && renewalSource.type !== 'season') {
+        return res.status(409).json({ message: 'Only season leagues can be renewed.' });
+      }
+      if (renewalSource?.renewedLeague) {
+        return res.status(409).json({ message: 'This league already has a next season.' });
       }
 
       const billableGolfers = getLeagueBillableGolfers(players);
@@ -461,6 +538,35 @@ class LeagueController {
         numPlayers: billableGolfers,
       });
       LeagueController.validateLeagueDates(normalizedLeagueData);
+      if (renewalSource && normalizedLeagueData.type !== 'season') {
+        return res.status(400).json({ message: 'A renewed league must remain a season league.' });
+      }
+      if (renewalSource && normalizedLeagueData.startDate < renewalSource.endDate) {
+        return res.status(400).json({
+          message: 'The new season must start on or after the previous season ends.',
+        });
+      }
+
+      const normalizedScoringPeriods = Array.isArray(scoringPeriods)
+        ? scoringPeriods.map((period: any, index: number) => ({
+            name: String(period?.name || '').trim(),
+            position: index,
+            startDate: new Date(period?.startDate),
+            endDate: new Date(period?.endDate),
+          }))
+        : [];
+      for (const period of normalizedScoringPeriods) {
+        if (!period.name || Number.isNaN(period.startDate.getTime()) || Number.isNaN(period.endDate.getTime())) {
+          return res.status(400).json({ message: 'Every scoring period needs a name and valid dates.' });
+        }
+        if (
+          period.startDate < normalizedLeagueData.startDate ||
+          period.endDate > normalizedLeagueData.endDate ||
+          period.endDate < period.startDate
+        ) {
+          return res.status(400).json({ message: 'Scoring periods must stay within the new league season.' });
+        }
+      }
 
       if (normalizedLeagueData.type === 'season' && normalizedLeagueData.format === 'team') {
         const playerIds = new Set(players.map((player: any) => Number(player.id)));
@@ -481,68 +587,115 @@ class LeagueController {
           }
         }
       }
-      const allocatedGolfers = await getAllocatedGolfersForAdmin(adminId);
-      const billingState = getBillingState(adminUser.metadata, allocatedGolfers);
-
-      const hasPendingLeagueBypass = billingState.hasPendingLeagueBypass;
-      if (!billingState.hasCompletedRegistration && !hasPendingLeagueBypass) {
-        return res.status(402).json({
-          message: `Complete registration payment for at least ${billingState.minimumGolfers} golfers before creating a league.`,
-          billing: billingState,
-        });
-      }
-
-      if (
-        !hasPendingLeagueBypass &&
-        !isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)
-      ) {
+      const hasPendingLeagueBypass = getPendingLeagueBypassCodeId(adminUser.metadata) !== null;
+      const preparedEntitlement = await prisma.league_season_entitlement.findUnique({
+        where: { billingOwnerId_draftKey: { billingOwnerId: adminId, draftKey: billingDraftKey } },
+        include: { league: { select: { id: true, name: true } } },
+      });
+      const paidForDraft = preparedEntitlement ? getNetPaidGolfers(preparedEntitlement) : 0;
+      if (!hasPendingLeagueBypass && paidForDraft < billableGolfers) {
         return res.status(402).json({
           message: `This league requires payment for ${billableGolfers} golfers.`,
-          billing: billingState,
           requiredGolfers: billableGolfers,
-          additionalGolfersRequired:
-            allocatedGolfers + billableGolfers - billingState.includedGolfers,
+          additionalGolfersRequired: billableGolfers - paidForDraft,
         });
+      }
+      if (preparedEntitlement?.league) {
+        return res.status(409).json({
+          message: `This paid draft was already used to create ${preparedEntitlement.league.name}.`,
+        });
+      }
+      if (
+        preparedEntitlement &&
+        Number(preparedEntitlement.renewedFromLeagueId || 0) !== renewalSourceId
+      ) {
+        return res.status(409).json({ message: 'This payment belongs to a different league season.' });
       }
 
       const viewerAccessCode = await LeagueController.createUniqueViewerAccessCode();
-      const newLeague = await prisma.$transaction(async (tx) => {
+      const renewalPlayerUsers = new Map(
+        (renewalSource?.players || []).map((player) => [player.id, player.userId]),
+      );
+      const submittedSourcePlayerIds = players
+        .map((player: any) => Number(player?.sourcePlayerId || 0))
+        .filter((playerId: number) => Number.isInteger(playerId) && playerId > 0);
+      if (new Set(submittedSourcePlayerIds).size !== submittedSourcePlayerIds.length) {
+        return res.status(400).json({ message: 'A previous-season player can only be copied once.' });
+      }
+      if (submittedSourcePlayerIds.some((playerId: number) => !renewalPlayerUsers.has(playerId))) {
+        return res.status(400).json({ message: 'A copied player does not belong to the previous season.' });
+      }
+      const creationResult = await prisma.$transaction(async (tx) => {
         await lockAdminBilling(tx, adminId);
         const lockedAdmin = await tx.user.findFirst({
           where: { id: adminId, deletedAt: null },
           select: { metadata: true },
         });
         if (!lockedAdmin) throw new Error('User not found');
-        const lockedAllocatedGolfers = await getAllocatedGolfersForAdmin(adminId, undefined, tx);
-        const lockedBillingState = getBillingState(
-          lockedAdmin.metadata,
-          lockedAllocatedGolfers,
-        );
+        if (renewalSourceId) {
+          const availableSource = await tx.league.findFirst({
+            where: { id: renewalSourceId, adminId, deletedAt: null },
+            select: { renewedLeague: { select: { id: true } } },
+          });
+          if (!availableSource) throw new Error('The previous league season was not found.');
+          if (availableSource.renewedLeague) {
+            throw new Error('This league already has a next season.');
+          }
+        }
         const pendingLeagueBypassCodeId = getPendingLeagueBypassCodeId(lockedAdmin.metadata);
-        const useLeagueBypass = pendingLeagueBypassCodeId !== null;
-        if (!lockedBillingState.hasCompletedRegistration && !useLeagueBypass) {
-          throw new Error('Registration payment is required.');
+        let lockedEntitlement = await tx.league_season_entitlement.findUnique({
+          where: { billingOwnerId_draftKey: { billingOwnerId: adminId, draftKey: billingDraftKey } },
+          include: { league: { select: { id: true, name: true } } },
+        });
+        if (lockedEntitlement) {
+          await lockSeasonEntitlement(tx, lockedEntitlement.id);
+          lockedEntitlement = await tx.league_season_entitlement.findUnique({
+            where: { id: lockedEntitlement.id },
+            include: { league: { select: { id: true, name: true } } },
+          });
+        }
+        const lockedPaidGolfers = lockedEntitlement ? getNetPaidGolfers(lockedEntitlement) : 0;
+        const useLeagueBypass = pendingLeagueBypassCodeId !== null && lockedPaidGolfers < billableGolfers;
+        if (!useLeagueBypass && lockedPaidGolfers < billableGolfers) {
+          throw new Error(`Payment is required for ${billableGolfers} golfers.`);
+        }
+        if (lockedEntitlement?.league) {
+          throw new Error(`This paid draft was already used to create ${lockedEntitlement.league.name}.`);
         }
         if (
-          !useLeagueBypass &&
-          !isBillingCapacityCovered(
-            lockedBillingState,
-            lockedAllocatedGolfers + billableGolfers,
-          )
+          lockedEntitlement &&
+          Number(lockedEntitlement.renewedFromLeagueId || 0) !== renewalSourceId
         ) {
-          throw new Error(`Payment is required for ${billableGolfers} golfers.`);
+          throw new Error('This payment belongs to a different league season.');
+        }
+        if (!lockedEntitlement) {
+          if (!useLeagueBypass) throw new Error(`Payment is required for ${billableGolfers} golfers.`);
+          lockedEntitlement = await tx.league_season_entitlement.create({
+            data: {
+              billingOwnerId: adminId,
+              draftKey: billingDraftKey,
+              renewedFromLeagueId: renewalSourceId || null,
+              requiredGolfers: billableGolfers,
+              status: SEASON_ENTITLEMENT_STATUSES.bypassed,
+            },
+            include: { league: { select: { id: true, name: true } } },
+          });
         }
 
         const createdLeague = await tx.league.create({
           data: {
             ...normalizedLeagueData,
             adminId,
+            renewedFromLeagueId: renewalSourceId || null,
+            entitlementId: lockedEntitlement.id,
             viewerAccessCode,
             billingExempt: useLeagueBypass,
+            billingStatus: useLeagueBypass ? 'exempt' : 'active',
+            billingPaidGolfers: useLeagueBypass ? 0 : lockedPaidGolfers,
           },
         });
 
-        if (pendingLeagueBypassCodeId) {
+        if (useLeagueBypass && pendingLeagueBypassCodeId) {
           const attached = await attachPendingPaymentBypassToLeague(tx, {
             userId: adminId,
             leagueId: createdLeague.id,
@@ -555,12 +708,42 @@ class LeagueController {
           }
         }
 
+        await tx.league_season_entitlement.update({
+          where: { id: lockedEntitlement.id },
+          data: {
+            requiredGolfers: billableGolfers,
+            status: useLeagueBypass
+              ? SEASON_ENTITLEMENT_STATUSES.bypassed
+              : SEASON_ENTITLEMENT_STATUSES.consumed,
+          },
+        });
+        await tx.stripe_checkout_completion.updateMany({
+          where: { entitlementId: lockedEntitlement.id, leagueId: null },
+          data: { leagueId: createdLeague.id },
+        });
+
         await tx.league_onboarding.create({ data: { leagueId: createdLeague.id } });
+        if (normalizedScoringPeriods.length > 0) {
+          await tx.league_scoring_period.createMany({
+            data: normalizedScoringPeriods.map((period) => ({ ...period, leagueId: createdLeague.id })),
+          });
+        }
+
+        const createdInvitations: Array<{
+          id: number;
+          token: string;
+          email: string;
+          playerName: string;
+        }> = [];
 
         if (players.length > 0) {
           const playerIdMap = new Map<number, number>();
 
           for (const player of players) {
+            const sourcePlayerId = Number(player.sourcePlayerId || 0);
+            const linkedUserId = sourcePlayerId
+              ? renewalPlayerUsers.get(sourcePlayerId) ?? undefined
+              : undefined;
             const createdPlayer = await tx.player.create({
               data: {
                 firstName: String(player.firstName).trim(),
@@ -577,11 +760,30 @@ class LeagueController {
                 seasonPoints: 0,
                 seasonRank: null,
                 leagueId: createdLeague.id,
+                userId: linkedUserId,
               },
             });
 
             if (player?.id !== undefined && player?.id !== null) {
               playerIdMap.set(Number(player.id), createdPlayer.id);
+            }
+            if (renewalSourceId && !linkedUserId && createdPlayer.email) {
+              const invitation = await tx.league_invitation.create({
+                data: {
+                  leagueId: createdLeague.id,
+                  playerId: createdPlayer.id,
+                  email: createdPlayer.email,
+                  token: crypto.randomBytes(24).toString('hex'),
+                  invitedById: adminId,
+                  expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+                },
+              });
+              createdInvitations.push({
+                id: invitation.id,
+                token: invitation.token,
+                email: invitation.email,
+                playerName: `${createdPlayer.firstName} ${createdPlayer.lastName}`.trim(),
+              });
             }
           }
 
@@ -616,8 +818,10 @@ class LeagueController {
           }
         }
 
-        return createdLeague;
+        return { createdLeague, createdInvitations };
       });
+
+      const { createdLeague: newLeague, createdInvitations } = creationResult;
 
       await writeAuditLog({
         userId: adminId,
@@ -625,22 +829,51 @@ class LeagueController {
         entity: 'league',
         entityId: newLeague.id,
         action: 'create',
-        summary: `Created league ${newLeague.name}.`,
+        summary: renewalSourceId
+          ? `Renewed league season ${renewalSourceId} as ${newLeague.name}.`
+          : `Created league ${newLeague.name}.`,
       });
+
+      if (createdInvitations.length > 0) {
+        await Promise.all(
+          createdInvitations.map((invitation) =>
+            sendLeagueInvitationEmail({
+              invitationId: invitation.id,
+              token: invitation.token,
+              email: invitation.email,
+              playerName: invitation.playerName,
+              leagueName: newLeague.name,
+            }),
+          ),
+        );
+        await writeAuditLog({
+          userId: adminId,
+          leagueId: newLeague.id,
+          entity: 'league_invitation',
+          action: 'create',
+          summary: `Sent ${createdInvitations.length} invitation${createdInvitations.length === 1 ? '' : 's'} for the renewed season.`,
+          metadata: { invitationIds: createdInvitations.map((invitation) => invitation.id) },
+        });
+      }
 
       res.status(201).send(newLeague);
     } catch (error) {
       console.error(error);
       const message = error instanceof Error ? error.message : 'Internal server error';
+      const errorCode =
+        error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
       const paymentRequired = message.toLowerCase().includes('payment is required');
       const status = paymentRequired
         ? 402
+        : errorCode === 'P2002' || message.includes('already has a next season')
+          ? 409
         : message.includes('League type') ||
         message.includes('League hole format') ||
         message.includes('Season leagues require format') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
         message.includes('League dates are invalid') ||
+        message.includes('calendar year') ||
         message.includes('End date')
           ? 400
           : 500;
@@ -653,6 +886,7 @@ class LeagueController {
       const id = Number(req.params.id);
       const existingLeague = await prisma.league.findFirst({
         where: { id, deletedAt: null },
+        include: { entitlement: true },
       });
 
       if (!existingLeague) {
@@ -666,7 +900,15 @@ class LeagueController {
         ...req.body,
         numPlayers: nextNumPlayers,
       });
-      LeagueController.validateLeagueDates(league);
+      const datesChanged =
+        league.startDate.getTime() !== existingLeague.startDate.getTime() ||
+        league.endDate.getTime() !== existingLeague.endDate.getTime();
+      if (datesChanged) {
+        return res.status(409).json({
+          message: 'League start and end dates cannot change after the league has been created.',
+        });
+      }
+      LeagueController.validateLeagueDates(league, { enforceSeasonLength: false });
 
       const [activePlayerCount, activeTeamCount, activeEvents, recordedRoundCount] = await Promise.all([
         prisma.player.count({ where: { leagueId: id, type: 'player', deletedAt: null } }),
@@ -694,14 +936,6 @@ class LeagueController {
         league.type !== existingLeague.type ||
         league.format !== existingLeague.format ||
         league.holeFormat !== existingLeague.holeFormat;
-      const datesChanged =
-        league.startDate.getTime() !== existingLeague.startDate.getTime() ||
-        league.endDate.getTime() !== existingLeague.endDate.getTime();
-      if (datesChanged) {
-        return res.status(409).json({
-          message: 'League start and end dates cannot change after the league has been created.',
-        });
-      }
       if (structureChanged && recordedRoundCount > 0) {
         return res.status(409).json({
           message: 'League type, season format, and holes and handicap settings cannot change after scores have been recorded.',
@@ -725,51 +959,48 @@ class LeagueController {
         });
       }
 
-      const adminUser = await prisma.user.findUnique({
-        where: { id: existingLeague.adminId },
-        select: { metadata: true },
-      });
-      const allocatedGolfers = await getAllocatedGolfersForAdmin(existingLeague.adminId, id);
-      const billingState = getBillingState(adminUser?.metadata, allocatedGolfers);
-
       const billableGolfers = Math.max(BILLING_MIN_GOLFERS, nextNumPlayers);
-      if (
-        !existingLeague.billingExempt &&
-        !isBillingCapacityCovered(billingState, allocatedGolfers + billableGolfers)
-      ) {
+      const paidGolfers = existingLeague.entitlement
+        ? getNetPaidGolfers(existingLeague.entitlement)
+        : existingLeague.billingPaidGolfers;
+      if (!existingLeague.billingExempt && paidGolfers < billableGolfers) {
         return res.status(402).json({
           message: `This change requires payment for ${billableGolfers} golfers in this league.`,
-          billing: billingState,
           requiredGolfers: billableGolfers,
-          additionalGolfersRequired:
-            allocatedGolfers + billableGolfers - billingState.includedGolfers,
+          additionalGolfersRequired: billableGolfers - paidGolfers,
         });
       }
 
       const updatedLeague = await prisma.$transaction(async (tx) => {
         await lockAdminBilling(tx, existingLeague.adminId);
-        const [lockedAdmin, lockedAllocatedGolfers] = await Promise.all([
-          tx.user.findFirst({
-            where: { id: existingLeague.adminId, deletedAt: null },
-            select: { metadata: true },
-          }),
-          getAllocatedGolfersForAdmin(existingLeague.adminId, id, tx),
-        ]);
-        const lockedBillingState = getBillingState(
-          lockedAdmin?.metadata,
-          lockedAllocatedGolfers,
-        );
-        if (
-          !existingLeague.billingExempt &&
-          !isBillingCapacityCovered(
-            lockedBillingState,
-            lockedAllocatedGolfers + billableGolfers,
-          )
-        ) {
+        if (existingLeague.entitlementId) {
+          await lockSeasonEntitlement(tx, existingLeague.entitlementId);
+        }
+        const lockedEntitlement = existingLeague.entitlementId
+          ? await tx.league_season_entitlement.findUnique({ where: { id: existingLeague.entitlementId } })
+          : null;
+        const lockedPaidGolfers = lockedEntitlement
+          ? getNetPaidGolfers(lockedEntitlement)
+          : existingLeague.billingPaidGolfers;
+        if (!existingLeague.billingExempt && lockedPaidGolfers < billableGolfers) {
           throw new Error('Payment is required for this capacity change.');
         }
+        if (lockedEntitlement && billableGolfers > lockedEntitlement.requiredGolfers) {
+          await tx.league_season_entitlement.update({
+            where: { id: lockedEntitlement.id },
+            data: { requiredGolfers: billableGolfers },
+          });
+        }
 
-        return tx.league.update({ where: { id }, data: league });
+        return tx.league.update({
+          where: { id },
+          data: {
+            ...league,
+            billingPaidGolfers: existingLeague.billingExempt
+              ? 0
+              : lockedPaidGolfers,
+          },
+        });
       });
 
       if (!updatedLeague) {
@@ -789,6 +1020,7 @@ class LeagueController {
         message.includes('is required') ||
         message.includes('player capacity') ||
         message.includes('League dates are invalid') ||
+        message.includes('calendar year') ||
         message.includes('End date')
           ? 400
           : 500;
@@ -799,15 +1031,31 @@ class LeagueController {
   static deleteLeague = async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
-      const completedEvent = await prisma.event.findFirst({
-        where: {
-          leagueId: id,
-          isDeleted: false,
-          deletedAt: null,
-          OR: [{ isComplete: true }, { status: 'completed' }, { rounds: { some: {} } }],
-        },
-        select: { id: true },
-      });
+      const [league, completedEvent] = await Promise.all([
+        prisma.league.findFirst({
+          where: { id, deletedAt: null },
+          select: {
+            id: true,
+            renewedFromLeagueId: true,
+            renewedLeague: { select: { id: true } },
+          },
+        }),
+        prisma.event.findFirst({
+          where: {
+            leagueId: id,
+            isDeleted: false,
+            deletedAt: null,
+            OR: [{ isComplete: true }, { status: 'completed' }, { rounds: { some: {} } }],
+          },
+          select: { id: true },
+        }),
+      ]);
+      if (!league) return res.status(404).json({ message: 'League not found' });
+      if (league.renewedFromLeagueId || league.renewedLeague) {
+        return res.status(409).json({
+          message: 'A linked league season cannot be deleted because it preserves season history.',
+        });
+      }
       if (completedEvent) {
         return res.status(409).json({
           message: 'A league with completed scoring cannot be deleted or reused.',
@@ -837,7 +1085,9 @@ class LeagueController {
             name: true,
             adminId: true,
             numPlayers: true,
+            billingPaidGolfers: true,
             billingExempt: true,
+            entitlementId: true,
           },
         });
         if (!league) throw new Error('League not found');
@@ -855,18 +1105,12 @@ class LeagueController {
           await lockAdminBilling(tx, adminId);
         }
 
-        if (!league.billingExempt && String(nextAdmin.role).toUpperCase() !== 'SUPER') {
-          const allocatedGolfers = await getAllocatedGolfersForAdmin(
-            nextAdmin.id,
-            undefined,
-            tx,
-          );
-          const billingState = getBillingState(nextAdmin.metadata, allocatedGolfers);
-          if (!isBillingCapacityCovered(billingState, allocatedGolfers + league.numPlayers)) {
-            throw new Error(
-              `The new owner needs paid capacity for ${league.numPlayers} golfers before this league can be transferred.`,
-            );
-          }
+        if (league.entitlementId) {
+          await lockSeasonEntitlement(tx, league.entitlementId);
+          await tx.league_season_entitlement.update({
+            where: { id: league.entitlementId },
+            data: { billingOwnerId: nextAdmin.id },
+          });
         }
 
         const updatedLeague = await tx.league.update({
@@ -890,9 +1134,15 @@ class LeagueController {
       return res.status(200).json(result.league);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Internal server error';
+      const errorCode =
+        error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
       if (message === 'League not found') return res.status(404).json({ message });
       if (message.includes('active admin account')) return res.status(400).json({ message });
-      if (message.includes('paid capacity')) return res.status(402).json({ message });
+      if (errorCode === 'P2002' || message.includes('saved draft')) {
+        return res.status(409).json({
+          message: 'The new owner already has a conflicting season entitlement. Contact support before retrying the transfer.',
+        });
+      }
       console.error(error);
       return res.status(500).json({ message: 'Internal server error' });
     }

@@ -9,8 +9,14 @@ import { lockAdminBilling, lockLeagueCapacity } from '../services/billingLock';
 
 const password = 'integration-test-password';
 
-const login = async (agent: ReturnType<typeof request.agent>, email: string) => {
-  const response = await agent.post('/api/auth/login').send({ email, password });
+const login = async (
+  agent: ReturnType<typeof request.agent>,
+  email: string,
+  forwardedFor?: string,
+) => {
+  const loginRequest = agent.post('/api/auth/login');
+  if (forwardedFor) loginRequest.set('X-Forwarded-For', forwardedFor);
+  const response = await loginRequest.send({ email, password });
   expect(response.status).toBe(200);
   return response.body.user;
 };
@@ -470,6 +476,234 @@ describe('API integration', () => {
     expect(ownLeagues.body).toEqual([]);
     expect(foreignLeague.status).toBe(403);
     expect(foreignUpdate.status).toBe(403);
+  });
+
+  it('renews a paid league as a separately billed season while preserving history', async () => {
+    const email = 'season-renewal-admin@test.com';
+    const user = await prisma.user.create({
+      data: {
+        firstName: 'Season',
+        lastName: 'Admin',
+        email,
+        username: email,
+        password: await bcrypt.hash(password, 10),
+        role: 'ADMIN',
+        metadata: {
+          billing: {
+            includedGolfers: 16,
+            minimumGolfers: 8,
+            pricePerGolferCents: 1000,
+            currency: 'usd',
+          },
+        },
+      },
+    });
+    const agent = request.agent(app);
+    await login(agent, email, '127.0.0.2');
+
+    const players = Array.from({ length: 8 }, (_, index) => ({
+      id: index + 1,
+      firstName: `Golfer${index + 1}`,
+      lastName: 'Renewal',
+      email: `renewal-golfer-${index + 1}@test.com`,
+      phone: '',
+      gender: 'male',
+      type: 'player',
+      handicap: 10 + index,
+    }));
+    const leaguePayload = {
+      billingDraftKey: 'integration-source-season-2025',
+      name: 'Renewal League 2025',
+      description: 'Historical season',
+      type: 'season',
+      holeFormat: '18',
+      format: 'individual',
+      contactFirstName: user.firstName,
+      contactLastName: user.lastName,
+      contactEmail: user.email,
+      contactPhone: '',
+      startDate: '2025-01-01',
+      endDate: '2026-01-01',
+      players,
+      teams: [],
+      scoringPeriods: [
+        {
+          name: 'Regular Season',
+          position: 0,
+          startDate: '2025-01-01',
+          endDate: '2025-10-01',
+        },
+      ],
+    };
+
+    await prisma.league_season_entitlement.create({
+      data: {
+        billingOwnerId: user.id,
+        draftKey: leaguePayload.billingDraftKey,
+        requiredGolfers: 8,
+        paidGolfers: 8,
+        status: 'paid',
+      },
+    });
+
+    const sourceResponse = await agent.post('/api/leagues').send(leaguePayload);
+    expect(sourceResponse.status, JSON.stringify(sourceResponse.body)).toBe(201);
+    expect(sourceResponse.body).toMatchObject({
+      name: 'Renewal League 2025',
+      billingPaidGolfers: 8,
+      renewedFromLeagueId: null,
+    });
+    const sourceId = Number(sourceResponse.body.id);
+    const linkedSourcePlayer = await prisma.player.findFirstOrThrow({
+      where: { leagueId: sourceId, email: players[0].email },
+    });
+    await prisma.player.update({ where: { id: linkedSourcePlayer.id }, data: { userId: user.id } });
+
+    const templateResponse = await agent.get(`/api/leagues/${sourceId}/renewal-template`);
+    expect(templateResponse.status).toBe(200);
+    expect(templateResponse.body).toMatchObject({
+      sourceLeague: { id: sourceId, name: 'Renewal League 2025' },
+      league: {
+        renewedFromLeagueId: sourceId,
+        name: 'Renewal League 2026',
+        startDate: '2026-01-01T00:00:00.000Z',
+        endDate: '2027-01-01T00:00:00.000Z',
+      },
+    });
+    expect(templateResponse.body.league.players).toHaveLength(8);
+    expect(templateResponse.body.league.scoringPeriods).toEqual([
+      expect.objectContaining({
+        name: 'Regular Season',
+        startDate: '2026-01-01T00:00:00.000Z',
+        endDate: '2026-10-01T00:00:00.000Z',
+      }),
+    ]);
+
+    const renewalDraftKey = 'integration-renewal-season-2026';
+    await prisma.league_season_entitlement.create({
+      data: {
+        billingOwnerId: user.id,
+        draftKey: renewalDraftKey,
+        renewedFromLeagueId: sourceId,
+        requiredGolfers: 8,
+        paidGolfers: 8,
+        status: 'paid',
+      },
+    });
+
+    const renewalPayload = {
+      ...templateResponse.body.league,
+      billingDraftKey: renewalDraftKey,
+    };
+    const duplicateSourcePlayer = await agent.post('/api/leagues').send({
+      ...renewalPayload,
+      players: renewalPayload.players.map((player: any, index: number) =>
+        index === 1
+          ? { ...player, sourcePlayerId: renewalPayload.players[0].sourcePlayerId }
+          : player,
+      ),
+    });
+    expect(duplicateSourcePlayer.status).toBe(400);
+    const renewalResponse = await agent.post('/api/leagues').send(renewalPayload);
+    expect(renewalResponse.status).toBe(201);
+    expect(renewalResponse.body).toMatchObject({
+      name: 'Renewal League 2026',
+      renewedFromLeagueId: sourceId,
+      billingPaidGolfers: 8,
+    });
+    const renewedId = Number(renewalResponse.body.id);
+
+    await expect(
+      prisma.player.findFirstOrThrow({ where: { leagueId: renewedId, email: players[0].email } }),
+    ).resolves.toMatchObject({ userId: user.id, seasonPoints: 0, seasonRank: null });
+    await expect(
+      prisma.league.findUniqueOrThrow({
+        where: { id: sourceId },
+        include: { renewedLeague: true },
+      }),
+    ).resolves.toMatchObject({
+      name: 'Renewal League 2025',
+      renewedLeague: { id: renewedId },
+    });
+
+    const duplicateRenewal = await agent.post('/api/leagues').send(renewalPayload);
+    expect(duplicateRenewal.status).toBe(409);
+    const deleteHistoricalSeason = await agent.delete(`/api/leagues/${sourceId}`);
+    expect(deleteHistoricalSeason.status).toBe(409);
+    expect(deleteHistoricalSeason.body.message).toContain('archived and read-only');
+
+    const nextTemplate = await agent.get(`/api/leagues/${renewedId}/renewal-template`);
+    expect(nextTemplate.status).toBe(200);
+    expect(nextTemplate.body.league.name).toBe('Renewal League 2027');
+    const unpaidNextSeason = await agent.post('/api/leagues').send({
+      ...nextTemplate.body.league,
+      billingDraftKey: 'integration-unpaid-season-2027',
+    });
+    expect(unpaidNextSeason.status).toBe(402);
+
+    const billingState = await agent.get('/api/payments/stripe-state');
+    expect(billingState.status).toBe(200);
+    expect(billingState.body.billing).toMatchObject({
+      includedGolfers: 16,
+      allocatedGolfers: 16,
+      availableGolfers: 0,
+    });
+
+    await expect(
+      prisma.league_invitation.count({ where: { leagueId: renewedId, status: 'pending' } }),
+    ).resolves.toBe(7);
+
+    const nextOwnerEmail = 'season-renewal-next-owner@test.com';
+    const nextOwner = await prisma.user.create({
+      data: {
+        firstName: 'Next',
+        lastName: 'Owner',
+        email: nextOwnerEmail,
+        username: nextOwnerEmail,
+        password: await bcrypt.hash(password, 10),
+        role: 'ADMIN',
+      },
+    });
+    const transfer = await agent
+      .patch(`/api/leagues/${renewedId}/owner`)
+      .send({ newAdminEmail: nextOwnerEmail });
+    expect(transfer.status).toBe(200);
+    const transferredLeague = await prisma.league.findUniqueOrThrow({
+      where: { id: renewedId },
+      include: { entitlement: true },
+    });
+    expect(transferredLeague).toMatchObject({
+      adminId: nextOwner.id,
+      entitlement: { billingOwnerId: nextOwner.id, paidGolfers: 8 },
+    });
+
+    const oldOwnerBilling = await agent.get('/api/payments/stripe-state');
+    expect(oldOwnerBilling.body.billing).toMatchObject({ includedGolfers: 8, allocatedGolfers: 8 });
+    const nextOwnerAgent = request.agent(app);
+    await login(nextOwnerAgent, nextOwnerEmail);
+    const nextOwnerBilling = await nextOwnerAgent.get('/api/payments/stripe-state');
+    expect(nextOwnerBilling.body.billing).toMatchObject({ includedGolfers: 8, allocatedGolfers: 8 });
+
+    const superAgent = request.agent(app);
+    await login(superAgent, 'super@test.com');
+    const reopen = await superAgent
+      .patch(`/api/admin/leagues/${sourceId}/lifecycle`)
+      .send({ status: 'reopened' });
+    expect(reopen.status).toBe(200);
+    expect(reopen.body.seasonStatus).toBe('reopened');
+    const rearchive = await superAgent
+      .patch(`/api/admin/leagues/${sourceId}/lifecycle`)
+      .send({ status: 'archived' });
+    expect(rearchive.status).toBe(200);
+
+    const correction = await superAgent.delete(`/api/admin/leagues/${renewedId}/renewal-link`);
+    expect(correction.status).toBe(200);
+    await expect(
+      prisma.league.findUniqueOrThrow({ where: { id: renewedId } }),
+    ).resolves.toMatchObject({ renewedFromLeagueId: null });
+    await expect(
+      prisma.league.findUniqueOrThrow({ where: { id: sourceId }, include: { renewedLeague: true } }),
+    ).resolves.toMatchObject({ renewedLeague: null });
   });
 
   it('allows super admins to inspect all leagues and users', async () => {

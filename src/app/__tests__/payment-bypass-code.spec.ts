@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { transactionMock, txMock } = vi.hoisted(() => {
   const tx = {
     $queryRaw: vi.fn(),
-    league: { findMany: vi.fn() },
+    league_season_entitlement: { findMany: vi.fn() },
     payment_bypass_code: {
       findUnique: vi.fn(),
       updateMany: vi.fn(),
@@ -35,7 +35,7 @@ import {
 describe('one-time payment access codes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    txMock.league.findMany.mockResolvedValue([]);
+    txMock.league_season_entitlement.findMany.mockResolvedValue([]);
   });
 
   it('generates a customer-friendly high-entropy code and hashes normalized input', () => {

@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { prisma } from '../../prisma';
 import { writeAuditLog } from '../utils/audit';
 import { sendLeagueInvitationEmail } from '../services/leagueInvitationEmail';
+import { getLeagueMutationBlock } from '../services/leagueLifecycle';
 
 const addDays = (days: number) => {
   const date = new Date();
@@ -317,13 +318,29 @@ class OperationsController {
     const invitation = await prisma.league_invitation.findUnique({
       where: { token: String(req.params.token || '') },
       include: {
-        league: { select: { id: true, name: true } },
+        league: {
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            endDate: true,
+            seasonStatus: true,
+            billingStatus: true,
+          },
+        },
         player: { select: { id: true, firstName: true, lastName: true, email: true } },
       },
     });
 
     if (!invitation || invitation.deletedAt || invitation.status !== 'pending') {
       return res.status(404).json({ message: 'Invitation not found' });
+    }
+    const invitationBlock = getLeagueMutationBlock(invitation.league);
+    if (invitationBlock) {
+      return res.status(invitationBlock.status).json({
+        code: invitationBlock.code,
+        message: 'This invitation belongs to a read-only past season and can no longer be claimed.',
+      });
     }
 
     if (invitation.expiresAt && invitation.expiresAt < new Date()) {
@@ -343,11 +360,31 @@ class OperationsController {
 
     const invitation = await prisma.league_invitation.findFirst({
       where: { token, deletedAt: null, status: 'pending', league: { deletedAt: null } },
-      include: { league: { select: { id: true, name: true, adminId: true } }, player: true },
+      include: {
+        league: {
+          select: {
+            id: true,
+            name: true,
+            adminId: true,
+            type: true,
+            endDate: true,
+            seasonStatus: true,
+            billingStatus: true,
+          },
+        },
+        player: true,
+      },
     });
 
     if (!invitation) {
       return res.status(404).json({ message: 'Invitation not found' });
+    }
+    const claimBlock = getLeagueMutationBlock(invitation.league);
+    if (claimBlock) {
+      return res.status(claimBlock.status).json({
+        code: claimBlock.code,
+        message: 'This invitation belongs to a read-only past season and can no longer be claimed.',
+      });
     }
 
     if (invitation.expiresAt && invitation.expiresAt < new Date()) {

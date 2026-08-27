@@ -125,7 +125,7 @@ describe('CourseController tee removal', async () => {
     expect(loadCourseMock).toHaveBeenCalledWith('directory-course-12');
     expect(sendAppEmailMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: ['adamkrieger87@gmail.com'],
+        to: ['support@leaguenightpro.com'],
         replyTo: 'admin@example.com',
         subject: 'Course request: Test Course — Saginaw, MI',
         text: expect.stringContaining('Directory ID: directory-course-12'),
@@ -178,7 +178,7 @@ describe('CourseController tee removal', async () => {
 
     expect(sendAppEmailMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: ['adamkrieger87@gmail.com'],
+        to: ['support@leaguenightpro.com'],
         replyTo: 'admin@example.com',
         subject: 'Manual course request: Missing Golf Course — Frankenmuth, Michigan',
       }),

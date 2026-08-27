@@ -5,11 +5,6 @@ import { writeAuditLog } from '../utils/audit';
 import { getHandicapHoleBasis } from '../utils/league-hole-format';
 import { normalizeGender, type Gender } from '../utils/tee-rating';
 import { lockLeagueCapacity } from '../services/billingLock';
-import {
-  getAllocatedGolfersForAdmin,
-  getBillingState,
-  isBillingCapacityCovered,
-} from '../utils/billing';
 
 const getMissingRequiredPlayerFields = (payload: any) => {
   const missing: string[] = [];
@@ -51,7 +46,6 @@ type PlayerCapacityResult<T> =
 
 const duplicatePlayerEmailMessage = 'A player with this email already exists in the league.';
 const playerCapacityMessage = 'Payment is required before making this golfer a regular player.';
-const accountBillingMessage = 'The league owner must resolve the account billing balance first.';
 
 export default class PlayerController {
   static getPlayers = async (_req: Request, res: Response): Promise<any> => {
@@ -187,19 +181,6 @@ export default class PlayerController {
                 where: { leagueId: numericLeagueId, type: 'player', deletedAt: null },
               })
             : 0;
-        if (playerType === 'player') {
-          const [admin, allocatedGolfers] = await Promise.all([
-            tx.user.findFirst({
-              where: { id: league.adminId, deletedAt: null },
-              select: { metadata: true },
-            }),
-            getAllocatedGolfersForAdmin(league.adminId, undefined, tx),
-          ]);
-          const billingState = getBillingState(admin?.metadata, allocatedGolfers);
-          if (!isBillingCapacityCovered(billingState, allocatedGolfers)) {
-            throw new Error(accountBillingMessage);
-          }
-        }
         if (playerType === 'player' && activePlayers >= league.numPlayers) {
           return { ok: false, currentGolfers: activePlayers, maxGolfers: league.numPlayers };
         }
@@ -246,7 +227,6 @@ export default class PlayerController {
       const message = error instanceof Error ? error.message : 'Internal server error';
       if (message === 'League not found') return res.status(404).json({ message });
       if (message === duplicatePlayerEmailMessage) return res.status(409).json({ message });
-      if (message === accountBillingMessage) return res.status(402).json({ message });
       if (message.includes('does not belong')) return res.status(400).json({ message });
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });
@@ -324,21 +304,6 @@ export default class PlayerController {
         const incomingRegularPlayers = normalizedPlayers.filter(
           (player) => player.type === 'player',
         ).length;
-        if (incomingRegularPlayers > 0) {
-          const [admin, allocatedGolfers] = await Promise.all([
-            tx.user.findFirst({
-              where: { id: league.adminId, deletedAt: null },
-              select: { metadata: true },
-            }),
-            getAllocatedGolfersForAdmin(league.adminId, undefined, tx),
-          ]);
-          if (!isBillingCapacityCovered(
-            getBillingState(admin?.metadata, allocatedGolfers),
-            allocatedGolfers,
-          )) {
-            throw new Error(accountBillingMessage);
-          }
-        }
         if (regularPlayerCount + incomingRegularPlayers > league.numPlayers) {
           return {
             ok: false,
@@ -381,8 +346,6 @@ export default class PlayerController {
         ? 404
           : message === duplicatePlayerEmailMessage
           ? 409
-          : message === accountBillingMessage
-            ? 402
           : message.startsWith('Player ')
             ? 400
             : 500;
@@ -493,21 +456,6 @@ export default class PlayerController {
               },
             }),
           ]);
-          if (league) {
-            const [admin, allocatedGolfers] = await Promise.all([
-              tx.user.findFirst({
-                where: { id: league.adminId, deletedAt: null },
-                select: { metadata: true },
-              }),
-              getAllocatedGolfersForAdmin(league.adminId, undefined, tx),
-            ]);
-            if (!isBillingCapacityCovered(
-              getBillingState(admin?.metadata, allocatedGolfers),
-              allocatedGolfers,
-            )) {
-              throw new Error(accountBillingMessage);
-            }
-          }
           if (league && regularPlayerCount >= league.numPlayers) {
             throw new Error(playerCapacityMessage);
           }
@@ -533,9 +481,6 @@ export default class PlayerController {
       }
       if (String(error?.message || '') === playerCapacityMessage) {
         return res.status(402).json({ message: playerCapacityMessage });
-      }
-      if (String(error?.message || '') === accountBillingMessage) {
-        return res.status(402).json({ message: accountBillingMessage });
       }
       if (String(error?.message || '') === duplicatePlayerEmailMessage) {
         return res.status(409).json({ message: duplicatePlayerEmailMessage });

@@ -1,7 +1,8 @@
 import { escapeEmailHtml, type SendAppEmailInput } from '../services/email';
 import type { ImportedCourse } from '../services/courseImport';
 
-export const COURSE_REQUEST_RECIPIENT = process.env.SUPPORT_EMAIL || 'adamkrieger87@gmail.com';
+export const COURSE_REQUEST_RECIPIENT =
+  process.env.SUPPORT_EMAIL || 'support@leaguenightpro.com';
 
 export type RequestingAdmin = {
   id: number;

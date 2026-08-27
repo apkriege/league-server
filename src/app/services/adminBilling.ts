@@ -57,6 +57,15 @@ export const getAdminBillingDashboard = async () => {
             },
           },
         },
+        seasonEntitlements: {
+          select: {
+            requiredGolfers: true,
+            paidGolfers: true,
+            refundedGolfers: true,
+            status: true,
+            league: { select: { id: true, billingExempt: true } },
+          },
+        },
       },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
     }),
@@ -96,12 +105,19 @@ export const getAdminBillingDashboard = async () => {
   const leagueById = new Map(leagues.map((league) => [league.id, league]));
 
   const accounts = billingUsers.map((user) => {
-    const allocatedGolfers = user.manager.reduce(
-      (total, league) =>
-        total + Math.max(BILLING_MIN_GOLFERS, league.numPlayers, league.players.length),
+    const includedGolfers = user.seasonEntitlements.reduce(
+      (total, entitlement) =>
+        total + Math.max(0, entitlement.paidGolfers - entitlement.refundedGolfers),
       0,
     );
-    const billing = getBillingState(user.metadata, allocatedGolfers);
+    const allocatedGolfers = user.seasonEntitlements.reduce(
+      (total, entitlement) =>
+        total + (entitlement.league && !entitlement.league.billingExempt
+          ? Math.max(BILLING_MIN_GOLFERS, entitlement.requiredGolfers)
+          : 0),
+      0,
+    );
+    const billing = getBillingState(user.metadata, allocatedGolfers, { includedGolfers });
 
     return {
       userId: user.id,

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { prisma } from '../../prisma';
 
 export default class HealthController {
-  static async getHealth(req: Request, res: Response) {
+  static async getHealth(_req: Request, res: Response) {
     try {
       await prisma.$queryRaw`SELECT 1`;
 

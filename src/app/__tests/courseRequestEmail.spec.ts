@@ -50,7 +50,7 @@ describe('course request email templates', () => {
       subject: 'Course request: The Fortress Golf Course — Frankenmuth, MI',
     });
     expect(message.text).toContain('Directory ID: directory-course-12');
-    expect(COURSE_REQUEST_RECIPIENT).toBe('adamkrieger87@gmail.com');
+    expect(COURSE_REQUEST_RECIPIENT).toBe('support@leaguenightpro.com');
   });
 
   it('builds a manual request with course name, city, and state', () => {
@@ -62,7 +62,7 @@ describe('course request email templates', () => {
     });
 
     expect(message).toMatchObject({
-      to: ['adamkrieger87@gmail.com'],
+      to: ['support@leaguenightpro.com'],
       replyTo: 'admin@example.com',
       subject: 'Manual course request: Missing Golf Course — Frankenmuth, Michigan',
     });

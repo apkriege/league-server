@@ -30,6 +30,8 @@ describe('deployment configuration', () => {
       '20260824000000_add_league_scoring_periods',
       '20260827000000_scope_payment_bypass_to_league',
       '20260827120000_add_email_verification',
+      '20260827130000_add_league_season_renewals',
+      '20260827140000_add_season_entitlements_and_lifecycle',
     ]);
     for (const migrationDirectory of migrationDirectories) {
       expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(

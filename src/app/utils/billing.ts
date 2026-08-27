@@ -1,5 +1,4 @@
 import type { Prisma } from '@prisma/client';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { prisma } from '../../prisma';
 
 export const BILLING_MIN_GOLFERS = Math.max(1, Number(process.env.BILLING_MIN_GOLFERS || 8));
@@ -14,6 +13,18 @@ export const getLeagueBillableGolfers = (players: Array<{ type?: unknown }> = []
     (player) => String(player?.type || 'player').trim().toLowerCase() === 'player',
   ).length;
   return Math.max(BILLING_MIN_GOLFERS, regularPlayers);
+};
+
+export const getLeagueCapacityPurchase = (
+  currentCapacity: number,
+  paidGolfers: number,
+  requestedGolfers: number,
+) => {
+  const targetGolfers = Math.max(0, currentCapacity, requestedGolfers);
+  return {
+    targetGolfers,
+    quantity: Math.max(0, targetGolfers - Math.max(0, paidGolfers)),
+  };
 };
 
 export type BillingState = {
@@ -45,24 +56,6 @@ export const getPendingLeagueBypassCodeId = (metadata: unknown) => {
   return Number.isInteger(codeId) && codeId > 0 ? codeId : null;
 };
 
-/**
- * @deprecated Shared environment codes are not accepted by the redemption endpoint. This helper
- * remains only for backward-compatible configuration diagnostics during the one-time-code rollout.
- */
-export const isValidPaymentBypassCode = (value: unknown) => {
-  const normalize = (entry: unknown) => String(entry || '').trim().toUpperCase();
-  const candidate = normalize(value);
-  if (candidate.length < 8 || candidate.length > 128) return false;
-  const candidateHash = createHash('sha256').update(candidate).digest();
-  return String(process.env.PAYMENT_BYPASS_CODES || '')
-    .split(',')
-    .map(normalize)
-    .filter(Boolean)
-    .some((configuredCode) =>
-      timingSafeEqual(candidateHash, createHash('sha256').update(configuredCode).digest()),
-    );
-};
-
 export const getBillingState = (
   metadata: unknown,
   allocatedGolfers = 0,
@@ -86,9 +79,6 @@ export const getBillingState = (
   };
 };
 
-export const isBillingCapacityCovered = (billing: BillingState, requiredGolfers: number) =>
-  billing.includedGolfers >= requiredGolfers;
-
 export const mergeBillingMetadata = (metadata: unknown, billingPatch: Record<string, unknown>) => {
   const root = toObject(metadata) as Record<string, any>;
   const billing = getBillingMetadata(metadata);
@@ -107,25 +97,18 @@ export const getAllocatedGolfersForAdmin = async (
   excludeLeagueId?: number,
   db: typeof prisma | Prisma.TransactionClient = prisma,
 ) => {
-  const leagues = await db.league.findMany({
+  const entitlements = await db.league_season_entitlement.findMany({
     where: {
-      adminId,
-      deletedAt: null,
-      billingExempt: false,
-      ...(excludeLeagueId ? { id: { not: excludeLeagueId } } : {}),
+      billingOwnerId: adminId,
+      league: excludeLeagueId
+        ? { is: { id: { not: excludeLeagueId }, billingExempt: false } }
+        : { is: { billingExempt: false } },
     },
-    select: {
-      numPlayers: true,
-      players: {
-        where: { type: 'player', deletedAt: null },
-        select: { id: true },
-      },
-    },
+    select: { requiredGolfers: true },
   });
 
-  return leagues.reduce(
-    (total, league) =>
-      total + Math.max(BILLING_MIN_GOLFERS, league.numPlayers, league.players.length),
+  return entitlements.reduce(
+    (total, entitlement) => total + Math.max(0, entitlement.requiredGolfers),
     0,
   );
 };

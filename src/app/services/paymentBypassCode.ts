@@ -138,7 +138,6 @@ export const redeemPaymentBypassCode = async (userId: number, rawCode: unknown) 
           });
           if (!user) throw new Error('User not found');
           const allocatedGolfers = await getAllocatedGolfersForAdmin(user.id, undefined, tx);
-          const currentBilling = getBillingState(user.metadata, allocatedGolfers);
           // Each account can hold only one pending one-league bypass. Do not consume another code
           // until the first entitlement has been attached to a newly created league.
           if (getPendingLeagueBypassCodeId(user.metadata)) {
