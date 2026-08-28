@@ -80,6 +80,46 @@ describe('API integration', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('returns typed player intelligence from recorded league results', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+      select: { id: true },
+    });
+    const player = await prisma.player.findFirstOrThrow({
+      where: {
+        leagueId: league.id,
+        rounds: { some: { status: 'completed' } },
+      },
+      select: { id: true },
+    });
+
+    const response = await admin.get(`/api/leagues/${league.id}/players/${player.id}/stats`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.intelligence).toMatchObject({
+      sample: {
+        rounds: expect.any(Number),
+        holes: expect.any(Number),
+        comparableHoles: expect.any(Number),
+      },
+      pulse: {
+        averageToPar: expect.any(Number),
+      },
+      headToHead: {
+        wins: expect.any(Number),
+        losses: expect.any(Number),
+        ties: expect.any(Number),
+        opponents: expect.any(Array),
+      },
+      teamRivalries: expect.any(Array),
+    });
+    expect(response.body.intelligence.parSplits).toHaveLength(3);
+    expect(response.body.intelligence.trend.length).toBeGreaterThan(0);
+    expect(response.body.intelligence.categoryRankings.length).toBeGreaterThan(0);
+  });
+
   it('allows configured CORS preflights and rejects untrusted browser origins', async () => {
     const trustedOrigin = new URL(String(process.env.CLIENT_URL)).origin;
     const hostileOrigin = 'https://hostile.example.com';
@@ -411,6 +451,8 @@ describe('API integration', () => {
 
       expect(overall.status).toBe(200);
       expect(filtered.status).toBe(200);
+      expect(overall.body.headToHead).toEqual(expect.any(Array));
+      expect(overall.body.playerCourseHistory).toEqual(expect.any(Array));
       expect(filtered.body.selectedPeriod).toMatchObject({ id: firstHalf.id, name: '1st Half' });
       expect(filtered.body.seasonSummary.totalRounds).toBeGreaterThan(0);
       expect(filtered.body.seasonSummary.totalRounds).toBeLessThanOrEqual(

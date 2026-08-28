@@ -1,10 +1,82 @@
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import PlayerService from '../models/player';
 import { prisma } from '../../prisma';
 import { writeAuditLog } from '../utils/audit';
 import { getHandicapHoleBasis } from '../utils/league-hole-format';
 import { normalizeGender, type Gender } from '../utils/tee-rating';
 import { lockLeagueCapacity } from '../services/billingLock';
+import { buildTeamEventResults } from '../utils/team-event-results';
+import {
+  buildPlayerIntelligence,
+  type IntelligenceRound,
+} from '../utils/player-intelligence';
+
+const playerStatsRoundInclude = Prisma.validator<Prisma.roundInclude>()({
+  event: {
+    select: { id: true, name: true, startsAt: true, timeZone: true, startSide: true },
+  },
+  opponent: {
+    select: { id: true, firstName: true, lastName: true },
+  },
+  course: { select: { id: true, name: true } },
+  tee: { select: { id: true, name: true } },
+  scores: { orderBy: { hole: 'asc' } },
+});
+
+type PlayerStatsRound = Prisma.roundGetPayload<{ include: typeof playerStatsRoundInclude }>;
+
+const toIntelligenceRound = (round: PlayerStatsRound): IntelligenceRound => ({
+  id: round.id,
+  eventId: round.eventId,
+  eventName: round.event.name,
+  date: round.date.toISOString().slice(0, 10),
+  courseId: round.courseId,
+  courseName: round.course.name,
+  teeId: round.teeId,
+  teeName: round.tee.name,
+  holesPlayed: round.holesPlayed,
+  gross: round.gross,
+  net: round.net,
+  points: Number(round.pointsEarned || 0) + Number(round.matchPoints || 0),
+  birdies: round.birdies,
+  pars: round.pars,
+  handicap: round.postHandicap == null ? null : Number(round.postHandicap),
+  opponentId: round.opponentId,
+  scores: round.scores.map((score) => ({
+    hole: score.hole,
+    par: score.par,
+    gross: score.gross,
+    net: score.net,
+  })),
+});
+
+const getSeasonLeagueIds = (
+  currentLeagueId: number,
+  leagues: Array<{ id: number; renewedFromLeagueId: number | null }>,
+) => {
+  const connected = new Set<number>([currentLeagueId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const league of leagues) {
+      if (
+        connected.has(league.id) ||
+        (league.renewedFromLeagueId != null && connected.has(league.renewedFromLeagueId))
+      ) {
+        if (!connected.has(league.id)) {
+          connected.add(league.id);
+          changed = true;
+        }
+        if (league.renewedFromLeagueId != null && !connected.has(league.renewedFromLeagueId)) {
+          connected.add(league.renewedFromLeagueId);
+          changed = true;
+        }
+      }
+    }
+  }
+  return [...connected];
+};
 
 const getMissingRequiredPlayerFields = (payload: any) => {
   const missing: string[] = [];
@@ -549,48 +621,232 @@ export default class PlayerController {
   static getPlayerStats = async (req: Request, res: Response): Promise<any> => {
     try {
       const { leagueId, playerId } = req.params;
+      const numericLeagueId = Number(leagueId);
+      const numericPlayerId = Number(playerId);
 
-      const player = await prisma.player.findUnique({
-        where: { id: Number(playerId) },
+      if (!Number.isInteger(numericLeagueId) || !Number.isInteger(numericPlayerId)) {
+        return res.status(400).json({ message: 'League and player ids are required' });
+      }
+
+      const player = await prisma.player.findFirst({
+        where: { id: numericPlayerId, leagueId: numericLeagueId, deletedAt: null },
         include: {
           team: true,
-          league: { select: { holeFormat: true } },
-          rounds: {
-            where: {
-              event: { leagueId: Number(leagueId), isDeleted: false },
-              status: 'completed',
+          league: {
+            select: {
+              id: true,
+              name: true,
+              holeFormat: true,
+              adminId: true,
+              startDate: true,
+              renewedFromLeagueId: true,
             },
-            include: {
-              event: {
-                select: { id: true, name: true, startsAt: true, timeZone: true, startSide: true },
-              },
-              course: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-              tee: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-              scores: {
-                orderBy: { hole: 'asc' },
-              },
-            },
-            orderBy: { date: 'asc' },
           },
         },
       });
 
-      if (!player) {
+      if (!player || !player.league) {
         return res.status(404).json({ message: 'Player not found' });
       }
 
-      const rounds = player.rounds;
+      const leaguePlayers = await prisma.player.findMany({
+        where: { leagueId: numericLeagueId, deletedAt: null },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          rounds: {
+            where: {
+              event: { leagueId: numericLeagueId, isDeleted: false, deletedAt: null },
+              status: 'completed',
+              deletedAt: null,
+            },
+            include: playerStatsRoundInclude,
+            orderBy: [{ date: 'asc' }, { id: 'asc' }],
+          },
+        },
+        orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      });
+      const rounds = leaguePlayers.find((entry) => entry.id === numericPlayerId)?.rounds ?? [];
       const handicapHoleBasis = getHandicapHoleBasis(player.league?.holeFormat);
+
+      const adminLeagues = await prisma.league.findMany({
+        where: { adminId: player.league.adminId, deletedAt: null },
+        select: {
+          id: true,
+          name: true,
+          startDate: true,
+          renewedFromLeagueId: true,
+        },
+      });
+      const seasonLeagueIds = getSeasonLeagueIds(numericLeagueId, adminLeagues);
+      const identityFilters: Prisma.playerWhereInput[] = [];
+      if (player.userId) identityFilters.push({ userId: player.userId });
+      if (player.email) identityFilters.push({ email: { equals: player.email, mode: 'insensitive' } });
+
+      const seasonPlayers = identityFilters.length > 0
+        ? await prisma.player.findMany({
+            where: {
+              leagueId: { in: seasonLeagueIds },
+              deletedAt: null,
+              OR: identityFilters,
+            },
+            select: {
+              id: true,
+              handicap: true,
+              leagueId: true,
+              rounds: {
+                where: {
+                  status: 'completed',
+                  deletedAt: null,
+                  event: { isDeleted: false, deletedAt: null },
+                },
+                include: playerStatsRoundInclude,
+                orderBy: [{ date: 'asc' }, { id: 'asc' }],
+              },
+            },
+          })
+        : [];
+
+      const currentSeasonPlayer = seasonPlayers.find(
+        (entry) => Number(entry.leagueId) === numericLeagueId,
+      );
+      if (!currentSeasonPlayer) {
+        seasonPlayers.push({
+          id: player.id,
+          handicap: player.handicap,
+          leagueId: numericLeagueId,
+          rounds,
+        });
+      }
+
+      const leagueById = new Map(adminLeagues.map((league) => [league.id, league]));
+      const seasons = seasonPlayers.flatMap((seasonPlayer) => {
+        const seasonLeague = seasonPlayer.leagueId
+          ? leagueById.get(seasonPlayer.leagueId)
+          : undefined;
+        if (!seasonLeague) return [];
+        return [{
+          leagueId: seasonLeague.id,
+          leagueName: seasonLeague.name,
+          year: seasonLeague.startDate.getUTCFullYear(),
+          handicap: Number(seasonPlayer.handicap),
+          rounds: seasonPlayer.rounds.map(toIntelligenceRound),
+        }];
+      });
+
+      let teamEvents: Array<{
+        eventId: number;
+        eventName: string;
+        date: string;
+        opponentId: number;
+        opponentName: string;
+        teamPoints: number | null;
+        opponentPoints: number | null;
+      }> = [];
+      if (player.teamId) {
+        const events = await prisma.event.findMany({
+          where: {
+            leagueId: numericLeagueId,
+            isDeleted: false,
+            deletedAt: null,
+          },
+          select: {
+            id: true,
+            name: true,
+            startsAt: true,
+            timeZone: true,
+            format: true,
+            scoringFormat: true,
+            type: true,
+            status: true,
+            isComplete: true,
+            holes: true,
+            course: { select: { name: true } },
+            teamEventPoints: { select: { teamId: true, points: true } },
+            flights: {
+              where: {
+                deletedAt: null,
+                OR: [
+                  { teams: { some: { teamId: player.teamId, deletedAt: null } } },
+                  {
+                    players: {
+                      some: {
+                        deletedAt: null,
+                        OR: [
+                          { teamId: player.teamId },
+                          { teamId: null, player: { teamId: player.teamId } },
+                        ],
+                      },
+                    },
+                  },
+                ],
+              },
+              select: {
+                id: true,
+                startsAt: true,
+                teams: {
+                  where: { deletedAt: null },
+                  select: {
+                    teamId: true,
+                    opponentId: true,
+                    team: { select: { id: true, name: true } },
+                  },
+                },
+                players: {
+                  where: { deletedAt: null },
+                  select: {
+                    playerId: true,
+                    teamId: true,
+                    player: { select: { teamId: true } },
+                  },
+                },
+              },
+            },
+            rounds: {
+              where: { deletedAt: null, status: 'completed' },
+              select: {
+                id: true,
+                playerId: true,
+                date: true,
+                gross: true,
+                net: true,
+                pointsEarned: true,
+                matchPoints: true,
+                eagles: true,
+                birdies: true,
+                pars: true,
+                bogeys: true,
+                player: { select: { id: true, firstName: true, lastName: true } },
+              },
+            },
+          },
+          orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+        });
+        const results = buildTeamEventResults(player.teamId, events);
+        teamEvents = results.flatMap((event) =>
+          event.opponents.map((opponent) => ({
+            eventId: event.id,
+            eventName: event.name,
+            date: new Date(event.startsAt).toISOString().slice(0, 10),
+            opponentId: opponent.id,
+            opponentName: opponent.name,
+            teamPoints: event.totalPoints,
+            opponentPoints: opponent.totalPoints,
+          })),
+        );
+      }
+
+      const intelligence = buildPlayerIntelligence({
+        playerId: numericPlayerId,
+        players: leaguePlayers.map((entry) => ({
+          id: entry.id,
+          name: `${entry.firstName} ${entry.lastName}`.trim(),
+          rounds: entry.rounds.map(toIntelligenceRound),
+        })),
+        seasons,
+        teamEvents,
+      });
 
       if (rounds.length === 0) {
         return res.status(200).json({
@@ -608,6 +864,7 @@ export default class PlayerController {
           stats: null,
           rounds: [],
           handicapHoleBasis,
+          intelligence,
         });
       }
 
@@ -706,7 +963,7 @@ export default class PlayerController {
         totalTripleBogeys,
         startingHandicap: Number(player.startingHandicap),
         currentHandicap: Number(player.handicap),
-        handicapChange: r(Number(player.handicap) - Number(player.startingHandicap)),
+          handicapChange: r(Number(player.handicap) - Number(player.startingHandicap)),
       };
 
       return res.status(200).json({
@@ -724,6 +981,7 @@ export default class PlayerController {
         stats,
         rounds: roundSummaries,
         handicapHoleBasis,
+        intelligence,
       });
     } catch (error) {
       console.error(error);

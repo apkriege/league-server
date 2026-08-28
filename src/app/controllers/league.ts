@@ -1471,6 +1471,89 @@ class LeagueController {
         }),
       };
 
+      const leaguePlayerNameById = new Map(
+        (leagueMeta.players || []).map((player) => [
+          Number(player.id),
+          `${player.firstName} ${player.lastName}`.trim(),
+        ]),
+      );
+      const roundByEventAndPlayer = new Map(
+        rounds.map((round) => [`${round.eventId}:${round.playerId}`, round]),
+      );
+      const headToHeadMap = new Map<
+        string,
+        {
+          playerId: number;
+          playerName: string;
+          opponentId: number;
+          opponentName: string;
+          wins: number;
+          losses: number;
+          ties: number;
+        }
+      >();
+
+      for (const round of rounds) {
+        const opponentId = Number(round.opponentId || 0);
+        if (!opponentId) continue;
+        const opponentRound = roundByEventAndPlayer.get(`${round.eventId}:${opponentId}`);
+        if (!opponentRound) continue;
+
+        const key = `${round.playerId}:${opponentId}`;
+        const result = headToHeadMap.get(key) || {
+          playerId: Number(round.playerId),
+          playerName: leaguePlayerNameById.get(Number(round.playerId)) || `Player ${round.playerId}`,
+          opponentId,
+          opponentName: leaguePlayerNameById.get(opponentId) || `Player ${opponentId}`,
+          wins: 0,
+          losses: 0,
+          ties: 0,
+        };
+        const playerPoints = getRoundTotalPoints(round);
+        const opponentPoints = getRoundTotalPoints(opponentRound);
+        if (Math.abs(playerPoints - opponentPoints) < 0.001) result.ties += 1;
+        else if (playerPoints > opponentPoints) result.wins += 1;
+        else result.losses += 1;
+        headToHeadMap.set(key, result);
+      }
+
+      const playerCourseHistoryMap = new Map<
+        string,
+        {
+          playerId: number;
+          playerName: string;
+          courseId: number;
+          rounds: number;
+          grossTotal: number;
+          netTotal: number;
+        }
+      >();
+      for (const round of rounds) {
+        const key = `${round.playerId}:${round.courseId}`;
+        const history = playerCourseHistoryMap.get(key) || {
+          playerId: Number(round.playerId),
+          playerName: leaguePlayerNameById.get(Number(round.playerId)) || `Player ${round.playerId}`,
+          courseId: Number(round.courseId),
+          rounds: 0,
+          grossTotal: 0,
+          netTotal: 0,
+        };
+        history.rounds += 1;
+        history.grossTotal += Number(round.gross || 0);
+        history.netTotal += Number(round.net || 0);
+        playerCourseHistoryMap.set(key, history);
+      }
+
+      const headToHead = [...headToHeadMap.values()];
+      const playerCourseHistory = [...playerCourseHistoryMap.values()].map((history) => ({
+        playerId: history.playerId,
+        playerName: history.playerName,
+        courseId: history.courseId,
+        rounds: history.rounds,
+        avgGross: Math.round((history.grossTotal / history.rounds) * 10) / 10,
+        avgNet: Math.round((history.netTotal / history.rounds) * 10) / 10,
+      }));
+
       // ── Season-wide summary ──────────────────────────
       const totalRounds = rounds.length;
       const totalBirdies = rounds.reduce((s, r) => s + r.birdies, 0);
@@ -1813,6 +1896,8 @@ class LeagueController {
         scoreDistribution,
         grossTrend,
         playerWeeklyTrends,
+        headToHead,
+        playerCourseHistory,
         seasonSummary,
         records,
         skins,
