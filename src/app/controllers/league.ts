@@ -1232,7 +1232,7 @@ class LeagueController {
         },
         include: {
           player: true,
-          event: { select: { id: true, name: true, startsAt: true, timeZone: true } },
+          event: { select: { id: true, name: true, startsAt: true, timeZone: true, holes: true } },
         },
         orderBy: { date: 'asc' },
       });
@@ -1447,6 +1447,7 @@ class LeagueController {
 
       const playerWeeklyTrends = {
         labels: weeklyLabels,
+        holes: weeklyEvents.map((event) => Number(event.holes || 18)),
         players: [...playerMap.entries()].map(([playerId, p]) => {
           const avgGross = Array(weeklyLabels.length).fill(null) as Array<number | null>;
           const avgNet = Array(weeklyLabels.length).fill(null) as Array<number | null>;

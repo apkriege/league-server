@@ -52,4 +52,37 @@ describe('event team standings', () => {
     ]);
     expect(standings[1]).toMatchObject({ rank: 2, teamId: 20, totalPoints: 7 });
   });
+
+  it('keeps assigned teams visible when no team-points row exists', () => {
+    const standings = calculateEventTeamStandings(
+      [
+        { teamId: 10, name: 'Team Ten' },
+        { teamId: 20, name: 'Team Twenty' },
+      ],
+      [],
+      [],
+      [],
+    );
+
+    expect(standings).toEqual([
+      {
+        rank: 1,
+        teamId: 10,
+        name: 'Team Ten',
+        players: [],
+        playerPoints: 0,
+        teamPoints: 0,
+        totalPoints: 0,
+      },
+      {
+        rank: 1,
+        teamId: 20,
+        name: 'Team Twenty',
+        players: [],
+        playerPoints: 0,
+        teamPoints: 0,
+        totalPoints: 0,
+      },
+    ]);
+  });
 });

@@ -751,6 +751,17 @@ const recalculateEvent = async ({
   const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
   const pointsEnabled = event.pointsEnabled !== false;
 
+  if (eventFormat === 'team') {
+    const scoredTeamIds = new Set(
+      calculations
+        .map((calculation) => calculation.teamId)
+        .filter((teamId): teamId is number => teamId != null),
+    );
+    for (const teamId of scoredTeamIds) {
+      addTeamPoints(teamPoints, Number(event.leagueId), Number(event.id), teamId, 0);
+    }
+  }
+
   if (!pointsEnabled) {
     for (const calculation of calculations) {
       calculation.pointsEarned = 0;
