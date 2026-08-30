@@ -4,17 +4,17 @@ describe('getLeagueRoundProgress', () => {
   it('counts completed playable events and excludes canceled and off weeks', () => {
     expect(
       getLeagueRoundProgress([
-        { status: 'completed', type: 'regular', isComplete: true },
-        { status: 'upcoming', type: 'regular', isComplete: false },
-        { status: 'canceled', type: 'regular', isComplete: false },
-        { status: 'upcoming', type: 'off', isComplete: false },
+        { status: 'completed', type: 'regular' },
+        { status: 'upcoming', type: 'regular' },
+        { status: 'canceled', type: 'regular' },
+        { status: 'upcoming', type: 'off' },
       ]),
     ).toEqual({ completedRoundCount: 1, roundCount: 2 });
   });
 
-  it('recognizes the completion flag even before status is synchronized', () => {
+  it('does not infer completion from an active event', () => {
     expect(
-      getLeagueRoundProgress([{ status: 'active', type: 'regular', isComplete: true }]),
-    ).toEqual({ completedRoundCount: 1, roundCount: 1 });
+      getLeagueRoundProgress([{ status: 'active', type: 'regular' }]),
+    ).toEqual({ completedRoundCount: 0, roundCount: 1 });
   });
 });

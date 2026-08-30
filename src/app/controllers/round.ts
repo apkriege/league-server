@@ -2,27 +2,19 @@ import { Request, Response } from 'express';
 import { prisma } from '../../prisma';
 import { Round } from '../services/round';
 import { SeasonSync } from '../services/seasonSync';
-import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
+import { normalizeEventFormat } from '../utils/event-mode';
 import { writeAuditLog } from '../utils/audit';
 import { getPublicErrorResponse } from '../utils/error-response';
 import { resolveScoreSubmissionOpponents } from '../utils/score-opponents';
+import {
+  calculateStablefordPoints,
+  getScoringFamilyForMode,
+  getScoringMode,
+  parsePlacementPoints,
+  persistSharedTeamRounds,
+} from '../scoring';
 
 type TeamPointsRow = { teamId: number; points: number };
-
-const toStrokePointsArray = (raw: unknown): number[] => {
-  if (Array.isArray(raw)) {
-    return raw.map((v) => Number(v)).filter((v) => Number.isFinite(v) && v >= 0);
-  }
-
-  if (typeof raw === 'string') {
-    return raw
-      .split(',')
-      .map((v) => Number(v.trim()))
-      .filter((v) => Number.isFinite(v) && v >= 0);
-  }
-
-  return [];
-};
 
 const finalizeIndividualStrokeEventPoints = async (eventId: number, db: any = prisma) => {
   const event = await db.event.findUnique({
@@ -58,27 +50,18 @@ const finalizeIndividualStrokeEventPoints = async (eventId: number, db: any = pr
     return;
   }
 
-  const strokePoints = toStrokePointsArray(event.strokePoints);
+  const strokePoints = parsePlacementPoints(event.strokePoints);
 
   // If no strokePoints table is configured, fall back to Stableford-style points
   // from each round's hole net/par data so points still finalize once per event.
   if (strokePoints.length === 0) {
-    const stablefordPoints = (net: number, par: number) => {
-      const diff = net - par;
-      if (diff <= -2) return 4;
-      if (diff === -1) return 3;
-      if (diff === 0) return 2;
-      if (diff === 1) return 1;
-      return 0;
-    };
-
     await Promise.all(
       event.rounds.map((round: any) => {
         const points = (round.scores || []).reduce((sum: number, score: any) => {
           const net = Number(score.net);
           const par = Number(score.par);
           if (!Number.isFinite(net) || !Number.isFinite(par)) return sum;
-          return sum + stablefordPoints(net, par);
+          return sum + calculateStablefordPoints(net, par);
         }, 0);
 
         return db.round.update({
@@ -319,15 +302,11 @@ const calculateTeamStrokeBestBallPoints = async (
 
       aggregate.netTotal += best.net;
 
-      const diff = best.net - best.par;
-      if (diff <= -2) aggregate.stablefordTotal += 4;
-      else if (diff === -1) aggregate.stablefordTotal += 3;
-      else if (diff === 0) aggregate.stablefordTotal += 2;
-      else if (diff === 1) aggregate.stablefordTotal += 1;
+      aggregate.stablefordTotal += calculateStablefordPoints(best.net, best.par);
     }
   }
 
-  const strokePoints = toStrokePointsArray((event as any)?.strokePoints);
+  const strokePoints = parsePlacementPoints((event as any)?.strokePoints);
   if (strokePoints.length > 0) {
     const ranked = [...perTeamTotals.entries()].sort((a, b) => a[1].netTotal - b[1].netTotal);
     const assigned = new Map<number, number>();
@@ -410,19 +389,19 @@ const validateScoreSubmission = async (
   }
 
   const eventFormat = normalizeEventFormat(event.format, 'individual');
-  const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
+  const scoringFamily = getScoringFamilyForMode(event.scoringMode);
   const maxHolePoints = Math.max(0, Number(event.ptsPerHole || 0)) * Number(event.holes || 0);
   const maxMatchPoints = Math.max(0, Number(event.ptsPerMatch || 0));
   const resolvedOpponentByPlayerId = resolveScoreSubmissionOpponents({
     eventFormat,
-    scoringFormat,
+    scoringFamily,
     assignments: flight.players,
     submittedPlayers: rawPlayers,
   });
   const players = rawPlayers.map((player: any) => {
     const points = Number(player?.points || 0);
     const matchPoints = Number(player?.matchPoints || 0);
-    if (scoringFormat === 'match' && (
+    if (scoringFamily === 'match' && (
       !Number.isFinite(points) ||
       points < 0 ||
       points > maxHolePoints ||
@@ -450,7 +429,7 @@ const validateScoreSubmission = async (
     throw new Error('Submitted teams must belong to this flight.');
   }
 
-  if (eventFormat === 'team' && scoringFormat === 'match') {
+  if (eventFormat === 'team' && scoringFamily === 'match') {
     if (teams.length !== assignedTeamIds.size) {
       throw new Error('Team points must include every team assigned to this flight.');
     }
@@ -475,7 +454,6 @@ export default class ScoreController {
         where: {
           id: numericEventId,
           leagueId: numericLeagueId,
-          isDeleted: false,
           deletedAt: null,
         },
         include: {
@@ -511,6 +489,10 @@ export default class ScoreController {
               scores: true,
             },
           },
+          teamRounds: {
+            where: { deletedAt: null },
+            include: { scores: { orderBy: { hole: 'asc' } }, team: true },
+          },
         },
       });
 
@@ -535,7 +517,7 @@ export default class ScoreController {
       }
 
       const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+        where: { id: eventId, leagueId, deletedAt: null },
       });
       if (!event) {
         return res.status(404).json({ message: 'Event not found' });
@@ -543,15 +525,45 @@ export default class ScoreController {
       if (String(event.status || '').toLowerCase() === 'canceled') {
         return res.status(409).json({ message: 'Canceled events cannot be scored.' });
       }
-      if (event.isComplete || String(event.status || '').toLowerCase() === 'completed') {
+      if (String(event.status || '').toLowerCase() === 'completed') {
         return res.status(409).json({ message: 'Completed events cannot receive new scores.' });
       }
 
       const eventFormat = normalizeEventFormat(event.format, 'individual');
-      const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
+      const scoringMode = getScoringMode(event.scoringMode);
+      const scoringFamily = getScoringFamilyForMode(scoringMode.id);
       const pointsEnabled = event.pointsEnabled !== false;
 
       await prisma.$transaction(async (tx) => {
+        if (scoringMode.scoreInput === 'shared-team-score') {
+          const teamRows = await persistSharedTeamRounds({
+            db: tx,
+            eventId,
+            flightId,
+            rawTeamScores: req.body?.teamScores,
+            isEdit: false,
+          });
+          await syncTeamEventPoints(leagueId, eventId, teamRows, tx);
+          await tx.flight.update({ where: { id: flightId }, data: { status: 'completed' } });
+          const allFlights = await tx.flight.findMany({
+            where: { eventId, deletedAt: null },
+            select: { status: true },
+          });
+          if (allFlights.length > 0 && allFlights.every((flight) => flight.status === 'completed')) {
+            await tx.event.update({
+              where: { id: eventId },
+              data: { status: 'completed' },
+            });
+          }
+          await tx.league_onboarding.upsert({
+            where: { leagueId },
+            create: { leagueId, firstScoresEnteredAt: new Date() },
+            update: { firstScoresEnteredAt: new Date() },
+          });
+          await SeasonSync.recalculateLeague(leagueId, tx);
+          return;
+        }
+
         const submission = await validateScoreSubmission(
           tx,
           event,
@@ -562,10 +574,7 @@ export default class ScoreController {
         );
 
         for (const player of submission.players) {
-          const normalizedPlayer =
-            !pointsEnabled || scoringFormat === 'stroke'
-              ? { ...player, points: 0, matchPoints: 0 }
-              : player;
+          const normalizedPlayer = { ...player, points: 0, matchPoints: 0 };
           const round = new Round(eventId, normalizedPlayer, undefined, tx);
           await round.process();
         }
@@ -573,7 +582,7 @@ export default class ScoreController {
         const teamRows =
           !pointsEnabled
             ? []
-            : eventFormat === 'team' && scoringFormat === 'stroke'
+            : eventFormat === 'team' && scoringFamily === 'stroke'
               ? await calculateTeamStrokeBestBallPoints(eventId, flightId, tx)
               : submission.teams;
 
@@ -588,12 +597,12 @@ export default class ScoreController {
           select: { status: true },
         });
         if (allFlights.length > 0 && allFlights.every((flight) => flight.status === 'completed')) {
-          if (eventFormat === 'individual' && scoringFormat === 'stroke') {
+          if (eventFormat === 'individual' && scoringFamily === 'stroke') {
             await finalizeIndividualStrokeEventPoints(eventId, tx);
           }
           await tx.event.update({
             where: { id: eventId },
-            data: { status: 'completed', isComplete: true },
+            data: { status: 'completed' },
           });
         }
 
@@ -605,9 +614,9 @@ export default class ScoreController {
 
         const completedEvent = await tx.event.findUnique({
           where: { id: eventId },
-          select: { isComplete: true },
+          select: { status: true },
         });
-        if (completedEvent?.isComplete) {
+        if (completedEvent?.status === 'completed') {
           await SeasonSync.recalculateLeague(leagueId, tx);
         }
       });
@@ -640,7 +649,7 @@ export default class ScoreController {
       }
 
       const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+        where: { id: eventId, leagueId, deletedAt: null },
       });
       if (!event) {
         return res.status(404).json({ message: 'Event not found' });
@@ -650,10 +659,35 @@ export default class ScoreController {
       }
 
       const eventFormat = normalizeEventFormat(event.format, 'individual');
-      const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
+      const scoringMode = getScoringMode(event.scoringMode);
+      const scoringFamily = getScoringFamilyForMode(scoringMode.id);
       const pointsEnabled = event.pointsEnabled !== false;
 
       await prisma.$transaction(async (tx) => {
+        if (scoringMode.scoreInput === 'shared-team-score') {
+          const teamRows = await persistSharedTeamRounds({
+            db: tx,
+            eventId,
+            flightId,
+            rawTeamScores: scoresData?.teamScores,
+            isEdit: true,
+          });
+          await syncTeamEventPoints(leagueId, eventId, teamRows, tx);
+          await tx.flight.update({ where: { id: flightId }, data: { status: 'completed' } });
+          const allFlights = await tx.flight.findMany({
+            where: { eventId, deletedAt: null },
+            select: { status: true },
+          });
+          if (allFlights.length > 0 && allFlights.every((flight) => flight.status === 'completed')) {
+            await tx.event.update({
+              where: { id: eventId },
+              data: { status: 'completed' },
+            });
+          }
+          await SeasonSync.recalculateLeague(leagueId, tx);
+          return;
+        }
+
         const submission = await validateScoreSubmission(
           tx,
           event,
@@ -674,10 +708,7 @@ export default class ScoreController {
             );
           }
 
-          const normalizedPlayer =
-            !pointsEnabled || scoringFormat === 'stroke'
-              ? { ...player, points: 0, matchPoints: 0 }
-              : player;
+          const normalizedPlayer = { ...player, points: 0, matchPoints: 0 };
           const round = new Round(eventId, normalizedPlayer, existingRound, tx);
           await round.process();
         }
@@ -685,7 +716,7 @@ export default class ScoreController {
         const teamRows =
           !pointsEnabled
             ? []
-            : eventFormat === 'team' && scoringFormat === 'stroke'
+            : eventFormat === 'team' && scoringFamily === 'stroke'
               ? await calculateTeamStrokeBestBallPoints(eventId, flightId, tx)
               : submission.teams;
 
@@ -700,13 +731,13 @@ export default class ScoreController {
           select: { status: true },
         });
         if (allFlights.length > 0 && allFlights.every((flight) => flight.status === 'completed')) {
-          if (eventFormat === 'individual' && scoringFormat === 'stroke') {
+          if (eventFormat === 'individual' && scoringFamily === 'stroke') {
             await finalizeIndividualStrokeEventPoints(eventId, tx);
           }
 
           await tx.event.update({
             where: { id: eventId },
-            data: { status: 'completed', isComplete: true },
+            data: { status: 'completed' },
           });
         }
 

@@ -323,9 +323,7 @@ class CourseController {
           const scheduledEvent = await tx.event.findFirst({
             where: {
               teeId: { in: removedTeeIds },
-              isDeleted: false,
               deletedAt: null,
-              isComplete: false,
               status: { notIn: ['completed', 'canceled'] },
             },
             select: { id: true },
@@ -385,9 +383,7 @@ class CourseController {
       const scheduledEvent = await prisma.event.findFirst({
         where: {
           courseId: id,
-          isDeleted: false,
           deletedAt: null,
-          isComplete: false,
           status: { notIn: ['completed', 'canceled'] },
         },
         select: { id: true },

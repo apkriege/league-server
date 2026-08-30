@@ -208,11 +208,11 @@ model course {
   updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  club   club    @relation(fields: [clubId], references: [id])
-  tees   tee[]
-  events event[]
-  scores score[]
-  rounds round[]
+  club       club         @relation(fields: [clubId], references: [id])
+  tees       tee[]
+  events     event[]
+  rounds     round[]
+  teamRounds team_round[]
 
   @@index([clubId])
   @@index([deletedAt])
@@ -244,10 +244,10 @@ model tee {
   updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  course course? @relation(fields: [courseId], references: [id])
-  events event[]
-  scores score[]
-  rounds round[]
+  course     course?      @relation(fields: [courseId], references: [id])
+  events     event[]
+  rounds     round[]
+  teamRounds team_round[]
 
   @@index([courseId])
   @@index([deletedAt])
@@ -261,13 +261,9 @@ model league {
   holeFormat            String    @default("18") @map("hole_format")
   viewerAccessCode      String?   @unique @map("viewer_access_code")
   format                String? // e.g. "individual", "team"
-  numPlayers            Int       @map("num_players")
   adminId               Int       @map("admin_id")
   renewedFromLeagueId   Int?      @unique @map("renewed_from_league_id")
-  entitlementId         Int?      @unique @map("entitlement_id")
-  billingPaidGolfers    Int       @default(0) @map("billing_paid_golfers")
-  billingExempt         Boolean   @default(false) @map("billing_exempt")
-  billingStatus         String    @default("active") @map("billing_status")
+  entitlementId         Int       @unique @map("entitlement_id")
   seasonStatus          String    @default("active") @map("season_status")
   archivedAt            DateTime? @map("archived_at") @db.Timestamptz(3)
   renewalReminderSentAt DateTime? @map("renewal_reminder_sent_at") @db.Timestamptz(3)
@@ -284,7 +280,7 @@ model league {
   admin             user                       @relation(fields: [adminId], references: [id])
   renewedFromLeague league?                    @relation("LeagueSeasonRenewal", fields: [renewedFromLeagueId], references: [id], onDelete: Restrict)
   renewedLeague     league?                    @relation("LeagueSeasonRenewal")
-  entitlement       league_season_entitlement? @relation(fields: [entitlementId], references: [id], onDelete: Restrict)
+  entitlement       league_season_entitlement  @relation(fields: [entitlementId], references: [id], onDelete: Restrict)
   events            event[]
   players           player[]
   teams             team[]
@@ -300,7 +296,6 @@ model league {
   @@index([renewedFromLeagueId])
   @@index([entitlementId])
   @@index([seasonStatus])
-  @@index([billingStatus])
   @@index([startDate])
   @@index([deletedAt])
 }
@@ -337,14 +332,12 @@ model player {
   seasonRank       Int?      @map("season_rank")
   type             String    @default("player") @map("type") // player, substitute, captain
   leagueId         Int?      @map("league_id")
-  eventId          Int?      @map("event_id")
   teamId           Int?      @map("team_id")
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)
 
   league        league?             @relation(fields: [leagueId], references: [id])
-  event         event?              @relation("event_players", fields: [eventId], references: [id])
   team          team?               @relation(fields: [teamId], references: [id])
   flightPlayers flight_player[]
   rounds        round[]             @relation("round_playerId")
@@ -353,7 +346,6 @@ model player {
   invitations   league_invitation[]
 
   @@index([leagueId])
-  @@index([eventId])
   @@index([teamId])
   @@index([email])
   @@index([deletedAt])
@@ -363,7 +355,6 @@ model team {
   id           Int       @id @default(autoincrement())
   name         String
   leagueId     Int?      @map("league_id")
-  eventId      Int?      @map("event_id")
   seasonPoints Float     @map("season_points")
   seasonRank   Int?      @map("season_rank")
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -371,13 +362,12 @@ model team {
   deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(3)
 
   league          league?             @relation(fields: [leagueId], references: [id])
-  event           event?              @relation("event_teams", fields: [eventId], references: [id])
   players         player[]
   flightTeams     flight_team[]
   teamEventPoints team_event_points[]
+  teamRounds      team_round[]
 
   @@index([leagueId])
-  @@index([eventId])
   @@index([deletedAt])
 }
 
@@ -394,15 +384,14 @@ model event {
   startsAt      DateTime  @map("starts_at") @db.Timestamptz(3)
   timeZone      String    @map("time_zone")
   interval      Int
-  scoringFormat String    @map("scoring_format")
+  scoringMode   String    @default("stroke-play") @map("scoring_mode")
+  scoringConfig Json?     @map("scoring_config")
   ptsPerHole    Int?      @map("pts_per_hole")
   ptsPerMatch   Int?      @map("pts_per_match")
   ptsPerTeamWin Int?      @map("pts_per_team_win")
   strokePoints  Json?     @map("stroke_points")
   pointsEnabled Boolean   @default(true) @map("points_enabled")
   status        String
-  isComplete    Boolean   @default(false)
-  isDeleted     Boolean   @default(false) @map("is_deleted")
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt     DateTime? @map("deleted_at") @db.Timestamptz(3)
@@ -412,9 +401,8 @@ model event {
   tee             tee                 @relation(fields: [teeId], references: [id])
   flights         flight[]
   rounds          round[]
-  players         player[]            @relation("event_players")
-  teams           team[]              @relation("event_teams")
   teamEventPoints team_event_points[]
+  teamRounds      team_round[]
 
   @@index([leagueId])
   @@index([courseId])
@@ -451,9 +439,10 @@ model flight {
   updatedAt DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
 
-  event   event           @relation(fields: [eventId], references: [id])
-  players flight_player[]
-  teams   flight_team[]
+  event      event           @relation(fields: [eventId], references: [id])
+  players    flight_player[]
+  teams      flight_team[]
+  teamRounds team_round[]
 
   @@index([eventId])
   @@index([deletedAt])
@@ -503,7 +492,6 @@ model round {
   opponentId      Int?      @map("opponent_id")
   courseId        Int       @map("course_id")
   teeId           Int       @map("tee_id")
-  scoringFormat   String    @map("scoring_format") // stroke play, match play
   status          String    @default("not_started") // not_started, in_progress, completed
   holesPlayed     Int       @map("holes_played")
   gross           Int
@@ -553,11 +541,7 @@ model round {
 
 model score {
   id             Int      @id @default(autoincrement())
-  eventId        Int      @map("event_id")
   roundId        Int      @map("round_id")
-  playerId       Int      @map("player_id")
-  courseId       Int      @map("course_id")
-  teeId          Int      @map("tee_id")
   hole           Int
   par            Int
   gross          Int
@@ -573,15 +557,67 @@ model score {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   round  round  @relation(fields: [roundId], references: [id])
-  course course @relation(fields: [courseId], references: [id])
-  tee    tee    @relation(fields: [teeId], references: [id])
 
   @@unique([roundId, hole])
-  @@index([eventId])
   @@index([roundId])
-  @@index([playerId])
+  @@index([hole])
+}
+
+model team_round {
+  id                Int       @id @default(autoincrement())
+  eventId           Int       @map("event_id")
+  flightId          Int?      @map("flight_id")
+  teamId            Int       @map("team_id")
+  courseId          Int       @map("course_id")
+  teeId             Int       @map("tee_id")
+  status            String    @default("not_started")
+  holesPlayed       Int       @map("holes_played")
+  gross             Int
+  net               Int
+  adjusted          Int
+  courseHandicap    Int?      @map("course_handicap")
+  handicapAllowance Float?    @map("handicap_allowance")
+  handicapSnapshot  Json?     @map("handicap_snapshot")
+  pointsEarned      Float     @default(0) @map("points_earned")
+  matchPoints       Float     @default(0) @map("match_points")
+  date              DateTime  @map("played_date") @db.Date
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt         DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  event  event        @relation(fields: [eventId], references: [id])
+  flight flight?      @relation(fields: [flightId], references: [id])
+  team   team         @relation(fields: [teamId], references: [id])
+  course course       @relation(fields: [courseId], references: [id])
+  tee    tee          @relation(fields: [teeId], references: [id])
+  scores team_score[]
+
+  @@unique([eventId, teamId])
+  @@index([eventId])
+  @@index([flightId])
+  @@index([teamId])
   @@index([courseId])
   @@index([teeId])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+model team_score {
+  id           Int      @id @default(autoincrement())
+  teamRoundId  Int      @map("team_round_id")
+  hole         Int
+  par          Int
+  gross        Int
+  net          Int
+  adjusted     Int
+  popsReceived Int?     @map("pops_received")
+  points       Float    @default(0)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  teamRound team_round @relation(fields: [teamRoundId], references: [id])
+
+  @@unique([teamRoundId, hole])
   @@index([hole])
 }
 

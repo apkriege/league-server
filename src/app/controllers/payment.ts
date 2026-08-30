@@ -19,6 +19,7 @@ import {
   getNetPaidGolfers,
   normalizeBillingDraftKey,
   prepareSeasonEntitlement,
+  SEASON_ENTITLEMENT_STATUSES,
 } from '../services/seasonEntitlement';
 import { getLeagueMutationBlock } from '../services/leagueLifecycle';
 
@@ -194,8 +195,8 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
             entitlement && completedPurpose === 'league_capacity'
               ? Math.max(entitlement.requiredGolfers, requestedTargetGolfers)
               : entitlement?.requiredGolfers || 0;
-          const updatedEntitlement = entitlement
-            ? await tx.league_season_entitlement.update({
+          if (entitlement) {
+            await tx.league_season_entitlement.update({
                 where: { id: entitlement.id },
                 data: {
                   paidGolfers: { increment: completedQuantity },
@@ -207,8 +208,8 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
                     consumed: Boolean(entitlement.league),
                   }),
                 },
-              })
-            : null;
+              });
+          }
 
           const currentMetadata =
             user.metadata && typeof user.metadata === 'object' ? user.metadata : {};
@@ -229,26 +230,6 @@ export const applyCompletedCheckoutSession = async (session: Stripe.Checkout.Ses
                   requestedTargetGolfers,
                   currentIncludedGolfers,
                 );
-
-          if (completedPurpose === 'league_capacity' && leagueId > 0) {
-            const league = await tx.league.findFirst({
-              where: { id: leagueId, entitlementId: entitlement?.id, deletedAt: null },
-              select: { id: true, numPlayers: true, billingPaidGolfers: true },
-            });
-            if (league) {
-              const paidCapacity = updatedEntitlement
-                ? getNetPaidGolfers(updatedEntitlement)
-                : requestedTargetGolfers;
-              await tx.league.update({
-                where: { id: league.id },
-                data: {
-                  numPlayers: Math.max(league.numPlayers, requestedTargetGolfers),
-                  billingPaidGolfers: Math.max(Number(league.billingPaidGolfers || 0), paidCapacity),
-                  billingStatus: 'active',
-                },
-              });
-            }
-          }
 
           const updatedUser = await tx.user.update({
             where: { id: user.id },
@@ -386,8 +367,8 @@ export const applyRefundedCharge = async (charge: Stripe.Charge) => {
       const nextEntitlementRefunded = entitlement
         ? Math.min(entitlement.paidGolfers, entitlement.refundedGolfers + quantityToRevoke)
         : 0;
-      const updatedEntitlement = entitlement
-        ? await tx.league_season_entitlement.update({
+      if (entitlement) {
+        await tx.league_season_entitlement.update({
             where: { id: entitlement.id },
             data: {
               refundedGolfers: nextEntitlementRefunded,
@@ -398,36 +379,7 @@ export const applyRefundedCharge = async (charge: Stripe.Charge) => {
                 consumed: Boolean(entitlement.league),
               }),
             },
-          })
-        : null;
-
-      const affectedLeagueId = entitlement?.league?.id || completion.leagueId;
-      if (affectedLeagueId) {
-        const league = await tx.league.findFirst({
-          where: { id: affectedLeagueId, deletedAt: null },
-          select: { id: true, numPlayers: true, billingPaidGolfers: true },
-        });
-        if (league) {
-          const activeRegularPlayers = await tx.player.count({
-            where: { leagueId: league.id, type: 'player', deletedAt: null },
           });
-          const nextPaidGolfers = updatedEntitlement
-            ? getNetPaidGolfers(updatedEntitlement)
-            : Math.max(0, Number(league.billingPaidGolfers || 0) - quantityToRevoke);
-          const nextCapacity = Math.max(
-            BILLING_MIN_GOLFERS,
-            activeRegularPlayers,
-            Math.min(league.numPlayers, nextPaidGolfers),
-          );
-          await tx.league.update({
-            where: { id: league.id },
-            data: {
-              numPlayers: nextCapacity,
-              billingPaidGolfers: nextPaidGolfers,
-              billingStatus: nextPaidGolfers >= nextCapacity ? 'active' : 'payment_due',
-            },
-          });
-        }
       }
 
       return tx.stripe_checkout_completion.update({
@@ -531,21 +483,18 @@ class PaymentController {
           : {};
       let capacityLeague: {
         id: number;
-        numPlayers: number;
-        billingPaidGolfers: number;
-        billingExempt: boolean;
         type: string;
         endDate: Date;
         seasonStatus: string;
-        billingStatus: string;
-        entitlementId: number | null;
+        entitlementId: number;
         entitlement: {
           id: number;
           billingOwnerId: number;
           paidGolfers: number;
           refundedGolfers: number;
           requiredGolfers: number;
-        } | null;
+          status: string;
+        };
       } | null = null;
       if (purpose === 'league_capacity') {
         if (!Number.isInteger(leagueId) || leagueId <= 0) {
@@ -555,13 +504,9 @@ class PaymentController {
           where: { id: leagueId, adminId: user.id, deletedAt: null },
           select: {
             id: true,
-            numPlayers: true,
-            billingPaidGolfers: true,
-            billingExempt: true,
             type: true,
             endDate: true,
             seasonStatus: true,
-            billingStatus: true,
             entitlementId: true,
             entitlement: {
               select: {
@@ -570,6 +515,7 @@ class PaymentController {
                 paidGolfers: true,
                 refundedGolfers: true,
                 requiredGolfers: true,
+                status: true,
               },
             },
           },
@@ -578,18 +524,12 @@ class PaymentController {
           return res.status(404).json({ message: 'League not found' });
         }
         const mutationBlock = getLeagueMutationBlock(capacityLeague);
-        const archivedBlock =
-          capacityLeague.billingStatus === 'payment_due'
-            ? getLeagueMutationBlock({ ...capacityLeague, billingStatus: 'active' })
-            : mutationBlock;
+        const archivedBlock = mutationBlock?.code === 'LEAGUE_PAYMENT_DUE' ? null : mutationBlock;
         if (archivedBlock) {
           return res.status(archivedBlock.status).json({
             code: archivedBlock.code,
             message: archivedBlock.message,
           });
-        }
-        if (!capacityLeague.billingExempt && !capacityLeague.entitlement) {
-          return res.status(409).json({ message: 'This league is missing its season billing entitlement.' });
         }
       }
 
@@ -619,8 +559,8 @@ class PaymentController {
 
       const capacityPurchase = capacityLeague
         ? getLeagueCapacityPurchase(
-            capacityLeague.numPlayers,
-            capacityLeague.billingPaidGolfers,
+            capacityLeague.entitlement.requiredGolfers,
+            getNetPaidGolfers(capacityLeague.entitlement),
             requestedGolfers,
           )
         : null;
@@ -634,7 +574,7 @@ class PaymentController {
       const allocatedGolfers = await getAllocatedGolfersForAdmin(user.id);
       const billingState = getBillingState(currentMetadata, allocatedGolfers);
       const bypassesCheckout =
-        Boolean(capacityLeague?.billingExempt) ||
+        capacityLeague?.entitlement.status === SEASON_ENTITLEMENT_STATUSES.bypassed ||
         (purpose !== 'league_capacity' && billingState.hasPendingLeagueBypass);
       if (bypassesCheckout) {
         if (purpose === 'league_capacity' && capacityLeague) {
@@ -645,18 +585,16 @@ class PaymentController {
               where: { id: capacityLeague.id, adminId: user.id, deletedAt: null },
               select: {
                 id: true,
-                numPlayers: true,
-                billingPaidGolfers: true,
-                billingExempt: true,
+                entitlement: true,
               },
             });
             if (!lockedLeague) throw new Error('League not found');
-            if (!lockedLeague.billingExempt) {
+            if (lockedLeague.entitlement.status !== SEASON_ENTITLEMENT_STATUSES.bypassed) {
               throw new Error('Payment is required for this capacity change.');
             }
-            await tx.league.update({
-              where: { id: lockedLeague.id },
-              data: { numPlayers: Math.max(lockedLeague.numPlayers, targetGolfers) },
+            await tx.league_season_entitlement.update({
+              where: { id: lockedLeague.entitlement.id },
+              data: { requiredGolfers: Math.max(lockedLeague.entitlement.requiredGolfers, targetGolfers) },
             });
           });
         }
@@ -677,7 +615,7 @@ class PaymentController {
         if (
           purpose === 'league_capacity' &&
           capacityLeague &&
-          targetGolfers > capacityLeague.numPlayers
+          targetGolfers > capacityLeague.entitlement.requiredGolfers
         ) {
           await prisma.$transaction(async (tx) => {
             await lockAdminBilling(tx, user.id);
@@ -689,32 +627,19 @@ class PaymentController {
               where: { id: capacityLeague.id, adminId: user.id, deletedAt: null },
               select: {
                 id: true,
-                numPlayers: true,
-                billingPaidGolfers: true,
                 entitlement: true,
               },
             });
             if (!lockedLeague) throw new Error('League not found');
-            const lockedPaidGolfers = lockedLeague.entitlement
-              ? getNetPaidGolfers(lockedLeague.entitlement)
-              : lockedLeague.billingPaidGolfers;
+            const lockedPaidGolfers = getNetPaidGolfers(lockedLeague.entitlement);
             if (lockedPaidGolfers < targetGolfers) {
               throw new Error('Payment is required for this capacity change.');
             }
-            if (lockedLeague.entitlement) {
-              await tx.league_season_entitlement.update({
-                where: { id: lockedLeague.entitlement.id },
-                data: {
-                  requiredGolfers: Math.max(
-                    lockedLeague.entitlement.requiredGolfers,
-                    targetGolfers,
-                  ),
-                },
-              });
-            }
-            await tx.league.update({
-              where: { id: lockedLeague.id },
-              data: { numPlayers: Math.max(lockedLeague.numPlayers, targetGolfers) },
+            await tx.league_season_entitlement.update({
+              where: { id: lockedLeague.entitlement.id },
+              data: {
+                requiredGolfers: Math.max(lockedLeague.entitlement.requiredGolfers, targetGolfers),
+              },
             });
           });
         }

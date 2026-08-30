@@ -61,7 +61,6 @@ export class EventMetrics {
       deletedAt: null,
       event: {
         leagueId: this.leagueId,
-        isDeleted: false,
         deletedAt: null,
       },
     } as const;
@@ -117,7 +116,7 @@ export class EventMetrics {
         where: activeLeagueRounds,
       }),
       prisma.event?.findFirst?.({
-        where: { id: this.eventId, leagueId: this.leagueId, isDeleted: false, deletedAt: null },
+        where: { id: this.eventId, leagueId: this.leagueId, deletedAt: null },
         select: {
           flights: {
             where: { deletedAt: null },

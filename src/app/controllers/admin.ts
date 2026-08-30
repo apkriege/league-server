@@ -9,6 +9,7 @@ import {
 } from '../services/paymentBypassCode';
 import { getLeagueRoundProgress } from '../utils/league-round-progress';
 import { writeAuditLog } from '../utils/audit';
+import { leagueEntitlementStateSelect } from '../services/seasonEntitlement';
 
 class AdminController {
   static updateLeagueLifecycle = async (req: Request, res: Response) => {
@@ -57,7 +58,7 @@ class AdminController {
         name: true,
         renewedFromLeagueId: true,
         entitlementId: true,
-        _count: { select: { events: { where: { deletedAt: null, isDeleted: false } } } },
+        _count: { select: { events: { where: { deletedAt: null } } } },
       },
     });
     if (!league) return res.status(404).json({ message: 'League not found.' });
@@ -166,15 +167,16 @@ class AdminController {
               deletedAt: null,
             },
         include: {
+          entitlement: { select: leagueEntitlementStateSelect },
           _count: {
             select: {
               players: { where: { deletedAt: null } },
-              events: { where: { deletedAt: null, isDeleted: false } },
+              events: { where: { deletedAt: null } },
             },
           },
           events: {
-            where: { deletedAt: null, isDeleted: false },
-            select: { status: true, type: true, isComplete: true },
+            where: { deletedAt: null },
+            select: { status: true, type: true },
           },
           renewedFromLeague: {
             select: { id: true, name: true, startDate: true, endDate: true },
@@ -214,7 +216,8 @@ class AdminController {
           ...(isSuperAdmin ? {} : { adminId: user.id }), // Ensure the league belongs to the admin
         },
         include: {
-          events: { where: { deletedAt: null, isDeleted: false } },
+          entitlement: { select: leagueEntitlementStateSelect },
+          events: { where: { deletedAt: null } },
           players: { where: { deletedAt: null } },
           teams: {
             where: { deletedAt: null },

@@ -533,13 +533,13 @@ export const buildPlayerIntelligence = ({
     formDelta == null
       ? {
           tone: 'neutral' as const,
-          title: 'Form baseline in progress',
-          detail: 'Complete six rounds to compare recent form with the previous three.',
+          title: 'Performance baseline in progress',
+          detail: 'Complete six rounds to compare recent performance with the previous three.',
         }
       : formDelta < -0.25
         ? {
             tone: 'positive' as const,
-            title: 'Recent form is trending better',
+            title: 'Recent performance is trending better',
             detail: `${Math.abs(roundToOne(formDelta))} fewer strokes per 18 than the previous three rounds.`,
           }
         : formDelta > 0.25
@@ -550,7 +550,7 @@ export const buildPlayerIntelligence = ({
             }
           : {
               tone: 'neutral' as const,
-              title: 'Recent form is holding steady',
+              title: 'Recent performance is holding steady',
               detail: 'The last three rounds are within a quarter stroke of the previous three.',
             },
     latestOpportunity

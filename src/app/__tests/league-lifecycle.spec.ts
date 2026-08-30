@@ -4,7 +4,12 @@ import { getLeagueMutationBlock } from '../services/leagueLifecycle';
 const endedSeason = {
   type: 'season',
   endDate: new Date('2020-01-01T00:00:00.000Z'),
-  billingStatus: 'active',
+  entitlement: {
+    requiredGolfers: 8,
+    paidGolfers: 8,
+    refundedGolfers: 0,
+    status: 'consumed',
+  },
 };
 
 describe('league season lifecycle', () => {
@@ -24,7 +29,12 @@ describe('league season lifecycle', () => {
       getLeagueMutationBlock({
         ...endedSeason,
         seasonStatus: 'reopened',
-        billingStatus: 'payment_due',
+        entitlement: {
+          requiredGolfers: 8,
+          paidGolfers: 8,
+          refundedGolfers: 1,
+          status: 'partially_refunded',
+        },
       }),
     ).toMatchObject({ status: 402, code: 'LEAGUE_PAYMENT_DUE' });
   });

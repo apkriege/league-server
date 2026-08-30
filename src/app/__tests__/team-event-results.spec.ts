@@ -6,10 +6,9 @@ const event = (overrides: Partial<TeamProfileEvent> = {}): TeamProfileEvent => (
   startsAt: '2026-05-01T21:00:00.000Z',
   timeZone: 'America/Indiana/Indianapolis',
   format: 'team',
-  scoringFormat: 'match',
+  scoringMode: 'match-play',
   type: 'regular',
   status: 'completed',
-  isComplete: true,
   holes: 9,
   course: { name: 'Fortress' },
   teamEventPoints: [
@@ -90,7 +89,6 @@ describe('buildTeamEventResults', () => {
         event({
           id: 11,
           status: 'upcoming',
-          isComplete: false,
           teamEventPoints: [],
           flights: [],
           rounds: [],

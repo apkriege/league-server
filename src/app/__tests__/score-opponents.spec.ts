@@ -5,7 +5,7 @@ describe('score submission opponents', () => {
   it('accepts reciprocal opponents for a legacy team flight without saved pairings', () => {
     const opponents = resolveScoreSubmissionOpponents({
       eventFormat: 'team',
-      scoringFormat: 'match',
+      scoringFamily: 'match',
       assignments: [
         { playerId: 1, teamId: 10, opponentId: null },
         { playerId: 2, teamId: 20, opponentId: null },
@@ -26,7 +26,7 @@ describe('score submission opponents', () => {
     expect(() =>
       resolveScoreSubmissionOpponents({
         eventFormat: 'individual',
-        scoringFormat: 'match',
+        scoringFamily: 'match',
         assignments: [
           { playerId: 1, opponentId: 2 },
           { playerId: 2, opponentId: 1 },
@@ -43,7 +43,7 @@ describe('score submission opponents', () => {
     expect(() =>
       resolveScoreSubmissionOpponents({
         eventFormat: 'team',
-        scoringFormat: 'match',
+        scoringFamily: 'match',
         assignments: [
           { playerId: 1, teamId: 10, opponentId: null },
           { playerId: 2, teamId: 20, opponentId: null },
@@ -59,7 +59,7 @@ describe('score submission opponents', () => {
   it('does not carry opponent metadata into stroke-play rounds', () => {
     const opponents = resolveScoreSubmissionOpponents({
       eventFormat: 'individual',
-      scoringFormat: 'stroke',
+      scoringFamily: 'stroke',
       assignments: [{ playerId: 1, opponentId: 2 }],
       submittedPlayers: [{ playerId: 1, opponentId: 2 }],
     });

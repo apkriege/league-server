@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import crypto from 'node:crypto';
 import LeagueService from '../models/league';
 import { prisma } from '../../prisma';
-import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
+import { normalizeEventFormat } from '../utils/event-mode';
 import {
   BILLING_MIN_GOLFERS,
   getLeagueBillableGolfers,
@@ -25,10 +25,12 @@ import {
 } from '../services/leagueSeasonRenewal';
 import {
   getNetPaidGolfers,
+  leagueEntitlementStateSelect,
   normalizeBillingDraftKey,
   SEASON_ENTITLEMENT_STATUSES,
 } from '../services/seasonEntitlement';
 import { sendLeagueInvitationEmail } from '../services/leagueInvitationEmail';
+import { getScoringFamilyForMode } from '../scoring';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
@@ -141,7 +143,7 @@ class LeagueController {
       const league = await LeagueService.findById(id);
 
       const lastEvent = await prisma.event.findFirst({
-        where: { leagueId: id, isComplete: true, isDeleted: false, deletedAt: null },
+        where: { leagueId: id, deletedAt: null },
         include: {
           rounds: {
             include: {
@@ -180,8 +182,9 @@ class LeagueController {
       const league = await prisma.league.findFirst({
         where: { id, deletedAt: null },
         include: {
+          entitlement: { select: leagueEntitlementStateSelect },
           events: {
-            where: { isDeleted: false, deletedAt: null },
+            where: { deletedAt: null },
             include: {
               course: true,
               tee: true,
@@ -217,7 +220,7 @@ class LeagueController {
 
       const recordedRoundCount = await prisma.round.count({
         where: {
-          event: { leagueId: id, isDeleted: false, deletedAt: null },
+          event: { leagueId: id, deletedAt: null },
           deletedAt: null,
           scores: { some: {} },
         },
@@ -322,6 +325,7 @@ class LeagueController {
       const league = await prisma.league.findFirst({
         where: { id, deletedAt: null },
         include: {
+          entitlement: { select: leagueEntitlementStateSelect },
           players: {
             where: { deletedAt: null },
           },
@@ -334,7 +338,7 @@ class LeagueController {
             },
           },
           events: {
-            where: { isDeleted: false, deletedAt: null },
+            where: { deletedAt: null },
             include: {
               course: true,
               flights: {
@@ -412,15 +416,16 @@ class LeagueController {
           ],
         },
         include: {
+          entitlement: { select: leagueEntitlementStateSelect },
           _count: {
             select: {
               players: { where: { deletedAt: null } },
-              events: { where: { isDeleted: false, deletedAt: null } },
+              events: { where: { deletedAt: null } },
             },
           },
           events: {
-            where: { isDeleted: false, deletedAt: null },
-            select: { status: true, type: true, isComplete: true },
+            where: { deletedAt: null },
+            select: { status: true, type: true },
           },
         },
         orderBy: {
@@ -684,14 +689,21 @@ class LeagueController {
 
         const createdLeague = await tx.league.create({
           data: {
-            ...normalizedLeagueData,
+            name: normalizedLeagueData.name,
+            description: normalizedLeagueData.description,
+            type: normalizedLeagueData.type,
+            holeFormat: normalizedLeagueData.holeFormat,
+            format: normalizedLeagueData.format,
+            startDate: normalizedLeagueData.startDate,
+            endDate: normalizedLeagueData.endDate,
+            contactFirstName: normalizedLeagueData.contactFirstName,
+            contactLastName: normalizedLeagueData.contactLastName,
+            contactEmail: normalizedLeagueData.contactEmail,
+            contactPhone: normalizedLeagueData.contactPhone,
             adminId,
             renewedFromLeagueId: renewalSourceId || null,
             entitlementId: lockedEntitlement.id,
             viewerAccessCode,
-            billingExempt: useLeagueBypass,
-            billingStatus: useLeagueBypass ? 'exempt' : 'active',
-            billingPaidGolfers: useLeagueBypass ? 0 : lockedPaidGolfers,
           },
         });
 
@@ -818,7 +830,11 @@ class LeagueController {
           }
         }
 
-        return { createdLeague, createdInvitations };
+        const createdLeagueWithEntitlement = await tx.league.findUniqueOrThrow({
+          where: { id: createdLeague.id },
+          include: { entitlement: { select: leagueEntitlementStateSelect } },
+        });
+        return { createdLeague: createdLeagueWithEntitlement, createdInvitations };
       });
 
       const { createdLeague: newLeague, createdInvitations } = creationResult;
@@ -894,7 +910,9 @@ class LeagueController {
         return;
       }
 
-      const nextNumPlayers = Number(req.body?.numPlayers ?? existingLeague.numPlayers);
+      const nextNumPlayers = Number(
+        req.body?.numPlayers ?? existingLeague.entitlement.requiredGolfers,
+      );
       const league = LeagueController.normalizeLeaguePayload({
         ...existingLeague,
         ...req.body,
@@ -914,12 +932,12 @@ class LeagueController {
         prisma.player.count({ where: { leagueId: id, type: 'player', deletedAt: null } }),
         prisma.team.count({ where: { leagueId: id, deletedAt: null } }),
         prisma.event.findMany({
-          where: { leagueId: id, isDeleted: false, deletedAt: null },
+          where: { leagueId: id, deletedAt: null },
           select: { id: true, startsAt: true, timeZone: true },
         }),
         prisma.round.count({
           where: {
-            event: { leagueId: id, isDeleted: false, deletedAt: null },
+            event: { leagueId: id, deletedAt: null },
             deletedAt: null,
             scores: { some: {} },
           },
@@ -960,10 +978,9 @@ class LeagueController {
       }
 
       const billableGolfers = Math.max(BILLING_MIN_GOLFERS, nextNumPlayers);
-      const paidGolfers = existingLeague.entitlement
-        ? getNetPaidGolfers(existingLeague.entitlement)
-        : existingLeague.billingPaidGolfers;
-      if (!existingLeague.billingExempt && paidGolfers < billableGolfers) {
+      const paidGolfers = getNetPaidGolfers(existingLeague.entitlement);
+      const paymentBypassed = existingLeague.entitlement.status === SEASON_ENTITLEMENT_STATUSES.bypassed;
+      if (!paymentBypassed && paidGolfers < billableGolfers) {
         return res.status(402).json({
           message: `This change requires payment for ${billableGolfers} golfers in this league.`,
           requiredGolfers: billableGolfers,
@@ -976,16 +993,14 @@ class LeagueController {
         if (existingLeague.entitlementId) {
           await lockSeasonEntitlement(tx, existingLeague.entitlementId);
         }
-        const lockedEntitlement = existingLeague.entitlementId
-          ? await tx.league_season_entitlement.findUnique({ where: { id: existingLeague.entitlementId } })
-          : null;
-        const lockedPaidGolfers = lockedEntitlement
-          ? getNetPaidGolfers(lockedEntitlement)
-          : existingLeague.billingPaidGolfers;
-        if (!existingLeague.billingExempt && lockedPaidGolfers < billableGolfers) {
+        const lockedEntitlement = await tx.league_season_entitlement.findUniqueOrThrow({
+          where: { id: existingLeague.entitlementId },
+        });
+        const lockedPaidGolfers = getNetPaidGolfers(lockedEntitlement);
+        if (!paymentBypassed && lockedPaidGolfers < billableGolfers) {
           throw new Error('Payment is required for this capacity change.');
         }
-        if (lockedEntitlement && billableGolfers > lockedEntitlement.requiredGolfers) {
+        if (billableGolfers !== lockedEntitlement.requiredGolfers) {
           await tx.league_season_entitlement.update({
             where: { id: lockedEntitlement.id },
             data: { requiredGolfers: billableGolfers },
@@ -995,11 +1010,17 @@ class LeagueController {
         return tx.league.update({
           where: { id },
           data: {
-            ...league,
-            billingPaidGolfers: existingLeague.billingExempt
-              ? 0
-              : lockedPaidGolfers,
+            name: league.name,
+            description: league.description,
+            type: league.type,
+            holeFormat: league.holeFormat,
+            format: league.format,
+            contactFirstName: league.contactFirstName,
+            contactLastName: league.contactLastName,
+            contactEmail: league.contactEmail,
+            contactPhone: league.contactPhone,
           },
+          include: { entitlement: { select: leagueEntitlementStateSelect } },
         });
       });
 
@@ -1043,9 +1064,8 @@ class LeagueController {
         prisma.event.findFirst({
           where: {
             leagueId: id,
-            isDeleted: false,
             deletedAt: null,
-            OR: [{ isComplete: true }, { status: 'completed' }, { rounds: { some: {} } }],
+            OR: [{ status: 'completed' }, { rounds: { some: {} } }],
           },
           select: { id: true },
         }),
@@ -1084,10 +1104,8 @@ class LeagueController {
             id: true,
             name: true,
             adminId: true,
-            numPlayers: true,
-            billingPaidGolfers: true,
-            billingExempt: true,
             entitlementId: true,
+            entitlement: { select: { requiredGolfers: true } },
           },
         });
         if (!league) throw new Error('League not found');
@@ -1116,7 +1134,12 @@ class LeagueController {
         const updatedLeague = await tx.league.update({
           where: { id: league.id },
           data: { adminId: nextAdmin.id },
-          select: { id: true, name: true, adminId: true, numPlayers: true },
+          select: {
+            id: true,
+            name: true,
+            adminId: true,
+            entitlement: { select: { requiredGolfers: true } },
+          },
         });
         return { league: updatedLeague, nextAdmin };
       });
@@ -1193,7 +1216,7 @@ class LeagueController {
       }
 
       const leagueEvents = await prisma.event.findMany({
-        where: { leagueId, isDeleted: false, deletedAt: null },
+        where: { leagueId, deletedAt: null },
         select: { id: true, startsAt: true, timeZone: true },
       });
       const selectedEventIds = selectedPeriod
@@ -1208,7 +1231,6 @@ class LeagueController {
         : leagueEvents.map((event) => event.id);
       const scopedEventWhere = {
         leagueId,
-        isDeleted: false,
         deletedAt: null,
         ...(selectedPeriod ? { id: { in: selectedEventIds } } : {}),
       };
@@ -1330,7 +1352,6 @@ class LeagueController {
             event: {
               select: {
                 id: true,
-                isDeleted: true,
               },
             },
           },
@@ -1351,7 +1372,6 @@ class LeagueController {
         }
 
         for (const row of teamPointsRows) {
-          if (row.event?.isDeleted) continue;
 
           const teamId = Number(row.teamId);
           const existing = teamMap.get(teamId) || {
@@ -1666,7 +1686,7 @@ class LeagueController {
                   startsAt: true,
                   timeZone: true,
                   format: true,
-                  scoringFormat: true,
+                  scoringMode: true,
                 },
               },
             },
@@ -1718,8 +1738,8 @@ class LeagueController {
 
       for (const score of teamScores) {
         const eventFormat = normalizeEventFormat(score.round.event?.format, 'individual');
-        const scoringFormat = normalizeScoringFormat(score.round.event?.scoringFormat, 'stroke');
-        if (eventFormat !== 'team' || scoringFormat !== 'stroke') continue;
+        const scoringFamily = getScoringFamilyForMode(score.round.event?.scoringMode);
+        if (eventFormat !== 'team' || scoringFamily !== 'stroke') continue;
 
         const eventId = Number(score.round.eventId);
         const teamId =
@@ -1805,7 +1825,7 @@ class LeagueController {
           round: {
             include: {
               player: true,
-              event: { select: { id: true, name: true, format: true, scoringFormat: true } },
+              event: { select: { id: true, name: true, format: true, scoringMode: true } },
             },
           },
         },

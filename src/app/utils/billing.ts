@@ -100,9 +100,8 @@ export const getAllocatedGolfersForAdmin = async (
   const entitlements = await db.league_season_entitlement.findMany({
     where: {
       billingOwnerId: adminId,
-      league: excludeLeagueId
-        ? { is: { id: { not: excludeLeagueId }, billingExempt: false } }
-        : { is: { billingExempt: false } },
+      status: { not: 'bypassed' },
+      league: excludeLeagueId ? { is: { id: { not: excludeLeagueId } } } : { isNot: null },
     },
     select: { requiredGolfers: true },
   });

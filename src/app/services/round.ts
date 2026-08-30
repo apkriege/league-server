@@ -92,7 +92,6 @@ export class Round {
         netDoubleBogeys: stats.netDoubleBogeys,
         netTripleBogeys: stats.netTripleBogeys,
         date: dateOnlyInTimeZone(this.event.startsAt, this.event.timeZone),
-        scoringFormat: this.event.scoringFormat,
         holesPlayed: this.event.holes,
       },
     });
@@ -100,11 +99,7 @@ export class Round {
     // save the scores to db
     await this.db.score.createMany({
       data: modeledScores.map((s: any) => ({
-        eventId: this.eventId,
-        playerId: pr.playerId,
         roundId: round.id,
-        courseId: this.event.courseId,
-        teeId: this.event.teeId,
         hole: s.hole,
         par: s.par,
         gross: s.gross,
@@ -322,7 +317,7 @@ export class Round {
   // SET EVENT DATA
   private async setEventData() {
     const event = await this.db.event.findFirst({
-      where: { id: this.eventId, isDeleted: false, deletedAt: null },
+      where: { id: this.eventId, deletedAt: null },
       include: {
         course: true,
         tee: true,

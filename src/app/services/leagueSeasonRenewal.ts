@@ -31,6 +31,7 @@ export const getRenewedLeagueName = (name: string, sourceYear: number, nextYear:
 };
 
 const renewalTemplateInclude = {
+  entitlement: { select: { requiredGolfers: true } },
   players: {
     where: { deletedAt: null },
     orderBy: { id: 'asc' },
@@ -94,7 +95,7 @@ export const prepareLeagueRenewalTemplate = async (
       renewedFromLeagueId: source.id,
       name: getRenewedLeagueName(source.name, sourceYear, nextYear),
       description: source.description || '',
-      numPlayers: source.numPlayers,
+      numPlayers: source.entitlement.requiredGolfers,
       type: source.type,
       holeFormat: source.holeFormat,
       format: source.format,

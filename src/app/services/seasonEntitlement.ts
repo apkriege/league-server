@@ -10,6 +10,13 @@ export const SEASON_ENTITLEMENT_STATUSES = {
   bypassed: 'bypassed',
 } as const;
 
+export const leagueEntitlementStateSelect = {
+  requiredGolfers: true,
+  paidGolfers: true,
+  refundedGolfers: true,
+  status: true,
+} as const;
+
 export const normalizeBillingDraftKey = (value: unknown) => {
   const draftKey = String(value || '').trim();
   return /^[a-zA-Z0-9][a-zA-Z0-9_-]{15,127}$/.test(draftKey) ? draftKey : null;
@@ -19,6 +26,32 @@ export const getNetPaidGolfers = (entitlement: {
   paidGolfers: number;
   refundedGolfers: number;
 }) => Math.max(0, entitlement.paidGolfers - entitlement.refundedGolfers);
+
+export type LeagueEntitlementState = {
+  requiredGolfers: number;
+  paidGolfers: number;
+  refundedGolfers: number;
+  status: string;
+};
+
+export const getLeagueCapacity = (league: { entitlement?: LeagueEntitlementState | null }) =>
+  Math.max(0, Number(league.entitlement?.requiredGolfers || 0));
+
+export const getLeaguePaidGolfers = (league: { entitlement?: LeagueEntitlementState | null }) =>
+  league.entitlement ? getNetPaidGolfers(league.entitlement) : 0;
+
+export const isLeagueBillingExempt = (league: { entitlement?: LeagueEntitlementState | null }) =>
+  league.entitlement?.status === SEASON_ENTITLEMENT_STATUSES.bypassed;
+
+export const getLeagueBillingStatus = (league: {
+  entitlement?: LeagueEntitlementState | null;
+}) => {
+  if (!league.entitlement) return 'payment_due' as const;
+  if (isLeagueBillingExempt(league)) return 'exempt' as const;
+  return getLeaguePaidGolfers(league) >= getLeagueCapacity(league)
+    ? ('active' as const)
+    : ('payment_due' as const);
+};
 
 export const getEntitlementStatus = (input: {
   paidGolfers: number;

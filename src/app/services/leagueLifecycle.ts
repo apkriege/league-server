@@ -1,5 +1,6 @@
 import { prisma } from '../../prisma';
 import { sendSeasonRenewalReminderEmail } from './seasonLifecycleEmail';
+import { getLeagueBillingStatus, type LeagueEntitlementState } from './seasonEntitlement';
 
 export const isLeagueSeasonExpired = (league: { type: string; endDate: Date }, now = new Date()) => {
   if (String(league.type).toLowerCase() !== 'season') return false;
@@ -11,9 +12,9 @@ export const getLeagueMutationBlock = (league: {
   type: string;
   endDate: Date;
   seasonStatus: string;
-  billingStatus: string;
+  entitlement?: LeagueEntitlementState | null;
 }) => {
-  if (league.billingStatus === 'payment_due') {
+  if (getLeagueBillingStatus(league) === 'payment_due') {
     return {
       status: 402,
       code: 'LEAGUE_PAYMENT_DUE',

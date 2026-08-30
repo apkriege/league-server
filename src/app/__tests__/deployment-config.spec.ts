@@ -32,6 +32,8 @@ describe('deployment configuration', () => {
       '20260827120000_add_email_verification',
       '20260827130000_add_league_season_renewals',
       '20260827140000_add_season_entitlements_and_lifecycle',
+      '20260830000000_add_scoring_modes_and_team_rounds',
+      '20260830120000_remove_legacy_scoring_format',
     ]);
     for (const migrationDirectory of migrationDirectories) {
       expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(

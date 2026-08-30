@@ -190,7 +190,7 @@ describe('buildPlayerIntelligence', () => {
     expect(result.parSplits.every((split) => split.averageToPar == null)).toBe(true);
     expect(result.headToHead.opponents).toEqual([]);
     expect(result.teamRivalries).toEqual([]);
-    expect(result.takeaways[0].title).toBe('Form baseline in progress');
+    expect(result.takeaways[0].title).toBe('Performance baseline in progress');
   });
 
   it('waits for two complete three-round windows before calling a form trend', () => {

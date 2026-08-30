@@ -12,7 +12,7 @@ class TeamController {
       },
       teamEventPoints: {
         where: {
-          event: { isDeleted: false, deletedAt: null },
+          event: { deletedAt: null },
         },
         include: {
           event: {
@@ -85,7 +85,6 @@ class TeamController {
         ? await prisma.event.findMany({
             where: {
               leagueId,
-              isDeleted: false,
               deletedAt: null,
             },
             select: {
@@ -94,10 +93,9 @@ class TeamController {
               startsAt: true,
               timeZone: true,
               format: true,
-              scoringFormat: true,
+              scoringMode: true,
               type: true,
               status: true,
-              isComplete: true,
               holes: true,
               course: { select: { name: true } },
               teamEventPoints: {
@@ -434,7 +432,7 @@ class TeamController {
           where: {
             teamId: id,
             flight: {
-              event: { isDeleted: false, isComplete: false, status: { not: 'canceled' } },
+              event: { status: { not: 'canceled' } },
             },
           },
           select: { id: true },

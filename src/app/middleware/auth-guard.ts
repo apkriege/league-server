@@ -3,13 +3,14 @@ import UserService from '../models/user';
 import { prisma } from '../../prisma';
 import { logAuthFailure } from './logging';
 import { getLeagueMutationBlock, isLeagueSeasonExpired } from '../services/leagueLifecycle';
+import type { LeagueEntitlementState } from '../services/seasonEntitlement';
 
 type MutableLeagueState = {
   id: number;
   type: string;
   endDate: Date;
   seasonStatus: string;
-  billingStatus: string;
+  entitlement: LeagueEntitlementState;
 };
 
 const allowLeagueMutation = async (
@@ -200,7 +201,7 @@ export const leagueAdminGuard = async (req: Request, res: Response, next: NextFu
         type: true,
         endDate: true,
         seasonStatus: true,
-        billingStatus: true,
+        entitlement: true,
       },
     });
 
@@ -301,7 +302,7 @@ export const eventAdminGuard = async (req: Request, res: Response, next: NextFun
     }
 
     const event = await prisma.event.findFirst({
-      where: { id: eventId, isDeleted: false, deletedAt: null, league: { deletedAt: null } },
+      where: { id: eventId, deletedAt: null, league: { deletedAt: null } },
       include: {
         league: {
           select: {
@@ -310,7 +311,7 @@ export const eventAdminGuard = async (req: Request, res: Response, next: NextFun
             type: true,
             endDate: true,
             seasonStatus: true,
-            billingStatus: true,
+            entitlement: true,
           },
         },
       },
@@ -490,7 +491,7 @@ export const playerAdminGuard = async (req: Request, res: Response, next: NextFu
             type: true,
             endDate: true,
             seasonStatus: true,
-            billingStatus: true,
+            entitlement: true,
           },
         },
       },
@@ -542,7 +543,7 @@ export const teamAdminGuard = async (req: Request, res: Response, next: NextFunc
             type: true,
             endDate: true,
             seasonStatus: true,
-            billingStatus: true,
+            entitlement: true,
           },
         },
       },
@@ -588,7 +589,7 @@ export const flightAdminGuard = async (req: Request, res: Response, next: NextFu
       where: {
         id: flightId,
         deletedAt: null,
-        event: { isDeleted: false, deletedAt: null, league: { deletedAt: null } },
+        event: { deletedAt: null, league: { deletedAt: null } },
       },
       include: {
         event: {
@@ -600,7 +601,7 @@ export const flightAdminGuard = async (req: Request, res: Response, next: NextFu
                 type: true,
                 endDate: true,
                 seasonStatus: true,
-                billingStatus: true,
+                entitlement: true,
               },
             },
           },

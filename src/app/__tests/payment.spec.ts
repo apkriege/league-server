@@ -108,8 +108,6 @@ describe('Stripe checkout completion', async () => {
 
   it('applies an additional-player payment only to its league capacity', async () => {
     mockTx.stripe_checkout_completion.findUnique.mockResolvedValue(null);
-    mockTx.league.findFirst.mockResolvedValue({ id: 3, numPlayers: 8, billingPaidGolfers: 8 });
-    mockTx.league.update.mockResolvedValue({ id: 3, numPlayers: 9, billingPaidGolfers: 9 });
     mockTx.league_season_entitlement.findUnique.mockResolvedValue({
       id: 21,
       billingOwnerId: 7,
@@ -137,10 +135,7 @@ describe('Stripe checkout completion', async () => {
       },
     });
 
-    expect(mockTx.league.update).toHaveBeenCalledWith({
-      where: { id: 3 },
-      data: { numPlayers: 9, billingPaidGolfers: 9, billingStatus: 'active' },
-    });
+    expect(mockTx.league.update).not.toHaveBeenCalled();
     expect(mockTx.league_season_entitlement.update).toHaveBeenCalledWith({
       where: { id: 21 },
       data: {
@@ -210,11 +205,6 @@ describe('Stripe checkout completion', async () => {
       refundedQuantity: 0,
       entitlementId: 21,
     });
-    mockTx.league.findFirst.mockResolvedValue({
-      id: 3,
-      numPlayers: 10,
-      billingPaidGolfers: 10,
-    });
     mockTx.player.count.mockResolvedValue(9);
     mockTx.league_season_entitlement.findUnique.mockResolvedValue({
       id: 21,
@@ -239,10 +229,7 @@ describe('Stripe checkout completion', async () => {
     } as any);
 
     expect(mockTx.user.update.mock.calls[0][0].data.metadata.billing.includedGolfers).toBe(8);
-    expect(mockTx.league.update).toHaveBeenCalledWith({
-      where: { id: 3 },
-      data: { numPlayers: 9, billingPaidGolfers: 8, billingStatus: 'payment_due' },
-    });
+    expect(mockTx.league.update).not.toHaveBeenCalled();
     expect(mockTx.league_season_entitlement.update).toHaveBeenCalledWith({
       where: { id: 21 },
       data: {

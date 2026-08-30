@@ -1,4 +1,5 @@
 import { prisma } from '../../prisma';
+import { getScoringFamilyForMode } from '../scoring';
 
 export const getFlightStartsAt = (
   eventStartsAt: Date | string,
@@ -44,7 +45,7 @@ export const validateFlightConfiguration = (league: any, event: any) => {
   if (flights.length === 0) throw new Error('Event requires at least one flight.');
 
   const format = String(event?.format || '').toLowerCase();
-  const scoringFormat = String(event?.scoringFormat || '').toLowerCase();
+  const scoringFamily = getScoringFamilyForMode(event?.scoringMode);
   const assignedIds = new Set<number>();
 
   if (format === 'individual') {
@@ -56,7 +57,7 @@ export const validateFlightConfiguration = (league: any, event: any) => {
 
     flights.forEach((flight: any, flightIndex: number) => {
       let playerIds: number[] = [];
-      if (scoringFormat === 'stroke') {
+      if (scoringFamily === 'stroke') {
         if (!Array.isArray(flight) || flight.length < 1 || flight.length > 4) {
           throw new Error(`Invalid individual stroke flight at index ${flightIndex}.`);
         }
@@ -64,7 +65,7 @@ export const validateFlightConfiguration = (league: any, event: any) => {
         if (playerIds.length !== flight.length) {
           throw new Error(`Invalid player ID in flight index ${flightIndex}.`);
         }
-      } else if (scoringFormat === 'match') {
+      } else if (scoringFamily === 'match') {
         const matchups = Array.isArray(flight?.[0]) ? flight : [flight];
         if (matchups.length < 1 || matchups.length > 2) {
           throw new Error(`Invalid individual match flight at index ${flightIndex}.`);
@@ -117,7 +118,7 @@ export const validateFlightConfiguration = (league: any, event: any) => {
           throw new Error(`Team ${teamId} is assigned to more than one flight.`);
         }
         const rosterSize = Array.isArray(team.players) ? team.players.length : 0;
-        if (rosterSize < (scoringFormat === 'match' ? 2 : 1)) {
+        if (rosterSize < (scoringFamily === 'match' ? 2 : 1)) {
           throw new Error(`Team ${teamId} does not have enough active players for this event.`);
         }
         assignedIds.add(teamId);
@@ -140,13 +141,14 @@ export class FlightGen {
 
   saveFlights() {
     validateFlightConfiguration(this.league, this.event);
-    if (this.event.format === 'individual' && this.event.scoringFormat === 'stroke') {
+    const scoringFamily = getScoringFamilyForMode(this.event.scoringMode);
+    if (this.event.format === 'individual' && scoringFamily === 'stroke') {
       return this.individualStroke();
-    } else if (this.event.format === 'individual' && this.event.scoringFormat === 'match') {
+    } else if (this.event.format === 'individual' && scoringFamily === 'match') {
       return this.individualMatch();
-    } else if (this.event.format === 'team' && this.event.scoringFormat === 'stroke') {
+    } else if (this.event.format === 'team' && scoringFamily === 'stroke') {
       return this.teamStroke();
-    } else if (this.event.format === 'team' && this.event.scoringFormat === 'match') {
+    } else if (this.event.format === 'team' && scoringFamily === 'match') {
       return this.teamMatch();
     } else {
       throw new Error('Unsupported league or event type for flight generation');

@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import { seedLeagueScenarioMatrix } from './seeds/scenario-matrix';
 import { fortressMaroonHoles, seedMichiganGolfCourses } from './seeds/michigan-courses';
 import { dateOnlyInTimeZone } from '../src/app/utils/time-zone';
+import { seedScoringFormatLab } from './seeds/scoring-format-lab';
 
 const prisma = new PrismaClient();
 
@@ -28,6 +29,8 @@ async function hashPassword() {
 }
 
 async function clearData() {
+  await prisma.team_score.deleteMany();
+  await prisma.team_round.deleteMany();
   await prisma.score.deleteMany();
   await prisma.round.deleteMany();
   await prisma.flight_player.deleteMany();
@@ -91,10 +94,6 @@ async function createRound({
       putts: 2,
       popsReceived,
       points: Math.max(0, 3 - Math.max(0, net - hole.par)),
-      courseId,
-      teeId,
-      playerId: player.id,
-      eventId,
     };
   });
 
@@ -109,7 +108,6 @@ async function createRound({
       playerId: player.id,
       courseId,
       teeId,
-      scoringFormat: 'stroke',
       status: 'completed',
       holesPlayed: 18,
       gross,
@@ -131,11 +129,7 @@ async function createRound({
       tripleBogeys: 0,
       date: eventDate,
       scores: {
-        create: scoreRows.map(({ eventId: _eventId, playerId: _playerId, ...score }) => ({
-          ...score,
-          eventId,
-          playerId: player.id,
-        })),
+        create: scoreRows,
       },
     },
   });
@@ -239,10 +233,8 @@ async function main() {
       holeFormat: 'mixed',
       viewerAccessCode: 'TESTCODE',
       format: 'team',
-      numPlayers: 8,
       adminId: adminUser.id,
       entitlementId: seededEntitlement.id,
-      billingPaidGolfers: 8,
       startDate: new Date('2026-05-01T00:00:00.000Z'),
       endDate: new Date('2026-09-01T00:00:00.000Z'),
       contactFirstName: 'Adam',
@@ -339,13 +331,13 @@ async function main() {
       startsAt: new Date('2026-05-07T21:30:00.000Z'),
       timeZone: 'America/Detroit',
       interval: 10,
-      scoringFormat: 'stroke',
+      scoringMode: 'stroke-play',
+      scoringConfig: { handicapAllowance: 1 },
       ptsPerHole: 1,
       ptsPerMatch: 0,
       ptsPerTeamWin: 2,
       strokePoints: [10, 8, 6, 4, 2, 1],
       status: 'completed',
-      isComplete: true,
     },
   });
 
@@ -362,12 +354,12 @@ async function main() {
       startsAt: new Date('2026-05-14T21:30:00.000Z'),
       timeZone: 'America/Detroit',
       interval: 10,
-      scoringFormat: 'match',
+      scoringMode: 'match-play',
+      scoringConfig: { handicapAllowance: 1 },
       ptsPerHole: 1,
       ptsPerMatch: 2,
       ptsPerTeamWin: 2,
       status: 'active',
-      isComplete: false,
     },
   });
 
@@ -384,13 +376,13 @@ async function main() {
       startsAt: new Date('2026-05-21T21:30:00.000Z'),
       timeZone: 'America/Detroit',
       interval: 10,
-      scoringFormat: 'stroke',
+      scoringMode: 'stroke-play',
+      scoringConfig: { handicapAllowance: 1 },
       ptsPerHole: 0,
       ptsPerMatch: 0,
       ptsPerTeamWin: 0,
       strokePoints: [10, 8, 6, 4, 2, 1],
       status: 'upcoming',
-      isComplete: false,
     },
   });
 
@@ -543,6 +535,12 @@ async function main() {
     courseId: course.id,
     teeId: tee.id,
   });
+  const scoringLab = await seedScoringFormatLab({
+    prisma,
+    adminId: adminUser.id,
+    courseId: course.id,
+    teeId: tee.id,
+  });
 
   console.log('Seed complete.');
   console.log('Users:');
@@ -556,6 +554,10 @@ async function main() {
     for (const eventName of scenario.events) {
       console.log(`    - ${eventName}`);
     }
+  }
+  console.log(`Scoring lab: ${scoringLab.league} (${scoringLab.leagueId})`);
+  for (const eventName of scoringLab.events) {
+    console.log(`  - ${eventName}`);
   }
 }
 

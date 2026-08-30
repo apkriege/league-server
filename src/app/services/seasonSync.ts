@@ -2,33 +2,32 @@ import { prisma } from '../../prisma';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
 import {
   calculateLeaguePlayingHandicap,
-  calculateMatchPops,
   calculateRoundDifferential,
   calculateStrokePops,
   modelTeeForRound,
   selectRoundHoles,
 } from '../utils/tee-rating';
-import { normalizeEventFormat, normalizeScoringFormat } from '../utils/event-mode';
+import { normalizeEventFormat } from '../utils/event-mode';
 import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
 import { getHandicapHoleBasis, type HandicapHoleBasis } from '../utils/league-hole-format';
+import {
+  addTeamEventPoints,
+  assignBestBallPoints,
+  assignFourBallMatchPoints,
+  assignMatchPlayPoints,
+  assignMaximumScorePoints,
+  assignStablefordPoints,
+  assignStrokePlayPoints,
+  assignTeamAggregatePoints,
+  assignTeamMatchPlayPoints,
+  getScoringMode,
+  type ScoredHole,
+  type ScoringHole,
+  type ScoringRound,
+  type TeamEventPointsAccumulator,
+} from '../scoring';
 
 type PrismaTx = any;
-
-type HoleDefinition = {
-  num: number;
-  par: number;
-  hcp: number;
-};
-
-type ModeledScore = {
-  id: number;
-  hole: number;
-  par: number;
-  gross: number;
-  adjusted: number;
-  net: number;
-  pops: number;
-};
 
 type ScoreStats = {
   totalGross: number;
@@ -57,26 +56,15 @@ type PlayerSeasonState = {
   roundsUpdated: number;
 };
 
-type RoundCalculation = {
+type RoundCalculation = ScoringRound & {
   round: any;
-  playerId: number;
-  teamId: number | null;
-  opponentId: number | null;
   preHandicap: number;
-  courseHandicap: number;
   postHandicap: number;
   differential: number;
-  gross: number;
-  net: number;
   adjusted: number;
   stats: ScoreStats;
-  scores: ModeledScore[];
-  pointsEarned: number;
-  matchPoints: number;
   tee: ReturnType<typeof modelTeeForRound>;
 };
-
-type TeamEventPointsAccumulator = Map<string, { leagueId: number; eventId: number; teamId: number; points: number }>;
 
 export type SeasonSyncResult = {
   leagueId: number;
@@ -97,22 +85,9 @@ const roundToOneDecimal = (value: number) => Math.round(value * 10) / 10;
 
 const roundToTwoDecimals = (value: number) => Number(value.toFixed(2));
 
-const toStrokePointsArray = (raw: unknown): number[] => {
-  if (Array.isArray(raw)) {
-    return raw.map(Number).filter((value) => Number.isFinite(value) && value >= 0);
-  }
-  if (typeof raw === 'string') {
-    return raw
-      .split(',')
-      .map((value) => Number(value.trim()))
-      .filter((value) => Number.isFinite(value) && value >= 0);
-  }
-  return [];
-};
-
 const getHoleNumber = (hole: any) => Number(hole?.num ?? hole?.hole ?? 0);
 
-const normalizeHoles = (holes: any): HoleDefinition[] => {
+const normalizeHoles = (holes: any): ScoringHole[] => {
   if (!Array.isArray(holes)) return [];
 
   return holes
@@ -125,24 +100,11 @@ const normalizeHoles = (holes: any): HoleDefinition[] => {
     .sort((a, b) => a.num - b.num);
 };
 
-const calculateStrokeplayPops = (handicap: number, holes: HoleDefinition[]) => {
+const calculateStrokeplayPops = (handicap: number, holes: ScoringHole[]) => {
   return calculateStrokePops(handicap, holes);
 };
 
-const calculateMatchplayPops = (leftHandicap: number, rightHandicap: number, holes: HoleDefinition[]) => {
-  return calculateMatchPops(leftHandicap, rightHandicap, holes);
-};
-
-const stablefordPoints = (net: number, par: number) => {
-  const diff = net - par;
-  if (diff <= -2) return 4;
-  if (diff === -1) return 3;
-  if (diff === 0) return 2;
-  if (diff === 1) return 1;
-  return 0;
-};
-
-const calculateStats = (scores: ModeledScore[]): ScoreStats => {
+const calculateStats = (scores: ScoredHole[]): ScoreStats => {
   const stats = {
     totalGross: 0,
     totalNet: 0,
@@ -225,7 +187,7 @@ const buildModeledScores = ({
   handicap,
 }: {
   scoreRows: any[];
-  holes: HoleDefinition[];
+  holes: ScoringHole[];
   handicap: number;
 }) => {
   const holeByNumber = new Map(holes.map((hole) => [hole.num, hole]));
@@ -248,375 +210,10 @@ const buildModeledScores = ({
         adjusted: Math.min(gross, hole.par + 2 + Math.max(0, popCount)),
         net: Math.max(0, gross - popCount),
         pops: popCount,
-      } satisfies ModeledScore;
+      } satisfies ScoredHole;
     })
-    .filter((score): score is ModeledScore => Boolean(score))
+    .filter((score): score is ScoredHole => Boolean(score))
     .sort((a, b) => a.hole - b.hole);
-};
-
-const getScoreByHole = (calculation: RoundCalculation | undefined, holeNumber: number) => {
-  return calculation?.scores.find((score) => score.hole === holeNumber) ?? null;
-};
-
-const addTeamPoints = (
-  accumulator: TeamEventPointsAccumulator,
-  leagueId: number,
-  eventId: number,
-  teamId: number | null | undefined,
-  points: number,
-) => {
-  const numericTeamId = Number(teamId);
-  if (!Number.isFinite(numericTeamId) || numericTeamId <= 0) return;
-
-  const key = `${numericTeamId}:${eventId}`;
-  const existing = accumulator.get(key);
-  const nextPoints = (existing?.points || 0) + points;
-
-  accumulator.set(key, {
-    leagueId,
-    eventId,
-    teamId: numericTeamId,
-    points: roundToOneDecimal(nextPoints),
-  });
-};
-
-const pairKey = (leftId: number, rightId: number) => {
-  return [leftId, rightId].sort((a, b) => a - b).join(':');
-};
-
-const calculateMatchPointsForPair = ({
-  event,
-  holes,
-  left,
-  right,
-}: {
-  event: any;
-  holes: HoleDefinition[];
-  left: RoundCalculation;
-  right: RoundCalculation;
-}) => {
-  const [leftPops, rightPops] = calculateMatchplayPops(
-    left.courseHandicap,
-    right.courseHandicap,
-    holes,
-  );
-  const pointsPerHole = toNumber(event?.ptsPerHole, 0);
-  const pointsPerMatch = toNumber(event?.ptsPerMatch, 0);
-  let leftHolePoints = 0;
-  let rightHolePoints = 0;
-  let leftNetTotal = 0;
-  let rightNetTotal = 0;
-  let playedHoles = 0;
-
-  for (const hole of holes) {
-    const leftScore = getScoreByHole(left, hole.num);
-    const rightScore = getScoreByHole(right, hole.num);
-    if (!leftScore?.gross || !rightScore?.gross) continue;
-
-    const leftNet = leftScore.gross - (leftPops.get(hole.num) || 0);
-    const rightNet = rightScore.gross - (rightPops.get(hole.num) || 0);
-    leftNetTotal += leftNet;
-    rightNetTotal += rightNet;
-    playedHoles += 1;
-
-    if (pointsPerHole > 0) {
-      if (leftNet === rightNet) {
-        leftHolePoints += pointsPerHole / 2;
-        rightHolePoints += pointsPerHole / 2;
-      } else if (leftNet < rightNet) {
-        leftHolePoints += pointsPerHole;
-      } else {
-        rightHolePoints += pointsPerHole;
-      }
-    }
-  }
-
-  let leftMatchPoints = 0;
-  let rightMatchPoints = 0;
-  if (pointsPerMatch > 0 && playedHoles > 0) {
-    if (leftNetTotal === rightNetTotal) {
-      leftMatchPoints = pointsPerMatch / 2;
-      rightMatchPoints = pointsPerMatch / 2;
-    } else if (leftNetTotal < rightNetTotal) {
-      leftMatchPoints = pointsPerMatch;
-    } else {
-      rightMatchPoints = pointsPerMatch;
-    }
-  }
-
-  return {
-    leftHolePoints,
-    leftMatchPoints,
-    rightHolePoints,
-    rightMatchPoints,
-    leftNetTotal,
-    rightNetTotal,
-    playedHoles,
-  };
-};
-
-const assignIndividualStrokePoints = (event: any, calculations: RoundCalculation[]) => {
-  const strokePoints = toStrokePointsArray(event?.strokePoints);
-  if (strokePoints.length > 0) {
-    const ranked = [...calculations].sort((left, right) => {
-      if (left.net !== right.net) return left.net - right.net;
-      return left.gross - right.gross;
-    });
-    let cursor = 0;
-    while (cursor < ranked.length) {
-      let end = cursor;
-      while (
-        end + 1 < ranked.length &&
-        ranked[end + 1].net === ranked[cursor].net &&
-        ranked[end + 1].gross === ranked[cursor].gross
-      ) {
-        end += 1;
-      }
-      let pointsSum = 0;
-      for (let index = cursor; index <= end; index += 1) {
-        pointsSum += Number(strokePoints[index] ?? 0);
-      }
-      const tiedPoints = roundToOneDecimal(pointsSum / (end - cursor + 1));
-      for (let index = cursor; index <= end; index += 1) {
-        ranked[index].pointsEarned = tiedPoints;
-        ranked[index].matchPoints = 0;
-      }
-      cursor = end + 1;
-    }
-    return;
-  }
-
-  for (const calculation of calculations) {
-    calculation.pointsEarned = calculation.scores.reduce((sum, score) => {
-      return sum + stablefordPoints(score.net, score.par);
-    }, 0);
-    calculation.matchPoints = 0;
-  }
-};
-
-const assignMatchPoints = ({
-  event,
-  holes,
-  calculations,
-}: {
-  event: any;
-  holes: HoleDefinition[];
-  calculations: RoundCalculation[];
-}) => {
-  const byPlayerId = new Map(calculations.map((calculation) => [calculation.playerId, calculation]));
-  const processedPairs = new Set<string>();
-
-  for (const calculation of calculations) {
-    if (!calculation.opponentId) continue;
-
-    const opponentCalculation = byPlayerId.get(calculation.opponentId);
-    if (!opponentCalculation) continue;
-
-    const key = pairKey(calculation.playerId, opponentCalculation.playerId);
-    if (processedPairs.has(key)) continue;
-    processedPairs.add(key);
-
-    const points = calculateMatchPointsForPair({
-      event,
-      holes,
-      left: calculation,
-      right: opponentCalculation,
-    });
-
-    calculation.pointsEarned = roundToOneDecimal(points.leftHolePoints);
-    calculation.matchPoints = roundToOneDecimal(points.leftMatchPoints);
-    opponentCalculation.pointsEarned = roundToOneDecimal(points.rightHolePoints);
-    opponentCalculation.matchPoints = roundToOneDecimal(points.rightMatchPoints);
-  }
-};
-
-const getFlightTeamIds = (flight: any): number[] => {
-  const explicitTeamIds = (flight?.teams || [])
-    .map((team: any) => Number(team?.teamId))
-    .filter((teamId: number) => Number.isFinite(teamId) && teamId > 0);
-
-  if (explicitTeamIds.length >= 2) {
-    return Array.from(new Set<number>(explicitTeamIds)).slice(0, 2);
-  }
-
-  const playerTeamIds = (flight?.players || [])
-    .map((player: any) => Number(player?.teamId ?? player?.player?.teamId))
-    .filter((teamId: number) => Number.isFinite(teamId) && teamId > 0);
-
-  return Array.from(new Set<number>(playerTeamIds)).slice(0, 2);
-};
-
-const assignTeamMatchPoints = ({
-  event,
-  holes,
-  flights,
-  calculationsByPlayerId,
-  teamPoints,
-}: {
-  event: any;
-  holes: HoleDefinition[];
-  flights: any[];
-  calculationsByPlayerId: Map<number, RoundCalculation>;
-  teamPoints: TeamEventPointsAccumulator;
-}) => {
-  assignMatchPoints({
-    event,
-    holes,
-    calculations: [...calculationsByPlayerId.values()],
-  });
-
-  for (const flight of flights) {
-    const teamIds = getFlightTeamIds(flight);
-    if (teamIds.length < 2) continue;
-
-    const [leftTeamId, rightTeamId] = teamIds;
-    let leftNetTotal = 0;
-    let rightNetTotal = 0;
-    let playedMatchups = 0;
-    const processedPairs = new Set<string>();
-
-    for (const flightPlayer of flight.players || []) {
-      const playerId = Number(flightPlayer?.playerId);
-      const playerCalculation = calculationsByPlayerId.get(playerId);
-      if (!playerCalculation?.opponentId) continue;
-
-      const opponentCalculation = calculationsByPlayerId.get(playerCalculation.opponentId);
-      if (!opponentCalculation) continue;
-
-      const key = pairKey(playerCalculation.playerId, opponentCalculation.playerId);
-      if (processedPairs.has(key)) continue;
-      processedPairs.add(key);
-
-      const points = calculateMatchPointsForPair({
-        event,
-        holes,
-        left: playerCalculation,
-        right: opponentCalculation,
-      });
-
-      const leftIsTeamOne = Number(playerCalculation.teamId) === leftTeamId;
-      const rightIsTeamOne = Number(opponentCalculation.teamId) === leftTeamId;
-
-      if (leftIsTeamOne && Number(opponentCalculation.teamId) === rightTeamId) {
-        leftNetTotal += points.leftNetTotal;
-        rightNetTotal += points.rightNetTotal;
-        playedMatchups += points.playedHoles > 0 ? 1 : 0;
-      } else if (rightIsTeamOne && Number(playerCalculation.teamId) === rightTeamId) {
-        leftNetTotal += points.rightNetTotal;
-        rightNetTotal += points.leftNetTotal;
-        playedMatchups += points.playedHoles > 0 ? 1 : 0;
-      }
-    }
-
-    const teamWinPoints = toNumber(event?.ptsPerTeamWin, 0);
-    if (teamWinPoints <= 0 || playedMatchups === 0) continue;
-
-    if (leftNetTotal === rightNetTotal) {
-      addTeamPoints(teamPoints, Number(event.leagueId), Number(event.id), leftTeamId, teamWinPoints / 2);
-      addTeamPoints(teamPoints, Number(event.leagueId), Number(event.id), rightTeamId, teamWinPoints / 2);
-    } else if (leftNetTotal < rightNetTotal) {
-      addTeamPoints(teamPoints, Number(event.leagueId), Number(event.id), leftTeamId, teamWinPoints);
-    } else {
-      addTeamPoints(teamPoints, Number(event.leagueId), Number(event.id), rightTeamId, teamWinPoints);
-    }
-  }
-};
-
-const assignTeamStrokePoints = ({
-  event,
-  holes,
-  flights,
-  calculationsByPlayerId,
-  teamPoints,
-}: {
-  event: any;
-  holes: HoleDefinition[];
-  flights: any[];
-  calculationsByPlayerId: Map<number, RoundCalculation>;
-  teamPoints: TeamEventPointsAccumulator;
-}) => {
-  for (const calculation of calculationsByPlayerId.values()) {
-    calculation.pointsEarned = 0;
-    calculation.matchPoints = 0;
-  }
-
-  const strokePoints = toStrokePointsArray(event?.strokePoints);
-
-  for (const flight of flights) {
-    const teamIds = getFlightTeamIds(flight);
-    if (teamIds.length < 2) continue;
-
-    const [leftTeamId, rightTeamId] = teamIds;
-    const leftPlayers = (flight.players || [])
-      .filter(
-        (player: any) => Number(player?.teamId ?? player?.player?.teamId) === leftTeamId,
-      )
-      .map((player: any) => calculationsByPlayerId.get(Number(player?.playerId)))
-      .filter((calculation: RoundCalculation | undefined): calculation is RoundCalculation => Boolean(calculation));
-
-    const rightPlayers = (flight.players || [])
-      .filter(
-        (player: any) => Number(player?.teamId ?? player?.player?.teamId) === rightTeamId,
-      )
-      .map((player: any) => calculationsByPlayerId.get(Number(player?.playerId)))
-      .filter((calculation: RoundCalculation | undefined): calculation is RoundCalculation => Boolean(calculation));
-
-    if (leftPlayers.length === 0 || rightPlayers.length === 0) continue;
-
-    let leftPoints = 0;
-    let rightPoints = 0;
-    let leftNetTotal = 0;
-    let rightNetTotal = 0;
-
-    for (const hole of holes) {
-      const bestLeft = getBestNetForHole(leftPlayers, hole.num);
-      const bestRight = getBestNetForHole(rightPlayers, hole.num);
-
-      if (bestLeft == null || bestRight == null) continue;
-
-      leftNetTotal += bestLeft;
-      rightNetTotal += bestRight;
-
-      if (strokePoints.length === 0) {
-        leftPoints += stablefordPoints(bestLeft, hole.par);
-        rightPoints += stablefordPoints(bestRight, hole.par);
-      }
-    }
-
-    if (strokePoints.length > 0) {
-      if (leftNetTotal === rightNetTotal) {
-        const tiedPoints = roundToOneDecimal(
-          (Number(strokePoints[0] ?? 0) + Number(strokePoints[1] ?? 0)) / 2,
-        );
-        leftPoints = tiedPoints;
-        rightPoints = tiedPoints;
-      } else if (leftNetTotal < rightNetTotal) {
-        leftPoints = Number(strokePoints[0] ?? 0);
-        rightPoints = Number(strokePoints[1] ?? 0);
-      } else {
-        leftPoints = Number(strokePoints[1] ?? 0);
-        rightPoints = Number(strokePoints[0] ?? 0);
-      }
-    }
-
-    addTeamPoints(teamPoints, Number(event.leagueId), Number(event.id), leftTeamId, leftPoints);
-    addTeamPoints(teamPoints, Number(event.leagueId), Number(event.id), rightTeamId, rightPoints);
-  }
-};
-
-const getBestNetForHole = (players: RoundCalculation[], holeNumber: number) => {
-  let best: number | null = null;
-
-  for (const player of players) {
-    const score = getScoreByHole(player, holeNumber);
-    if (!score?.gross) continue;
-
-    if (best == null || score.net < best) {
-      best = score.net;
-    }
-  }
-
-  return best;
 };
 
 const initializePlayerState = (player: any): PlayerSeasonState => {
@@ -748,7 +345,7 @@ const recalculateEvent = async ({
   }
 
   const eventFormat = normalizeEventFormat(event.format, 'individual');
-  const scoringFormat = normalizeScoringFormat(event.scoringFormat, 'stroke');
+  const scoringMode = getScoringMode(event.scoringMode).id;
   const pointsEnabled = event.pointsEnabled !== false;
 
   if (eventFormat === 'team') {
@@ -758,7 +355,7 @@ const recalculateEvent = async ({
         .filter((teamId): teamId is number => teamId != null),
     );
     for (const teamId of scoredTeamIds) {
-      addTeamPoints(teamPoints, Number(event.leagueId), Number(event.id), teamId, 0);
+      addTeamEventPoints(teamPoints, Number(event.leagueId), Number(event.id), teamId, 0);
     }
   }
 
@@ -767,24 +364,49 @@ const recalculateEvent = async ({
       calculation.pointsEarned = 0;
       calculation.matchPoints = 0;
     }
-  } else if (eventFormat === 'individual' && scoringFormat === 'stroke') {
-    assignIndividualStrokePoints(event, calculations);
-  } else if (eventFormat === 'individual' && scoringFormat === 'match') {
-    assignMatchPoints({ event, holes, calculations });
-  } else if (eventFormat === 'team' && scoringFormat === 'match') {
-    assignTeamMatchPoints({
+  } else if (eventFormat === 'individual' && scoringMode === 'stroke-play') {
+    assignStrokePlayPoints(event, calculations);
+  } else if (eventFormat === 'individual' && scoringMode === 'stableford') {
+    assignStablefordPoints(event, calculations);
+  } else if (eventFormat === 'individual' && scoringMode === 'maximum-score') {
+    assignMaximumScorePoints(event, calculations);
+  } else if (eventFormat === 'individual' && scoringMode === 'match-play') {
+    assignMatchPlayPoints({ event, holes, rounds: calculations });
+  } else if (eventFormat === 'team' && scoringMode === 'match-play') {
+    assignTeamMatchPlayPoints({
       event,
       holes,
       flights: event.flights || [],
-      calculationsByPlayerId,
+      roundsByPlayerId: calculationsByPlayerId,
       teamPoints,
     });
-  } else if (eventFormat === 'team' && scoringFormat === 'stroke') {
-    assignTeamStrokePoints({
+  } else if (eventFormat === 'team' && scoringMode === 'best-ball') {
+    assignBestBallPoints({
       event,
       holes,
       flights: event.flights || [],
-      calculationsByPlayerId,
+      roundsByPlayerId: calculationsByPlayerId,
+      teamPoints,
+    });
+  } else if (eventFormat === 'team' && scoringMode === 'four-ball-match') {
+    assignFourBallMatchPoints({
+      event,
+      holes,
+      flights: event.flights || [],
+      roundsByPlayerId: calculationsByPlayerId,
+      teamPoints,
+    });
+  } else if (
+    eventFormat === 'team' &&
+    (scoringMode === 'stroke-play' ||
+      scoringMode === 'stableford' ||
+      scoringMode === 'maximum-score')
+  ) {
+    assignTeamAggregatePoints({
+      event,
+      mode: scoringMode,
+      flights: event.flights || [],
+      roundsByPlayerId: calculationsByPlayerId,
       teamPoints,
     });
   }
@@ -798,7 +420,6 @@ const recalculateEvent = async ({
         opponentId: calculation.opponentId,
         courseId: Number(event.courseId),
         teeId: Number(event.teeId),
-        scoringFormat: event.scoringFormat,
         status: 'completed',
         holesPlayed: Number(event.holes),
         gross: calculation.gross,
@@ -905,7 +526,6 @@ export class SeasonSync {
             },
             events: {
               where: {
-                isDeleted: false,
                 deletedAt: null,
                 status: { not: 'canceled' },
               },
@@ -937,6 +557,10 @@ export class SeasonSync {
                       orderBy: { hole: 'asc' },
                     },
                   },
+                  orderBy: [{ date: 'asc' }, { id: 'asc' }],
+                },
+                teamRounds: {
+                  where: { deletedAt: null, status: 'completed' },
                   orderBy: [{ date: 'asc' }, { id: 'asc' }],
                 },
               },
@@ -977,12 +601,28 @@ export class SeasonSync {
         let scoresUpdated = 0;
 
         for (const event of league.events || []) {
+          for (const teamRound of event.teamRounds || []) {
+            addTeamEventPoints(
+              teamPoints,
+              Number(event.leagueId),
+              Number(event.id),
+              Number(teamRound.teamId),
+              event.pointsEnabled === false
+                ? 0
+                : Number(teamRound.pointsEarned || 0) + Number(teamRound.matchPoints || 0),
+            );
+          }
+
           if (!event.rounds || event.rounds.length === 0) {
-            skippedEvents.push({
-              eventId: Number(event.id),
-              name: String(event.name),
-              reason: 'No existing rounds to recalculate.',
-            });
+            if ((event.teamRounds || []).length > 0) {
+              eventsProcessed += 1;
+            } else {
+              skippedEvents.push({
+                eventId: Number(event.id),
+                name: String(event.name),
+                reason: 'No existing rounds to recalculate.',
+              });
+            }
             continue;
           }
 

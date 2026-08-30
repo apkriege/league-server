@@ -50,7 +50,7 @@ export const getAdminBillingDashboard = async () => {
           where: { deletedAt: null },
           select: {
             id: true,
-            numPlayers: true,
+            entitlement: { select: { requiredGolfers: true } },
             players: {
               where: { type: 'player', deletedAt: null },
               select: { id: true },
@@ -63,7 +63,7 @@ export const getAdminBillingDashboard = async () => {
             paidGolfers: true,
             refundedGolfers: true,
             status: true,
-            league: { select: { id: true, billingExempt: true } },
+            league: { select: { id: true } },
           },
         },
       },
@@ -112,7 +112,7 @@ export const getAdminBillingDashboard = async () => {
     );
     const allocatedGolfers = user.seasonEntitlements.reduce(
       (total, entitlement) =>
-        total + (entitlement.league && !entitlement.league.billingExempt
+        total + (entitlement.league && entitlement.status !== 'bypassed'
           ? Math.max(BILLING_MIN_GOLFERS, entitlement.requiredGolfers)
           : 0),
       0,

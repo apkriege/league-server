@@ -43,10 +43,9 @@ export type TeamProfileEvent = {
   startsAt: Date | string;
   timeZone: string;
   format: string;
-  scoringFormat: string;
+  scoringMode: string;
   type: string;
   status: string;
-  isComplete: boolean;
   holes: number;
   course: { name: string } | null;
   teamEventPoints: EventTeamPointsRow[];
@@ -60,10 +59,9 @@ export type TeamEventResult = {
   startsAt: Date | string;
   timeZone: string;
   format: string;
-  scoringFormat: string;
+  scoringMode: string;
   type: string;
   status: string;
-  isComplete: boolean;
   holes: number;
   courseName: string | null;
   flightId: number | null;
@@ -174,8 +172,7 @@ export const buildTeamEventResults = (
     const teamPoints = roundToOneDecimal(teamPointsByTeamId.get(teamId) || 0);
     const status = String(event.status || '').toLowerCase();
     const hasRecordedResult =
-      event.isComplete ||
-      status === 'completed' ||
+            status === 'completed' ||
       teamPointsByTeamId.has(teamId) ||
       playerRounds.length > 0;
     const opponentResults = [...opponents.entries()]
@@ -195,8 +192,7 @@ export const buildTeamEventResults = (
           teamPointsByTeamId.get(opponentId) || 0,
         );
         const opponentHasResult =
-          event.isComplete ||
-          status === 'completed' ||
+                    status === 'completed' ||
           teamPointsByTeamId.has(opponentId) ||
           opponentRounds.length > 0;
 
@@ -218,10 +214,9 @@ export const buildTeamEventResults = (
       startsAt: event.startsAt,
       timeZone: String(event.timeZone || 'UTC'),
       format: String(event.format || ''),
-      scoringFormat: String(event.scoringFormat || ''),
+      scoringMode: String(event.scoringMode || ''),
       type: String(event.type || ''),
       status: String(event.status || ''),
-      isComplete: Boolean(event.isComplete),
       holes: Number(event.holes || 0),
       courseName: event.course?.name || null,
       flightId: assignedFlights[0]?.id ? Number(assignedFlights[0].id) : null,

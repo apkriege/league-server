@@ -14,7 +14,7 @@ type LeagueScenario = {
 
 type EventMode = {
   format: 'individual' | 'team';
-  scoringFormat: 'stroke' | 'match';
+  scoringFamily: 'stroke' | 'match';
 };
 
 const leagueScenarios: LeagueScenario[] = [
@@ -57,13 +57,13 @@ const leagueScenarios: LeagueScenario[] = [
 ];
 
 const individualModes: EventMode[] = [
-  { format: 'individual', scoringFormat: 'stroke' },
-  { format: 'individual', scoringFormat: 'match' },
+  { format: 'individual', scoringFamily: 'stroke' },
+  { format: 'individual', scoringFamily: 'match' },
 ];
 
 const teamModes: EventMode[] = [
-  { format: 'team', scoringFormat: 'stroke' },
-  { format: 'team', scoringFormat: 'match' },
+  { format: 'team', scoringFamily: 'stroke' },
+  { format: 'team', scoringFamily: 'match' },
 ];
 
 const allModes = [...individualModes, ...teamModes];
@@ -124,7 +124,7 @@ const playerFirstNames = [
 
 const eventLabel = (mode: EventMode) =>
   `${mode.format === 'team' ? 'Team' : 'Individual'} ${
-    mode.scoringFormat === 'stroke' ? 'Stroke' : 'Match'
+    mode.scoringFamily === 'stroke' ? 'Stroke' : 'Match'
   }`;
 
 const createPlayers = async (prisma: any, leagueId: number, scenarioKey: string, count: number) => {
@@ -155,20 +155,17 @@ const createTeams = async ({
   leagueId,
   players,
   namePrefix,
-  eventId,
 }: {
   prisma: any;
   leagueId: number;
   players: any[];
   namePrefix: string;
-  eventId?: number;
 }) => {
   const teams = [];
   for (let index = 0; index < players.length; index += 2) {
     const team = await prisma.team.create({
       data: {
         leagueId,
-        eventId: eventId ?? null,
         name: `${namePrefix} — ${teamIdentities[index / 2] || `Squad ${index / 2 + 1}`}`,
         seasonPoints: 0,
       },
@@ -188,7 +185,7 @@ const createIndividualFlights = async (
   eventId: number,
   eventStartsAt: Date,
   players: any[],
-  scoringFormat: EventMode['scoringFormat'],
+  scoringFamily: EventMode['scoringFamily'],
 ) => {
   const groups = Array.from({ length: Math.ceil(players.length / 4) }, (_, index) =>
     players.slice(index * 4, index * 4 + 4),
@@ -207,7 +204,7 @@ const createIndividualFlights = async (
         flightId: flight.id,
         playerId: player.id,
         opponentId:
-          scoringFormat === 'match'
+          scoringFamily === 'match'
             ? group[playerIndex % 2 === 0 ? playerIndex + 1 : playerIndex - 1]?.id ?? null
             : null,
       })),
@@ -284,11 +281,8 @@ export async function seedLeagueScenarioMatrix({
         holeFormat: 'mixed',
         format: scenario.format,
         viewerAccessCode: `MATRIX${scenarioIndex + 1}`,
-        numPlayers: tournamentPlayerCount,
         adminId,
         entitlementId: entitlement.id,
-        billingExempt: true,
-        billingStatus: 'exempt',
         startDate: new Date('2026-01-01T00:00:00.000Z'),
         endDate: new Date('2026-12-31T00:00:00.000Z'),
         contactFirstName: 'Test',
@@ -322,12 +316,12 @@ export async function seedLeagueScenarioMatrix({
     let tournamentTeamEventIndex = 0;
 
     for (const [modeIndex, mode] of modes.entries()) {
-      const pointsEnabled = !(scenario.type === 'tournament' && mode.scoringFormat === 'stroke');
+      const pointsEnabled = !(scenario.type === 'tournament' && mode.scoringFamily === 'stroke');
       const modeOccurrence =
         modes.slice(0, modeIndex + 1).filter(
           (candidate) =>
             candidate.format === mode.format &&
-            candidate.scoringFormat === mode.scoringFormat,
+            candidate.scoringFamily === mode.scoringFamily,
         ).length;
       const eventDate = new Date('2026-07-15T13:00:00.000Z');
       eventDate.setUTCDate(eventDate.getUTCDate() + modeIndex * 14);
@@ -351,15 +345,15 @@ export async function seedLeagueScenarioMatrix({
           startsAt: eventDate,
           timeZone: 'America/Detroit',
           interval: 10,
-          scoringFormat: mode.scoringFormat,
+          scoringMode: mode.scoringFamily === 'match' ? 'match-play' : 'stroke-play',
+          scoringConfig: { handicapAllowance: 1 },
           pointsEnabled,
-          ptsPerHole: mode.scoringFormat === 'match' ? 1 : 0,
-          ptsPerMatch: mode.scoringFormat === 'match' ? 2 : 0,
-          ptsPerTeamWin: mode.format === 'team' && mode.scoringFormat === 'match' ? 2 : 0,
+          ptsPerHole: mode.scoringFamily === 'match' ? 1 : 0,
+          ptsPerMatch: mode.scoringFamily === 'match' ? 2 : 0,
+          ptsPerTeamWin: mode.format === 'team' && mode.scoringFamily === 'match' ? 2 : 0,
           strokePoints:
-            mode.scoringFormat === 'stroke' && pointsEnabled ? [10, 8, 6, 4, 2, 1] : [],
+            mode.scoringFamily === 'stroke' && pointsEnabled ? [10, 8, 6, 4, 2, 1] : [],
           status: modeIndex === 0 ? 'active' : 'upcoming',
-          isComplete: false,
         },
       });
 
@@ -369,7 +363,7 @@ export async function seedLeagueScenarioMatrix({
           event.id,
           event.startsAt,
           players,
-          mode.scoringFormat,
+          mode.scoringFamily,
         );
       } else {
         let eventTeams = seasonTeams;
@@ -378,7 +372,6 @@ export async function seedLeagueScenarioMatrix({
           eventTeams = await createTeams({
             prisma,
             leagueId: league.id,
-            eventId: event.id,
             players: players.slice(rosterStart, rosterStart + 8),
             namePrefix: `${eventLabel(mode)} Team`,
           });

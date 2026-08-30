@@ -26,11 +26,9 @@ const eventFixture = {
   leagueId: 10,
   name: 'Week 1',
   status: 'upcoming',
-  isComplete: false,
-  isDeleted: false,
   deletedAt: null,
   format: 'individual',
-  scoringFormat: 'match',
+  scoringMode: 'match-play',
   pointsEnabled: true,
   ptsPerHole: 1,
   ptsPerMatch: 2,
@@ -77,7 +75,7 @@ describe('ScoreController transactional score validation', async () => {
     vi.clearAllMocks();
     mockPrisma.event.findFirst.mockResolvedValue(eventFixture);
     mockPrisma.event.findMany.mockResolvedValue([
-      { id: 99, status: 'upcoming', isComplete: false, _count: { rounds: 0 } },
+      { id: 99, status: 'upcoming', _count: { rounds: 0 } },
     ]);
     mockPrisma.flight.findFirst.mockResolvedValue({
       id: 1,
@@ -140,7 +138,7 @@ describe('ScoreController transactional score validation', async () => {
 
   it('rolls back the update path when an assigned round is missing', async () => {
     mockPrisma.event.findMany.mockResolvedValue([
-      { id: 99, status: 'completed', isComplete: true, _count: { rounds: 2 } },
+      { id: 99, status: 'completed', _count: { rounds: 2 } },
     ]);
     mockPrisma.round.findFirst.mockResolvedValue(null);
     const res = buildRes();

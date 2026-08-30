@@ -4,19 +4,19 @@ import { buildEventScoreAccess } from '../utils/score-order';
 describe('event score access state', () => {
   it('allows scoring any active event and editing any event that has scores', () => {
     expect(
-      buildEventScoreAccess({ status: 'active', isComplete: false, _count: { rounds: 0 } }),
+      buildEventScoreAccess({ status: 'active', _count: { rounds: 0 } }),
     ).toEqual({ canEnterScores: true, canEditScores: false });
     expect(
-      buildEventScoreAccess({ status: 'active', isComplete: false, _count: { rounds: 2 } }),
+      buildEventScoreAccess({ status: 'active', _count: { rounds: 2 } }),
     ).toEqual({ canEnterScores: true, canEditScores: true });
     expect(
-      buildEventScoreAccess({ status: 'completed', isComplete: true, _count: { rounds: 2 } }),
+      buildEventScoreAccess({ status: 'completed', _count: { rounds: 2 } }),
     ).toEqual({ canEnterScores: false, canEditScores: true });
   });
 
   it('keeps canceled events read-only', () => {
     expect(
-      buildEventScoreAccess({ status: 'canceled', isComplete: false, _count: { rounds: 0 } }),
+      buildEventScoreAccess({ status: 'canceled', _count: { rounds: 0 } }),
     ).toEqual({ canEnterScores: false, canEditScores: false });
   });
 });

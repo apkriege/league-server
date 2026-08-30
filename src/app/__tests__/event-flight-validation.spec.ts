@@ -14,14 +14,14 @@ describe('event flight validation', () => {
     expect(() =>
       validateFlightConfiguration(league, {
         format: 'individual',
-        scoringFormat: 'stroke',
+        scoringMode: 'stroke-play',
         flights: [[1, 2, 3, 4], [5]],
       }),
     ).not.toThrow();
     expect(() =>
       validateFlightConfiguration(league, {
         format: 'individual',
-        scoringFormat: 'match',
+        scoringMode: 'match-play',
         flights: [[[1, 2], [3, 4]]],
       }),
     ).not.toThrow();
@@ -31,14 +31,14 @@ describe('event flight validation', () => {
     expect(() =>
       validateFlightConfiguration(league, {
         format: 'individual',
-        scoringFormat: 'stroke',
+        scoringMode: 'stroke-play',
         flights: [[1, 999]],
       }),
     ).toThrow(/does not belong/i);
     expect(() =>
       validateFlightConfiguration(league, {
         format: 'individual',
-        scoringFormat: 'match',
+        scoringMode: 'match-play',
         flights: [[[1, 2]], [[1, 3]]],
       }),
     ).toThrow(/more than one flight/i);
@@ -48,14 +48,14 @@ describe('event flight validation', () => {
     expect(() =>
       validateFlightConfiguration(league, {
         format: 'team',
-        scoringFormat: 'match',
+        scoringMode: 'match-play',
         flights: [[11, 12]],
       }),
     ).not.toThrow();
     expect(() =>
       validateFlightConfiguration(league, {
         format: 'team',
-        scoringFormat: 'stroke',
+        scoringMode: 'stroke-play',
         flights: [[11, 99]],
       }),
     ).toThrow(/resolve team ids/i);

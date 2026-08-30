@@ -11,7 +11,7 @@ export type SubmittedPlayerOpponent = {
 
 type ResolveScoreSubmissionOpponentsOptions = {
   eventFormat: string;
-  scoringFormat: string;
+  scoringFamily: string;
   assignments: FlightOpponentAssignment[];
   submittedPlayers: SubmittedPlayerOpponent[];
 };
@@ -20,13 +20,13 @@ const optionalId = (value: unknown) => (value == null ? null : Number(value));
 
 export const resolveScoreSubmissionOpponents = ({
   eventFormat,
-  scoringFormat,
+  scoringFamily,
   assignments,
   submittedPlayers,
 }: ResolveScoreSubmissionOpponentsOptions): Map<number, number | null> => {
   const resolved = new Map<number, number | null>();
 
-  if (scoringFormat !== 'match') {
+  if (scoringFamily !== 'match') {
     submittedPlayers.forEach((player) => resolved.set(Number(player.playerId), null));
     return resolved;
   }

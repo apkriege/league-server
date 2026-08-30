@@ -227,7 +227,7 @@ export default class PlayerController {
         await lockLeagueCapacity(tx, numericLeagueId);
         const league = await tx.league.findFirst({
           where: { id: numericLeagueId, deletedAt: null },
-          select: { id: true, numPlayers: true, adminId: true },
+          select: { id: true, adminId: true, entitlement: { select: { requiredGolfers: true } } },
         });
         if (!league) throw new Error('League not found');
 
@@ -253,8 +253,8 @@ export default class PlayerController {
                 where: { leagueId: numericLeagueId, type: 'player', deletedAt: null },
               })
             : 0;
-        if (playerType === 'player' && activePlayers >= league.numPlayers) {
-          return { ok: false, currentGolfers: activePlayers, maxGolfers: league.numPlayers };
+        if (playerType === 'player' && activePlayers >= league.entitlement.requiredGolfers) {
+          return { ok: false, currentGolfers: activePlayers, maxGolfers: league.entitlement.requiredGolfers };
         }
 
         const created = await tx.player.create({
@@ -358,7 +358,7 @@ export default class PlayerController {
         await lockLeagueCapacity(tx, leagueId);
         const league = await tx.league.findFirst({
           where: { id: leagueId, deletedAt: null },
-          select: { id: true, numPlayers: true, adminId: true },
+          select: { id: true, adminId: true, entitlement: { select: { requiredGolfers: true } } },
         });
         if (!league) throw new Error('League not found');
 
@@ -376,11 +376,11 @@ export default class PlayerController {
         const incomingRegularPlayers = normalizedPlayers.filter(
           (player) => player.type === 'player',
         ).length;
-        if (regularPlayerCount + incomingRegularPlayers > league.numPlayers) {
+        if (regularPlayerCount + incomingRegularPlayers > league.entitlement.requiredGolfers) {
           return {
             ok: false,
             currentGolfers: regularPlayerCount,
-            maxGolfers: league.numPlayers,
+            maxGolfers: league.entitlement.requiredGolfers,
           };
         }
 
@@ -518,7 +518,7 @@ export default class PlayerController {
           const [league, regularPlayerCount] = await Promise.all([
             tx.league.findFirst({
               where: { id: existingPlayer.leagueId, deletedAt: null },
-              select: { numPlayers: true, adminId: true },
+              select: { adminId: true, entitlement: { select: { requiredGolfers: true } } },
             }),
             tx.player.count({
               where: {
@@ -528,7 +528,7 @@ export default class PlayerController {
               },
             }),
           ]);
-          if (league && regularPlayerCount >= league.numPlayers) {
+          if (league && regularPlayerCount >= league.entitlement.requiredGolfers) {
             throw new Error(playerCapacityMessage);
           }
         }
@@ -585,9 +585,7 @@ export default class PlayerController {
           flight: {
             deletedAt: null,
             event: {
-              isDeleted: false,
               deletedAt: null,
-              isComplete: false,
               status: { not: 'canceled' },
             },
           },
@@ -657,7 +655,7 @@ export default class PlayerController {
           lastName: true,
           rounds: {
             where: {
-              event: { leagueId: numericLeagueId, isDeleted: false, deletedAt: null },
+              event: { leagueId: numericLeagueId, deletedAt: null },
               status: 'completed',
               deletedAt: null,
             },
@@ -699,7 +697,7 @@ export default class PlayerController {
                 where: {
                   status: 'completed',
                   deletedAt: null,
-                  event: { isDeleted: false, deletedAt: null },
+                  event: { deletedAt: null },
                 },
                 include: playerStatsRoundInclude,
                 orderBy: [{ date: 'asc' }, { id: 'asc' }],
@@ -748,7 +746,6 @@ export default class PlayerController {
         const events = await prisma.event.findMany({
           where: {
             leagueId: numericLeagueId,
-            isDeleted: false,
             deletedAt: null,
           },
           select: {
@@ -757,10 +754,9 @@ export default class PlayerController {
             startsAt: true,
             timeZone: true,
             format: true,
-            scoringFormat: true,
+            scoringMode: true,
             type: true,
             status: true,
-            isComplete: true,
             holes: true,
             course: { select: { name: true } },
             teamEventPoints: { select: { teamId: true, points: true } },

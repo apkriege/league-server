@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   getEntitlementStatus,
+  getLeagueBillingStatus,
   getNetPaidGolfers,
   normalizeBillingDraftKey,
 } from '../services/seasonEntitlement';
@@ -30,5 +31,33 @@ describe('season entitlements', () => {
         consumed: true,
       }),
     ).toBe('refunded');
+  });
+
+  it('derives league access from the entitlement without a second billing state', () => {
+    expect(getLeagueBillingStatus({ entitlement: null })).toBe('payment_due');
+    expect(getLeagueBillingStatus({
+      entitlement: {
+        requiredGolfers: 8,
+        paidGolfers: 8,
+        refundedGolfers: 0,
+        status: 'consumed',
+      },
+    })).toBe('active');
+    expect(getLeagueBillingStatus({
+      entitlement: {
+        requiredGolfers: 8,
+        paidGolfers: 8,
+        refundedGolfers: 1,
+        status: 'partially_refunded',
+      },
+    })).toBe('payment_due');
+    expect(getLeagueBillingStatus({
+      entitlement: {
+        requiredGolfers: 8,
+        paidGolfers: 0,
+        refundedGolfers: 0,
+        status: 'bypassed',
+      },
+    })).toBe('exempt');
   });
 });

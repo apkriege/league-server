@@ -358,6 +358,7 @@ describe('API integration', () => {
     await login(admin, 'admin@test.com');
     const league = await prisma.league.findFirstOrThrow({
       where: { name: 'Seeded Thursday Night League' },
+      include: { entitlement: true },
     });
 
     const read = await admin.get(`/api/leagues/${league.id}`);
@@ -370,7 +371,7 @@ describe('API integration', () => {
       type: league.type,
       format: league.format,
       holeFormat: league.holeFormat === '9' ? '18' : '9',
-      numPlayers: league.numPlayers,
+      numPlayers: league.entitlement.requiredGolfers,
       startDate: league.startDate,
       endDate: league.endDate,
       contactFirstName: league.contactFirstName,
@@ -390,7 +391,7 @@ describe('API integration', () => {
       type: league.type,
       format: league.format,
       holeFormat: league.holeFormat,
-      numPlayers: league.numPlayers,
+      numPlayers: league.entitlement.requiredGolfers,
       startDate: league.startDate,
       endDate: changedEndDate,
       contactFirstName: league.contactFirstName,
@@ -592,7 +593,7 @@ describe('API integration', () => {
     expect(sourceResponse.status, JSON.stringify(sourceResponse.body)).toBe(201);
     expect(sourceResponse.body).toMatchObject({
       name: 'Renewal League 2025',
-      billingPaidGolfers: 8,
+      entitlement: expect.objectContaining({ requiredGolfers: 8, paidGolfers: 8 }),
       renewedFromLeagueId: null,
     });
     const sourceId = Number(sourceResponse.body.id);
@@ -651,7 +652,7 @@ describe('API integration', () => {
     expect(renewalResponse.body).toMatchObject({
       name: 'Renewal League 2026',
       renewedFromLeagueId: sourceId,
-      billingPaidGolfers: 8,
+      entitlement: expect.objectContaining({ requiredGolfers: 8, paidGolfers: 8 }),
     });
     const renewedId = Number(renewalResponse.body.id);
 
@@ -809,9 +810,8 @@ describe('API integration', () => {
     const event = await prisma.event.findFirstOrThrow({
       where: {
         format: 'individual',
-        scoringFormat: 'match',
+        scoringMode: 'match-play',
         status: 'upcoming',
-        isComplete: false,
         rounds: { none: {} },
       },
       include: {
@@ -844,7 +844,7 @@ describe('API integration', () => {
         startSide: event.startSide,
         holes: event.holes,
         format: event.format,
-        scoringFormat: event.scoringFormat,
+        scoringMode: event.scoringMode,
         pointsEnabled: event.pointsEnabled,
         ptsPerHole: event.ptsPerHole,
         ptsPerMatch: event.ptsPerMatch,
@@ -951,8 +951,10 @@ describe('API integration', () => {
       prisma.round.count({ where: { eventId: activeEvent.id } }),
       prisma.score.findFirstOrThrow({
         where: {
-          eventId: activeEvent.id,
-          playerId: targetFlight.players[0].playerId,
+          round: {
+            eventId: activeEvent.id,
+            playerId: targetFlight.players[0].playerId,
+          },
           hole: 1,
         },
       }),

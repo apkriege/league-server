@@ -325,7 +325,7 @@ class OperationsController {
             type: true,
             endDate: true,
             seasonStatus: true,
-            billingStatus: true,
+            entitlement: true,
           },
         },
         player: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -369,7 +369,7 @@ class OperationsController {
             type: true,
             endDate: true,
             seasonStatus: true,
-            billingStatus: true,
+            entitlement: true,
           },
         },
         player: true,
@@ -461,7 +461,7 @@ class OperationsController {
         include: {
           players: { where: { deletedAt: null }, select: { id: true } },
           teams: { where: { deletedAt: null }, select: { id: true } },
-          events: { where: { deletedAt: null, isDeleted: false }, select: { id: true, status: true } },
+          events: { where: { deletedAt: null }, select: { id: true, status: true } },
         },
       }),
       prisma.league_onboarding.upsert({

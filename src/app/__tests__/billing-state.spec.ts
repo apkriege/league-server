@@ -62,7 +62,8 @@ describe('league billing', () => {
       expect.objectContaining({
         where: {
           billingOwnerId: 7,
-          league: { is: { billingExempt: false } },
+          league: { isNot: null },
+          status: { not: 'bypassed' },
         },
       }),
     );

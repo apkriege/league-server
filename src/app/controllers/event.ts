@@ -8,7 +8,6 @@ import {
 } from '../services/eventTeamResolution';
 import {
   normalizeEventFormat,
-  normalizeScoringFormat,
   validateEventMode,
 } from '../utils/event-mode';
 import { buildEventScoreAccess } from '../utils/score-order';
@@ -30,6 +29,31 @@ import {
   normalizeLeagueScoringPeriods,
   scoringPeriodDateKey,
 } from '../utils/league-scoring-periods';
+import {
+  getScoringFamily,
+  getScoringMode,
+  normalizeScoringConfiguration,
+  validateScoringMode,
+  type CompetitionModel,
+} from '../scoring';
+
+const resolveEventScoring = ({
+  format,
+  scoringMode,
+  scoringConfig,
+}: {
+  format: CompetitionModel;
+  scoringMode: unknown;
+  scoringConfig: unknown;
+}) => {
+  const mode = getScoringMode(scoringMode).id;
+  validateScoringMode(mode, format);
+  return {
+    scoringMode: mode,
+    scoringFamily: getScoringFamily(mode),
+    scoringConfig: normalizeScoringConfiguration(scoringConfig, mode),
+  };
+};
 
 const canManageLeagueScores = async (req: Request, leagueId: number) => {
   const role = String(req.user?.role || '').toUpperCase();
@@ -50,9 +74,9 @@ class EventController {
       const leagueId = Number(req.params.leagueId);
 
       const events = await prisma.event.findMany({
-        where: { leagueId, isDeleted: false, deletedAt: null },
+        where: { leagueId, deletedAt: null },
         include: {
-          _count: { select: { rounds: true } },
+          _count: { select: { rounds: true, teamRounds: true } },
           course: true,
           tee: {
             select: {
@@ -109,12 +133,16 @@ class EventController {
 
       const [event, metrics, canManageScores] = await Promise.all([
         prisma.event.findFirst({
-          where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+          where: { id: eventId, leagueId, deletedAt: null },
           include: {
-            _count: { select: { rounds: true } },
+            _count: { select: { rounds: true, teamRounds: true } },
             league: { select: { holeFormat: true } },
             course: true,
             tee: true,
+            teamRounds: {
+              where: { deletedAt: null },
+              include: { scores: { orderBy: { hole: 'asc' } }, team: true },
+            },
             flights: {
               orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
               include: {
@@ -191,7 +219,7 @@ class EventController {
         where: {
           eventId,
           deletedAt: null,
-          event: { leagueId, isDeleted: false, deletedAt: null },
+          event: { leagueId, deletedAt: null },
         },
         include: {
           player: {
@@ -204,7 +232,7 @@ class EventController {
       });
 
       const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+        where: { id: eventId, leagueId, deletedAt: null },
         include: {
           course: true,
           tee: true,
@@ -300,22 +328,28 @@ class EventController {
         );
         const timeZone = roundConfig.timeZone;
         const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
-        const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
+        const scoring = resolveEventScoring({
+          format: forcedFormat,
+          scoringMode: eventData?.scoringMode,
+          scoringConfig: eventData?.scoringConfig,
+        });
+        const scoringFamily = scoring.scoringFamily;
         const pointsEnabled = eventData?.pointsEnabled !== false;
         const normalizedStrokePoints = normalizeStrokePoints(
           eventData?.strokePoints,
           forcedFormat,
-          normalizedScoringFormat,
+          scoringFamily,
           pointsEnabled,
         );
-        validateEventMode(forcedFormat, normalizedScoringFormat);
+        validateEventMode(forcedFormat, scoringFamily);
         const { normalizedEventData, createdLeagueTeams } = await createEventTeamsAndRemapFlights(
           tx,
           leagueId,
           {
             ...eventData,
             format: forcedFormat,
-            scoringFormat: normalizedScoringFormat,
+            scoringMode: scoring.scoringMode,
+            scoringConfig: scoring.scoringConfig,
             pointsEnabled,
             strokePoints: normalizedStrokePoints,
           },
@@ -337,7 +371,8 @@ class EventController {
             startSide: roundConfig.startSide,
             interval: e.interval,
             format: forcedFormat,
-            scoringFormat: normalizedScoringFormat,
+            scoringMode: scoring.scoringMode,
+            scoringConfig: scoring.scoringConfig,
             pointsEnabled,
             ptsPerHole: Number(e.ptsPerHole),
             ptsPerMatch: Number(e.ptsPerMatch),
@@ -345,7 +380,7 @@ class EventController {
             strokePoints: normalizeStrokePoints(
               e.strokePoints,
               forcedFormat,
-              normalizedScoringFormat,
+              scoringFamily,
               pointsEnabled,
             ),
             type: e.type,
@@ -472,7 +507,7 @@ class EventController {
             where: {
               deletedAt: null,
               scores: { some: {} },
-              event: { leagueId, isDeleted: false, deletedAt: null },
+              event: { leagueId, deletedAt: null },
             },
           }),
         ]);
@@ -520,19 +555,25 @@ class EventController {
           );
           const timeZone = roundConfig.timeZone;
           const forcedFormat = resolveEventFormatForLeague(league, eventData?.format);
-          const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
+          const scoring = resolveEventScoring({
+            format: forcedFormat,
+            scoringMode: eventData?.scoringMode,
+            scoringConfig: eventData?.scoringConfig,
+          });
+          const scoringFamily = scoring.scoringFamily;
           const pointsEnabled = eventData?.pointsEnabled !== false;
           const normalizedStrokePoints = normalizeStrokePoints(
             eventData?.strokePoints,
             forcedFormat,
-            normalizedScoringFormat,
+            scoringFamily,
             pointsEnabled,
           );
-          validateEventMode(forcedFormat, normalizedScoringFormat);
+          validateEventMode(forcedFormat, scoringFamily);
           const { flights: _flights, ...e } = {
             ...eventData,
             format: forcedFormat,
-            scoringFormat: normalizedScoringFormat,
+            scoringMode: scoring.scoringMode,
+            scoringConfig: scoring.scoringConfig,
             pointsEnabled,
             strokePoints: normalizedStrokePoints,
           };
@@ -550,7 +591,8 @@ class EventController {
               startSide: roundConfig.startSide,
               interval: e.interval,
               format: forcedFormat,
-              scoringFormat: normalizedScoringFormat,
+              scoringMode: scoring.scoringMode,
+              scoringConfig: scoring.scoringConfig,
               pointsEnabled,
               ptsPerHole: Number(e.ptsPerHole),
               ptsPerMatch: Number(e.ptsPerMatch),
@@ -558,7 +600,7 @@ class EventController {
               strokePoints: normalizeStrokePoints(
                 e.strokePoints,
                 forcedFormat,
-                normalizedScoringFormat,
+                scoringFamily,
                 pointsEnabled,
               ),
               type: e.type,
@@ -574,7 +616,6 @@ class EventController {
               holes: roundConfig.holes,
               startSide: roundConfig.startSide,
               format: forcedFormat,
-              scoringFormat: normalizedScoringFormat,
             },
             createdEvent.id,
             tx,
@@ -632,12 +673,13 @@ class EventController {
       validateEditableEventDetails(eventData);
 
       const existingEvent = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+        where: { id: eventId, leagueId, deletedAt: null },
         select: {
           id: true,
           status: true,
-          isComplete: true,
-          _count: { select: { rounds: true } },
+          scoringMode: true,
+          scoringConfig: true,
+          _count: { select: { rounds: true, teamRounds: true } },
         },
       });
 
@@ -647,8 +689,7 @@ class EventController {
       }
 
       const isCompletedEvent =
-        Boolean(existingEvent.isComplete) ||
-        String(existingEvent.status || '').toLowerCase() === 'completed';
+                String(existingEvent.status || '').toLowerCase() === 'completed';
       const isCanceledEvent = String(existingEvent.status || '').toLowerCase() === 'canceled';
 
       if (isCompletedEvent) {
@@ -659,7 +700,7 @@ class EventController {
         res.status(409).json({ message: 'Canceled events cannot be edited' });
         return;
       }
-      if (existingEvent._count.rounds > 0) {
+      if (existingEvent._count.rounds > 0 || existingEvent._count.teamRounds > 0) {
         res.status(409).json({ message: 'Events with scores cannot have their setup edited' });
         return;
       }
@@ -735,17 +776,23 @@ class EventController {
         });
         await tx.flight.deleteMany({ where: { eventId } });
 
-        const normalizedScoringFormat = normalizeScoringFormat(eventData?.scoringFormat, 'stroke');
+        const scoring = resolveEventScoring({
+          format: forcedFormat,
+          scoringMode: eventData?.scoringMode ?? existingEvent.scoringMode,
+          scoringConfig: eventData?.scoringConfig ?? existingEvent.scoringConfig,
+        });
+        const scoringFamily = scoring.scoringFamily;
         const pointsEnabled = eventData?.pointsEnabled !== false;
         const normalizedStrokePoints = normalizeStrokePoints(
           eventData?.strokePoints,
           forcedFormat,
-          normalizedScoringFormat,
+          scoringFamily,
           pointsEnabled,
         );
-        validateEventMode(forcedFormat, normalizedScoringFormat);
+        validateEventMode(forcedFormat, scoringFamily);
         eventData.format = forcedFormat;
-        eventData.scoringFormat = normalizedScoringFormat;
+        eventData.scoringMode = scoring.scoringMode;
+        eventData.scoringConfig = scoring.scoringConfig;
         eventData.pointsEnabled = pointsEnabled;
         eventData.strokePoints = normalizedStrokePoints;
 
@@ -762,7 +809,8 @@ class EventController {
             startSide: eventData.startSide,
             interval: Number(eventData.interval),
             format: forcedFormat,
-            scoringFormat: normalizedScoringFormat,
+            scoringMode: scoring.scoringMode,
+            scoringConfig: scoring.scoringConfig,
             pointsEnabled,
             ptsPerHole: Number(eventData.ptsPerHole),
             ptsPerMatch: Number(eventData.ptsPerMatch),
@@ -770,7 +818,7 @@ class EventController {
             strokePoints: normalizeStrokePoints(
               eventData.strokePoints,
               forcedFormat,
-              normalizedScoringFormat,
+              scoringFamily,
               pointsEnabled,
             ),
           },
@@ -823,14 +871,13 @@ class EventController {
       const eventId = Number(req.params.eventId);
 
       const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+        where: { id: eventId, leagueId, deletedAt: null },
         select: {
           id: true,
           name: true,
           leagueId: true,
           status: true,
-          isComplete: true,
-          _count: { select: { rounds: true } },
+          _count: { select: { rounds: true, teamRounds: true } },
         },
       });
 
@@ -843,7 +890,11 @@ class EventController {
         return res.status(200).send(event);
       }
 
-      if (event.isComplete || normalizedStatus === 'completed' || Number(event._count?.rounds || 0) > 0) {
+      if (
+                normalizedStatus === 'completed' ||
+        Number(event._count?.rounds || 0) > 0 ||
+        Number(event._count?.teamRounds || 0) > 0
+      ) {
         return res.status(409).json({ message: 'Events with scores cannot be canceled.' });
       }
 
@@ -851,7 +902,6 @@ class EventController {
         where: { id: eventId },
         data: {
           status: 'canceled',
-          isComplete: false,
         },
       });
 
@@ -879,14 +929,13 @@ class EventController {
       const eventId = Number(req.params.eventId);
 
       const event = await prisma.event.findFirst({
-        where: { id: eventId, leagueId, isDeleted: false, deletedAt: null },
+        where: { id: eventId, leagueId, deletedAt: null },
         select: {
           id: true,
           name: true,
           leagueId: true,
           status: true,
-          isComplete: true,
-          _count: { select: { rounds: true } },
+          _count: { select: { rounds: true, teamRounds: true } },
         },
       });
 
@@ -894,14 +943,17 @@ class EventController {
         return res.status(404).json({ message: 'Event not found' });
       }
 
-      if (event.isComplete || event.status === 'completed' || event._count.rounds > 0) {
+      if (
+                event.status === 'completed' ||
+        event._count.rounds > 0 ||
+        event._count.teamRounds > 0
+      ) {
         return res.status(409).json({ message: 'Events with scores cannot be deleted.' });
       }
 
       const deletedEvent = await prisma.event.update({
         where: { id: eventId },
         data: {
-          isDeleted: true,
           deletedAt: new Date(),
         },
       });
@@ -1055,13 +1107,13 @@ const addEventRoundSetup = (event: any) => {
 const normalizeStrokePoints = (
   raw: unknown,
   format: string,
-  scoringFormat: string,
+  scoringFamily: string,
   pointsEnabled = true,
 ) => {
   const normalizedFormat = String(format || '').toLowerCase();
   if (!pointsEnabled) return null;
   if (!['individual', 'team'].includes(normalizedFormat)) return null;
-  if (String(scoringFormat || '').toLowerCase() !== 'stroke') return null;
+  if (String(scoringFamily || '').toLowerCase() !== 'stroke') return null;
 
   if (Array.isArray(raw)) {
     const arr = raw

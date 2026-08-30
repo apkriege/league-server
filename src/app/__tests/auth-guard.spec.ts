@@ -84,7 +84,7 @@ describe('authorization guards', async () => {
         type: true,
         endDate: true,
         seasonStatus: true,
-        billingStatus: true,
+        entitlement: true,
       },
     });
     expect(res.status).toHaveBeenCalledWith(404);
@@ -99,7 +99,12 @@ describe('authorization guards', async () => {
       type: 'season',
       endDate: new Date('2027-01-01'),
       seasonStatus: 'active',
-      billingStatus: 'active',
+      entitlement: {
+        requiredGolfers: 8,
+        paidGolfers: 8,
+        refundedGolfers: 0,
+        status: 'consumed',
+      },
     });
     const req = { session: { userId: 1 }, params: { leagueId: '12' }, method: 'GET', path: '' } as any;
     const next = vi.fn();
@@ -114,7 +119,7 @@ describe('authorization guards', async () => {
         type: true,
         endDate: true,
         seasonStatus: true,
-        billingStatus: true,
+        entitlement: true,
       },
     });
     expect(next).toHaveBeenCalledOnce();
