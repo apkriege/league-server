@@ -160,13 +160,3 @@ export function calculateHandicapIndexFromDifferentials(
   }
   return roundToTwoDecimals(index);
 }
-
-/* ---------- Course Handicap ---------- */
-export function calculateCourseHandicap(
-  handicapIndex: number,
-  slopeRating: number,
-  courseRating: number,
-  par: number
-): number {
-  return Math.round(handicapIndex * (slopeRating / 113) + (courseRating - par));
-}

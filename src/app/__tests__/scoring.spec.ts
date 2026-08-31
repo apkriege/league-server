@@ -161,6 +161,30 @@ describe('scoring calculators', () => {
     expect(rounds.every((round) => round.pointsEarned === 0)).toBe(true);
   });
 
+  it('uses the winning player scorecard par for mixed-card best-ball Stableford', () => {
+    const left = buildRound({ playerId: 1, teamId: 100, gross: 4, net: 4 });
+    left.scores[0].par = 5;
+    const right = buildRound({ playerId: 2, teamId: 200, gross: 4, net: 4 });
+    const teamPoints: TeamEventPointsAccumulator = new Map();
+
+    assignBestBallPoints({
+      event,
+      holes,
+      flights: [{
+        teams: [{ teamId: 100 }, { teamId: 200 }],
+        players: [
+          { playerId: left.playerId, teamId: left.teamId },
+          { playerId: right.playerId, teamId: right.teamId },
+        ],
+      }],
+      roundsByPlayerId: new Map([[left.playerId, left], [right.playerId, right]]),
+      teamPoints,
+    });
+
+    expect(teamPoints.get('100:10')?.points).toBe(3);
+    expect(teamPoints.get('200:10')?.points).toBe(2);
+  });
+
   it('calculates a shared scramble team score and rejects duplicate holes', () => {
     expect(
       calculateScrambleTeamScore([

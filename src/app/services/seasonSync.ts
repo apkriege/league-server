@@ -1,7 +1,7 @@
 import { prisma } from '../../prisma';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
 import {
-  calculateLeaguePlayingHandicap,
+  calculateCourseHandicap,
   calculateRoundDifferential,
   calculateStrokePops,
   modelTeeForRound,
@@ -286,14 +286,15 @@ const recalculateEvent = async ({
       courseHoles: event.course?.numHoles,
       gender: round.player?.gender,
     });
-    const courseHandicap = calculateLeaguePlayingHandicap(
+    const playerHoles = normalizeHoles(tee.holes);
+    const courseHandicap = calculateCourseHandicap(
       preHandicap,
       tee,
       handicapHoleBasis,
     );
     const scores = buildModeledScores({
       scoreRows,
-      holes,
+      holes: playerHoles,
       handicap: courseHandicap,
     });
 

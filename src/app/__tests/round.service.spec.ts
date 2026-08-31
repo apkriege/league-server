@@ -86,7 +86,7 @@ describe('Round service', () => {
     expect(createdScores.find((score: any) => score.hole === 1).net).toBe(2);
   });
 
-  it('uses the rounded stored league handicap without a tee adjustment', async () => {
+  it('uses the tee-adjusted Course Handicap for net scoring', async () => {
     db.event.findFirst.mockResolvedValue({
       ...event,
       league: { holeFormat: '9' },
@@ -109,10 +109,53 @@ describe('Round service', () => {
 
     const createdScores = db.score.createMany.mock.calls[0][0].data;
     expect(createdScores.find((score: any) => score.hole === 8).net).toBe(3);
-    expect(createdScores.find((score: any) => score.hole === 9).net).toBe(4);
+    expect(createdScores.find((score: any) => score.hole === 9).net).toBe(3);
     expect(db.round.update).toHaveBeenCalledWith({
       where: { id: 11 },
-      data: expect.objectContaining({ courseHandicap: 8 }),
+      data: expect.objectContaining({ courseHandicap: 9 }),
+    });
+  });
+
+  it('uses women\'s tee ratings and hole allocation for a female player', async () => {
+    db.event.findFirst.mockResolvedValue({
+      ...event,
+      league: { holeFormat: '9' },
+      tee: {
+        ...event.tee,
+        slopeWomen: 140,
+        slopeFrontWomen: 140,
+        ratingWomen: 80,
+        ratingFrontWomen: 40,
+        holesWomen: holes.map((hole) => ({
+          ...hole,
+          hcp: 10 - hole.hcp,
+          par: hole.num === 1 ? 5 : 4,
+        })),
+      },
+    });
+    db.player.findFirst.mockResolvedValue({
+      id: 1,
+      handicap: 8,
+      startingHandicap: 8,
+      gender: 'female',
+      deletedAt: null,
+    });
+    db.player.findUnique.mockResolvedValue({
+      id: 1,
+      handicap: 8,
+      startingHandicap: 8,
+      gender: 'female',
+      rounds: [],
+    });
+
+    await new Round(99, { playerId: 1, scores }, undefined, db).process();
+
+    const createdScores = db.score.createMany.mock.calls[0][0].data;
+    expect(createdScores.find((score: any) => score.hole === 1)).toMatchObject({ par: 5, net: 3 });
+    expect(createdScores.find((score: any) => score.hole === 9)).toMatchObject({ par: 4, net: 2 });
+    expect(db.round.update).toHaveBeenCalledWith({
+      where: { id: 11 },
+      data: expect.objectContaining({ courseHandicap: 13, courseRating: 40, courseSlope: 140 }),
     });
   });
 

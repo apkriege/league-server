@@ -2,7 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
 import { getHandicapHoleBasis } from '../utils/league-hole-format';
 import {
-  calculateLeaguePlayingHandicap,
+  calculateCourseHandicap,
   modelTeeForRound,
 } from '../utils/tee-rating';
 import { normalizeScoringConfiguration } from './config';
@@ -135,9 +135,14 @@ export const persistSharedTeamRounds = async ({
 
   const configuration = normalizeScoringConfiguration(event.scoringConfig, mode);
   const handicapHoleBasis = getHandicapHoleBasis(event.league.holeFormat);
+  const competitionGender = flight.players.every(
+    (entry) => String(entry.player.gender || '').toLowerCase() === 'female',
+  )
+    ? 'female'
+    : 'male';
   const selectedTee = modelTeeForRound(event.tee, event.holes, event.startSide, {
     courseHoles: event.course.numHoles,
-    gender: 'male',
+    gender: competitionGender,
   });
 
   const modeledRounds = submissions.map((submission) => {
@@ -161,7 +166,7 @@ export const persistSharedTeamRounds = async ({
       });
       return {
         playerId: assignment.playerId,
-        courseHandicap: calculateLeaguePlayingHandicap(
+        courseHandicap: calculateCourseHandicap(
           assignment.player.handicap,
           playerTee,
           handicapHoleBasis,

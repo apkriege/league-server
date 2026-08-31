@@ -16,7 +16,7 @@ import { getPublicErrorResponse } from '../utils/error-response';
 import { EventMetrics } from '../services/eventMetrics';
 import { localEventTimeToUtc, normalizeTimeZone } from '../utils/time-zone';
 import {
-  calculateLeaguePlayingHandicap,
+  calculateCourseHandicap,
   modelTeeForRound,
   selectRoundHoles,
 } from '../utils/tee-rating';
@@ -358,6 +358,14 @@ class EventController {
 
         const { flights, ...e } = normalizedEventData;
         const startsAt = localEventTimeToUtc(e.date, e.startTime, timeZone);
+        const leagueForFlights =
+          createdLeagueTeams.length > 0 ? { ...league, teams: createdLeagueTeams } : league;
+        validateTeeForEventParticipants(
+          roundConfig,
+          normalizedEventData,
+          leagueForFlights,
+          forcedFormat,
+        );
 
         const created = await tx.event.create({
           data: {
@@ -394,9 +402,6 @@ class EventController {
               : {}),
           },
         });
-
-        const leagueForFlights =
-          createdLeagueTeams.length > 0 ? { ...league, teams: createdLeagueTeams } : league;
 
         const flightGen = new FlightGen(
           leagueForFlights,
@@ -562,6 +567,7 @@ class EventController {
           });
           const scoringFamily = scoring.scoringFamily;
           const pointsEnabled = eventData?.pointsEnabled !== false;
+          validateTeeForEventParticipants(roundConfig, eventData, league, forcedFormat);
           const normalizedStrokePoints = normalizeStrokePoints(
             eventData?.strokePoints,
             forcedFormat,
@@ -783,6 +789,7 @@ class EventController {
         });
         const scoringFamily = scoring.scoringFamily;
         const pointsEnabled = eventData?.pointsEnabled !== false;
+        validateTeeForEventParticipants(roundConfig, eventData, league, forcedFormat);
         const normalizedStrokePoints = normalizeStrokePoints(
           eventData?.strokePoints,
           forcedFormat,
@@ -1047,6 +1054,19 @@ const validateCourseAndTee = async (
     select: {
       id: true,
       holes: true,
+      holesWomen: true,
+      slopeMen: true,
+      slopeFrontMen: true,
+      slopeBackMen: true,
+      slopeWomen: true,
+      slopeFrontWomen: true,
+      slopeBackWomen: true,
+      ratingMen: true,
+      ratingFrontMen: true,
+      ratingBackMen: true,
+      ratingWomen: true,
+      ratingFrontWomen: true,
+      ratingBackWomen: true,
       course: {
         select: {
           timeZone: true,
@@ -1065,7 +1085,62 @@ const validateCourseAndTee = async (
     timeZone: normalizeTimeZone(tee.course.timeZone),
     holes: selection.holesPlayed,
     startSide: selection.side,
+    tee,
+    courseHoles: tee.course.numHoles,
   };
+};
+
+const getEventParticipantGenders = (eventData: any, league: any, format: string) => {
+  const playersById = new Map<number, any>(
+    (league.players || []).map((player: any) => [Number(player.id), player]),
+  );
+  const playerIds = new Set<number>();
+
+  if (format === 'team') {
+    const teamsById = new Map<number, any>(
+      (league.teams || []).map((team: any) => [Number(team.id), team]),
+    );
+    for (const flight of eventData.flights || []) {
+      for (const value of Array.isArray(flight) ? flight : []) {
+        const team = teamsById.get(Number(extractTeamId(value)));
+        for (const player of team?.players || []) playerIds.add(Number(player.id));
+      }
+    }
+  } else {
+    const visit = (value: any) => {
+      if (Array.isArray(value)) {
+        value.forEach(visit);
+        return;
+      }
+      const id = Number(
+        value && typeof value === 'object'
+          ? value.playerId ?? value.player?.id ?? value.id
+          : value,
+      );
+      if (Number.isInteger(id) && id > 0) playerIds.add(id);
+    };
+    visit(eventData.flights || []);
+  }
+
+  return [...new Set(
+    [...playerIds]
+      .map((playerId) => playersById.get(playerId)?.gender)
+      .filter(Boolean),
+  )];
+};
+
+const validateTeeForEventParticipants = (
+  roundConfig: Awaited<ReturnType<typeof validateCourseAndTee>>,
+  eventData: any,
+  league: any,
+  format: string,
+) => {
+  for (const gender of getEventParticipantGenders(eventData, league, format)) {
+    modelTeeForRound(roundConfig.tee, roundConfig.holes, roundConfig.startSide, {
+      courseHoles: roundConfig.courseHoles,
+      gender,
+    });
+  }
 };
 
 const addEventRoundSetup = (event: any) => {
@@ -1075,10 +1150,21 @@ const addEventRoundSetup = (event: any) => {
     event.holes,
     event.startSide,
   );
+  const womenSelection = selectRoundHoles(
+    event.tee,
+    event.course?.numHoles,
+    event.holes,
+    event.startSide,
+    'female',
+  );
 
   return {
     ...event,
     scoringHoles: selection.holes,
+    scoringHolesByGender: {
+      male: selection.holes,
+      female: womenSelection.holes,
+    },
     startSide: selection.side,
     flights: (event.flights || []).map((flight: any) => ({
       ...flight,
@@ -1093,7 +1179,7 @@ const addEventRoundSetup = (event: any) => {
         return {
           ...entry,
           handicapIndex,
-          courseHandicap: calculateLeaguePlayingHandicap(
+          courseHandicap: calculateCourseHandicap(
             handicapIndex,
             tee,
             getHandicapHoleBasis(event.league?.holeFormat),

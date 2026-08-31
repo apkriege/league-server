@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   calculateCourseHandicap,
-  calculateLeaguePlayingHandicap,
   calculateMatchPops,
   calculateRoundDifferential,
   calculateStrokePops,
@@ -158,22 +157,22 @@ describe('modelTeeForRound', () => {
 });
 
 describe('round handicap calculations', () => {
-  it('uses the rounded stored handicap for a same-length league round', () => {
+  it('uses the selected tee to adjust a same-length league handicap', () => {
     const modeled = modelTeeForRound({ ...tee, ratingFrontMen: 32, slopeFrontMen: 90 }, 9, 'front', {
       courseHoles: 18,
       gender: 'male',
     });
 
-    expect(calculateLeaguePlayingHandicap(12.34, modeled, 9)).toBe(12);
+    expect(calculateCourseHandicap(12.34, modeled, 9)).toBe(6);
   });
 
-  it('halves an 18-hole stored handicap for a 9-hole round without a tee adjustment', () => {
+  it('uses half an 18-hole index plus the selected nine-hole tee adjustment', () => {
     const modeled = modelTeeForRound({ ...tee, ratingFrontMen: 32, slopeFrontMen: 90 }, 9, 'front', {
       courseHoles: 18,
       gender: 'male',
     });
 
-    expect(calculateLeaguePlayingHandicap(12.6, modeled, 18)).toBe(6);
+    expect(calculateCourseHandicap(12.6, modeled, 18)).toBe(1);
   });
 
   it('calculates a 9-hole Course Handicap from half the Handicap Index', () => {
@@ -201,6 +200,17 @@ describe('round handicap calculations', () => {
     });
 
     expect(calculateCourseHandicap(10, modeled)).toBe(12);
+  });
+
+  it('rounds a plus Course Handicap upward at a half stroke', () => {
+    const modeled = modelTeeForRound(
+      { ...tee, ratingMen: 72, slopeMen: 113 },
+      18,
+      'front',
+      { courseHoles: 18, gender: 'male' },
+    );
+
+    expect(calculateCourseHandicap(-2.5, modeled)).toBe(-2);
   });
 
   it('normalizes a 9-hole differential to the 18-hole scale', () => {

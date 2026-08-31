@@ -1,7 +1,7 @@
 import { parsePlacementPoints, roundScoringPoints } from './numeric';
 import { calculateStablefordPoints } from './stableford';
 import { normalizeScoringConfiguration } from './config';
-import { addTeamEventPoints, getBestNetForHole, getFlightTeamIds } from './team-points';
+import { addTeamEventPoints, getBestNetScoreForHole, getFlightTeamIds } from './team-points';
 import type {
   ScoringEvent,
   ScoringFlight,
@@ -52,21 +52,21 @@ export const assignBestBallPoints = ({
     let rightNetTotal = 0;
 
     for (const hole of holes) {
-      const bestLeft = getBestNetForHole(leftRounds, hole.num);
-      const bestRight = getBestNetForHole(rightRounds, hole.num);
+      const bestLeft = getBestNetScoreForHole(leftRounds, hole.num);
+      const bestRight = getBestNetScoreForHole(rightRounds, hole.num);
       if (bestLeft == null || bestRight == null) continue;
 
-      leftNetTotal += bestLeft;
-      rightNetTotal += bestRight;
+      leftNetTotal += bestLeft.net;
+      rightNetTotal += bestRight.net;
       if (placementPoints.length === 0) {
         leftPoints += calculateStablefordPoints(
-          bestLeft,
-          hole.par,
+          bestLeft.net,
+          bestLeft.par,
           configuration.stablefordPointScale,
         );
         rightPoints += calculateStablefordPoints(
-          bestRight,
-          hole.par,
+          bestRight.net,
+          bestRight.par,
           configuration.stablefordPointScale,
         );
       }

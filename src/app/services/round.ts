@@ -1,6 +1,6 @@
 import { prisma } from '../../prisma';
 import {
-  calculateLeaguePlayingHandicap,
+  calculateCourseHandicap,
   calculateRoundDifferential,
   calculateStrokePops,
   modelTeeForRound,
@@ -341,7 +341,7 @@ export class Round {
     const handicapIndex = Number(
       this.isEdit ? this.round?.preHandicap : this.player.handicap,
     );
-    this.courseHandicap = calculateLeaguePlayingHandicap(
+    this.courseHandicap = calculateCourseHandicap(
       handicapIndex,
       this.tee,
       this.handicapHoleBasis,

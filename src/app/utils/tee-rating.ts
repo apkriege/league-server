@@ -181,8 +181,7 @@ export const modelTeeForRound = (
   };
 };
 
-const roundHalfUp = (value: number) =>
-  value >= 0 ? Math.floor(value + 0.5) : Math.ceil(value - 0.5);
+const roundHalfUp = (value: number) => Math.round(value);
 
 const roundToOneDecimal = (value: number) => roundHalfUp(value * 10) / 10;
 
@@ -199,22 +198,6 @@ export const calculateCourseHandicap = (
   const adjustedIndex =
     tee.holesPlayed === 9 && handicapHoleBasis === 18 ? roundToOneDecimal(index / 2) : index;
   return roundHalfUp(adjustedIndex * (tee.slope / 113) + (tee.rating - tee.par));
-};
-
-export const calculateLeaguePlayingHandicap = (
-  storedHandicap: number,
-  tee: RoundTee,
-  handicapHoleBasis: 9 | 18 = 18,
-) => {
-  const handicap = Number(storedHandicap);
-  if (!Number.isFinite(handicap)) throw new Error('A valid stored handicap is required.');
-  if (handicapHoleBasis === 9 && tee.holesPlayed !== 9) {
-    throw new Error('A 9-hole handicap can only be used for a 9-hole round.');
-  }
-
-  const adjustedHandicap =
-    tee.holesPlayed === 9 && handicapHoleBasis === 18 ? handicap / 2 : handicap;
-  return roundHalfUp(adjustedHandicap);
 };
 
 export const calculateStrokePops = (courseHandicap: number, holes: TeeHole[]) => {

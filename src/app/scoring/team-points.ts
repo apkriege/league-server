@@ -41,14 +41,17 @@ export const getFlightTeamIds = (flight: ScoringFlight): number[] => {
   return Array.from(new Set(playerTeamIds)).slice(0, 2);
 };
 
-export const getBestNetForHole = (rounds: ScoringRound[], holeNumber: number) => {
-  let best: number | null = null;
+export const getBestNetScoreForHole = (rounds: ScoringRound[], holeNumber: number) => {
+  let best: ScoringRound['scores'][number] | null = null;
 
   for (const round of rounds) {
     const score = round.scores.find((entry) => entry.hole === holeNumber);
     if (!score?.gross) continue;
-    if (best == null || score.net < best) best = score.net;
+    if (best == null || score.net < best.net) best = score;
   }
 
   return best;
 };
+
+export const getBestNetForHole = (rounds: ScoringRound[], holeNumber: number) =>
+  getBestNetScoreForHole(rounds, holeNumber)?.net ?? null;
