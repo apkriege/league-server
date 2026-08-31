@@ -204,6 +204,10 @@ model course {
   accessType  String    @default("public") @map("type")
   numHoles    Int?      @map("num_holes")
   par         Int
+  externalProvider String?   @map("external_provider")
+  externalId       String?   @map("external_id")
+  scorecardUrl     String?   @map("scorecard_url")
+  sourceUpdatedAt  DateTime? @map("source_updated_at") @db.Timestamptz(3)
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(3)
@@ -216,6 +220,7 @@ model course {
 
   @@index([clubId])
   @@index([deletedAt])
+  @@unique([externalProvider, externalId])
 }
 
 model tee {
@@ -227,19 +232,20 @@ model tee {
   par              Int
   frontPar         Int       @map("front_par")
   backPar          Int       @map("back_par")
-  slopeMen         Int       @map("slope_men") // USGA slope for men, full course
-  slopeFrontMen    Int       @map("slope_front_men") // USGA slope for men, front 9
-  slopeBackMen     Int       @map("slope_back_men") // USGA slope for men, back 9
+  slopeMen         Int?      @map("slope_men") // Official full-course slope for men
+  slopeFrontMen    Int?      @map("slope_front_men") // Official front-nine slope for men
+  slopeBackMen     Int?      @map("slope_back_men") // Official back-nine slope for men
   slopeWomen       Int?      @map("slope_women") // USGA slope for women, full course
   slopeFrontWomen  Int?      @map("slope_front_women") // USGA slope for women, front 9
   slopeBackWomen   Int?      @map("slope_back_women") // USGA slope for women, back 9
-  ratingMen        Float     @map("rating_men") // USGA rating for men, full course
-  ratingFrontMen   Float     @map("rating_front_men") // USGA rating for men, front 9
-  ratingBackMen    Float     @map("rating_back_men") // USGA rating for men, back 9
+  ratingMen        Float?    @map("rating_men") // Official full-course rating for men
+  ratingFrontMen   Float?    @map("rating_front_men") // Official front-nine rating for men
+  ratingBackMen    Float?    @map("rating_back_men") // Official back-nine rating for men
   ratingWomen      Float?    @map("rating_women") // USGA rating for women, full course
   ratingFrontWomen Float?    @map("rating_front_women") // USGA rating for women, front 9
   ratingBackWomen  Float?    @map("rating_back_women") // USGA rating for women, back 9
   holes            Json[]
+  holesWomen       Json[]    @default([]) @map("holes_women")
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt        DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)

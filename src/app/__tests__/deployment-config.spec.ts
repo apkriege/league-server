@@ -34,6 +34,7 @@ describe('deployment configuration', () => {
       '20260827140000_add_season_entitlements_and_lifecycle',
       '20260830000000_add_scoring_modes_and_team_rounds',
       '20260830120000_remove_legacy_scoring_format',
+      '20260831000000_course_import_sources',
     ]);
     for (const migrationDirectory of migrationDirectories) {
       expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(

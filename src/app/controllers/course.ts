@@ -1,13 +1,20 @@
 import { prisma } from '../../prisma';
 import { Request, Response } from 'express';
 import CourseService from '../models/course';
-import { loadCourseFromDirectory, searchCourseDirectory } from '../services/courseImport';
+import {
+  loadCourseFromDirectory,
+  searchCourseDirectory,
+  searchStateCourseDirectory,
+} from '../services/courseImport';
 import {
   buildCourseRequestEmail,
   buildManualCourseRequestEmail,
 } from '../emailTemplates/courseRequest';
 import { sendAppEmail } from '../services/email';
 import { normalizeTimeZone } from '../utils/time-zone';
+
+const nullableNumber = (value: unknown) =>
+  value === null || value === undefined || value === '' ? null : Number(value);
 
 const normalizeHole = (hole: any, index: number) => ({
   num: Number(hole?.num ?? index + 1),
@@ -23,9 +30,9 @@ const normalizeTee = (tee: any) => ({
   par: Number(tee?.par ?? 0),
   frontPar: Number(tee?.frontPar ?? 0),
   backPar: Number(tee?.backPar ?? 0),
-  slopeMen: Number(tee?.slopeMen ?? 0),
-  slopeFrontMen: Number(tee?.slopeFrontMen ?? 0),
-  slopeBackMen: Number(tee?.slopeBackMen ?? 0),
+  slopeMen: nullableNumber(tee?.slopeMen),
+  slopeFrontMen: nullableNumber(tee?.slopeFrontMen),
+  slopeBackMen: nullableNumber(tee?.slopeBackMen),
   slopeWomen:
     tee?.slopeWomen === null || tee?.slopeWomen === undefined || tee?.slopeWomen === ''
       ? null
@@ -40,9 +47,9 @@ const normalizeTee = (tee: any) => ({
     tee?.slopeBackWomen === null || tee?.slopeBackWomen === undefined || tee?.slopeBackWomen === ''
       ? null
       : Number(tee.slopeBackWomen),
-  ratingMen: Number(tee?.ratingMen ?? 0),
-  ratingFrontMen: Number(tee?.ratingFrontMen ?? 0),
-  ratingBackMen: Number(tee?.ratingBackMen ?? 0),
+  ratingMen: nullableNumber(tee?.ratingMen),
+  ratingFrontMen: nullableNumber(tee?.ratingFrontMen),
+  ratingBackMen: nullableNumber(tee?.ratingBackMen),
   ratingWomen:
     tee?.ratingWomen === null || tee?.ratingWomen === undefined || tee?.ratingWomen === ''
       ? null
@@ -60,6 +67,11 @@ const normalizeTee = (tee: any) => ({
       ? null
       : Number(tee.ratingBackWomen),
   holes: Array.isArray(tee?.holes) ? tee.holes.map(normalizeHole) : [],
+  holesWomen: Array.isArray(tee?.holesWomen)
+    ? tee.holesWomen.map(normalizeHole)
+    : Array.isArray(tee?.holes)
+      ? tee.holes.map(normalizeHole)
+      : [],
 });
 
 const buildCourseData = (course: any) => {
@@ -75,6 +87,10 @@ const buildCourseData = (course: any) => {
     accessType: course.accessType ?? course.courseAccessType,
     numHoles: course.numHoles,
     par: course.par,
+    externalProvider: course.externalProvider || null,
+    externalId: course.externalId || null,
+    scorecardUrl: course.scorecardUrl || null,
+    sourceUpdatedAt: course.externalId ? new Date() : null,
     ...(tees ? { tees: { create: tees } } : {}),
   };
 };
@@ -82,16 +98,22 @@ const buildCourseData = (course: any) => {
 class CourseController {
   static searchCourseDirectory = async (req: Request, res: Response) => {
     const name = String(req.query.name || '').trim();
+    const state = String(req.query.state || '').trim().toUpperCase();
 
     if (name.length < 2 || name.length > 120) {
       return res.status(400).json({ message: 'A course name is required.' });
     }
 
     try {
-      const results = await searchCourseDirectory(name);
+      const results = await searchCourseDirectory(name, state || undefined);
+      const existing = await prisma.course.findMany({
+        where: { externalProvider: 'GolfCourseAPI', externalId: { in: results.map((result) => result.externalId) } },
+        select: { externalId: true },
+      });
+      const existingIds = new Set(existing.map((course) => course.externalId));
       return res.status(200).json({
-        results,
-        attribution: 'Course search provided by OpenGolfAPI (ODbL 1.0).',
+        results: results.map((result) => ({ ...result, alreadyImported: existingIds.has(result.externalId) })),
+        attribution: 'Course and scorecard data provided by GolfCourseAPI.',
       });
     } catch (error) {
       console.error(error);
@@ -99,9 +121,33 @@ class CourseController {
     }
   };
 
+  static searchStateCourseDirectory = async (req: Request, res: Response) => {
+    const state = String(req.query.state || '').trim().toUpperCase();
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    if (!/^[A-Z]{2}$/.test(state)) {
+      return res.status(400).json({ message: 'A two-letter state code is required.' });
+    }
+    try {
+      const page = await searchStateCourseDirectory(state, offset);
+      const existing = await prisma.course.findMany({
+        where: { externalProvider: 'GolfCourseAPI', externalId: { in: page.results.map((result) => result.externalId) } },
+        select: { externalId: true },
+      });
+      const existingIds = new Set(existing.map((course) => course.externalId));
+      return res.status(200).json({
+        ...page,
+        results: page.results.map((result) => ({ ...result, alreadyImported: existingIds.has(result.externalId) })),
+        attribution: 'State discovery by OpenGolfAPI; course data provided by GolfCourseAPI.',
+      });
+    } catch (error) {
+      console.error(error);
+      return res.status(502).json({ message: 'Unable to check that state right now.' });
+    }
+  };
+
   static importCourse = async (req: Request, res: Response) => {
     const externalId = String(req.params.externalId || '').trim();
-    if (!/^[a-z0-9-]{1,100}$/i.test(externalId)) {
+    if (!/^[a-z0-9_-]{8,300}$/i.test(externalId)) {
       return res.status(400).json({ message: 'A course directory ID is required.' });
     }
 
@@ -116,7 +162,7 @@ class CourseController {
 
   static requestCourse = async (req: Request, res: Response) => {
     const externalId = String(req.body?.externalId || '').trim();
-    if (!/^[a-z0-9-]{1,100}$/i.test(externalId)) {
+    if (!/^[a-z0-9_-]{8,300}$/i.test(externalId)) {
       return res.status(400).json({ message: 'A valid course directory ID is required.' });
     }
 
@@ -284,6 +330,10 @@ class CourseController {
         accessType: course.accessType ?? course.courseAccessType,
         numHoles: course.numHoles,
         par: course.par,
+        externalProvider: course.externalProvider || null,
+        externalId: course.externalId || null,
+        scorecardUrl: course.scorecardUrl || null,
+        sourceUpdatedAt: course.externalId ? new Date() : null,
       };
 
       // Incoming tees: preserve id if present so we can upsert instead of delete+create

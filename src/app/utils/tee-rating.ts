@@ -25,6 +25,7 @@ export type TeeRatingSource = {
   ratingFrontWomen?: unknown;
   ratingBackWomen?: unknown;
   holes?: unknown;
+  holesWomen?: unknown;
 };
 
 export type RoundTee = {
@@ -83,13 +84,18 @@ export const selectRoundHoles = (
   courseHoles: unknown,
   roundHoles: unknown,
   startSide: unknown,
+  gender: Gender = 'male',
 ) => {
   const holesPlayed = Number(roundHoles);
   if (holesPlayed !== 9 && holesPlayed !== 18) {
     throw new Error('Events must be configured for 9 or 18 holes.');
   }
 
-  const allHoles = (Array.isArray(tee.holes) ? tee.holes : [])
+  const sourceHoles =
+    gender === 'female' && Array.isArray(tee.holesWomen) && tee.holesWomen.length > 0
+      ? tee.holesWomen
+      : tee.holes;
+  const allHoles = (Array.isArray(sourceHoles) ? sourceHoles : [])
     .map(normalizeHole)
     .filter((hole): hole is TeeHole => hole !== null)
     .sort((left, right) => left.num - right.num);
@@ -139,7 +145,7 @@ export const modelTeeForRound = (
   options: { courseHoles?: unknown; gender?: unknown } = {},
 ): RoundTee => {
   const gender = normalizeGender(options.gender ?? 'male');
-  const selection = selectRoundHoles(tee, options.courseHoles, numHoles, startSide);
+  const selection = selectRoundHoles(tee, options.courseHoles, numHoles, startSide, gender);
   const values = getGenderValues(tee, gender);
 
   const slope = selection.isNineHoleCourse
@@ -156,11 +162,7 @@ export const modelTeeForRound = (
       : selection.side === 'front'
         ? values.frontRating
         : values.backRating;
-  const par = selection.isNineHoleCourse
-    ? positiveNumber(tee.par) ?? positiveNumber(tee.frontPar)
-    : selection.holesPlayed === 18
-      ? positiveNumber(tee.par)
-      : positiveNumber(selection.side === 'front' ? tee.frontPar : tee.backPar);
+  const par = selection.holes.reduce((total, hole) => total + hole.par, 0);
 
   if (slope == null || rating == null || par == null) {
     const label = gender === 'female' ? "women's" : "men's";

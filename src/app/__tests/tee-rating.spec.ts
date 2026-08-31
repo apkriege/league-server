@@ -51,6 +51,25 @@ describe('modelTeeForRound', () => {
     expect(modeled.holes.map((hole) => hole.num)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
+  it('uses the women\'s scorecard when the provider supplies different hole data', () => {
+    const modeled = modelTeeForRound(
+      {
+        ...tee,
+        holesWomen: holes.map((hole) => ({
+          ...hole,
+          par: hole.num === 1 ? 5 : hole.par,
+          hcp: 19 - hole.hcp,
+        })),
+      },
+      9,
+      'front',
+      { courseHoles: 18, gender: 'female' },
+    );
+
+    expect(modeled.par).toBe(37);
+    expect(modeled.holes[0]).toMatchObject({ num: 1, par: 5, hcp: 18 });
+  });
+
   it('uses the selected gender and back-nine values for a back-nine round', () => {
     const modeled = modelTeeForRound(tee, 9, 'back', {
       courseHoles: 18,

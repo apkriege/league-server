@@ -141,6 +141,7 @@ router.put('/clubs/:id', superAdmin, Club.updateClub);
 // Courses
 router.get('/courses', Course.getCourses);
 router.get('/courses/import/search', admin, Course.searchCourseDirectory);
+router.get('/courses/import/state', superAdmin, Course.searchStateCourseDirectory);
 router.get('/courses/import/:externalId', admin, Course.importCourse);
 router.post('/courses/requests', admin, Course.requestCourse);
 router.post('/courses/requests/manual', admin, Course.requestManualCourse);
