@@ -35,6 +35,7 @@ describe('deployment configuration', () => {
       '20260830000000_add_scoring_modes_and_team_rounds',
       '20260830120000_remove_legacy_scoring_format',
       '20260831000000_course_import_sources',
+      '20260901000000_add_usga_rating_references',
     ]);
     for (const migrationDirectory of migrationDirectories) {
       expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(

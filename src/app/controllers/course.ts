@@ -90,6 +90,7 @@ const buildCourseData = (course: any) => {
     externalProvider: course.externalProvider || null,
     externalId: course.externalId || null,
     scorecardUrl: course.scorecardUrl || null,
+    usgaCourseId: nullableNumber(course.usgaCourseId),
     sourceUpdatedAt: course.externalId ? new Date() : null,
     ...(tees ? { tees: { create: tees } } : {}),
   };
@@ -333,6 +334,7 @@ class CourseController {
         externalProvider: course.externalProvider || null,
         externalId: course.externalId || null,
         scorecardUrl: course.scorecardUrl || null,
+        usgaCourseId: nullableNumber(course.usgaCourseId),
         sourceUpdatedAt: course.externalId ? new Date() : null,
       };
 

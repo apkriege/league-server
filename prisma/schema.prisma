@@ -208,6 +208,7 @@ model course {
   externalId       String?   @map("external_id")
   scorecardUrl     String?   @map("scorecard_url")
   sourceUpdatedAt  DateTime? @map("source_updated_at") @db.Timestamptz(3)
+  usgaCourseId     Int?      @unique @map("usga_course_id")
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(3)
