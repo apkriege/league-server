@@ -199,6 +199,42 @@ describe('CourseController tee removal', async () => {
     expect(response.json).toHaveBeenCalledWith({ message: 'Manual course request sent.' });
   });
 
+  it('attaches an uploaded scorecard image to the manual request email', async () => {
+    const image = Buffer.from('scorecard-image');
+    const response = buildResponse();
+
+    await CourseController.requestManualCourse(
+      {
+        body: { courseName: 'Missing Golf Course', city: 'Frankenmuth', state: 'Michigan' },
+        file: {
+          buffer: image,
+          originalname: 'club scorecard.png',
+          mimetype: 'image/png',
+        },
+        user: {
+          id: 44,
+          firstName: 'League',
+          lastName: 'Admin',
+          email: 'admin@example.com',
+        },
+      } as any,
+      response,
+    );
+
+    expect(sendAppEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachments: [
+          {
+            content: image,
+            filename: 'scorecard-club-scorecard.png',
+            contentType: 'image/png',
+          },
+        ],
+      }),
+    );
+    expect(response.status).toHaveBeenCalledWith(200);
+  });
+
   it('requires all manual course location fields', async () => {
     const response = buildResponse();
 

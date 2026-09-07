@@ -30,6 +30,7 @@ import HealthController from './controllers/health';
 import SeasonSyncController from './controllers/seasonSync';
 import SupportController from './controllers/support';
 import { createRateLimiter } from './middleware/security';
+import { uploadCourseScorecard } from './middleware/course-scorecard-upload';
 
 const router: Router = express.Router();
 const authRateLimiter = createRateLimiter({
@@ -143,8 +144,8 @@ router.get('/courses', Course.getCourses);
 router.get('/courses/import/search', admin, Course.searchCourseDirectory);
 router.get('/courses/import/state', superAdmin, Course.searchStateCourseDirectory);
 router.get('/courses/import/:externalId', admin, Course.importCourse);
-router.post('/courses/requests', admin, Course.requestCourse);
-router.post('/courses/requests/manual', admin, Course.requestManualCourse);
+router.post('/courses/requests', admin, uploadCourseScorecard, Course.requestCourse);
+router.post('/courses/requests/manual', admin, uploadCourseScorecard, Course.requestManualCourse);
 router.get('/courses/:id', Course.getCourse);
 router.post('/courses', superAdmin, Course.createCourse);
 router.put('/courses/:id', superAdmin, Course.updateCourse);

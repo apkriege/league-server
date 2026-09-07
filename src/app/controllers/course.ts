@@ -20,6 +20,19 @@ import {
 const nullableNumber = (value: unknown) =>
   value === null || value === undefined || value === '' ? null : Number(value);
 
+const getScorecardAttachment = (file: Express.Multer.File | undefined) =>
+  file
+    ? {
+        attachments: [
+          {
+            content: file.buffer,
+            filename: `scorecard-${file.originalname.replace(/[^a-z0-9._-]/gi, '-')}`,
+            contentType: file.mimetype,
+          },
+        ],
+      }
+    : {};
+
 const normalizeHole = (hole: any, index: number) => ({
   num: Number(hole?.num ?? index + 1),
   par: Number(hole?.par ?? 4),
@@ -188,6 +201,7 @@ class CourseController {
       const importedCourse = await loadCourseFromDirectory(externalId);
       const result = await sendAppEmail({
         ...buildCourseRequestEmail({ externalId, requester, importedCourse }),
+        ...getScorecardAttachment(req.file),
         from: process.env.COURSE_REQUEST_FROM,
       });
 
@@ -241,6 +255,7 @@ class CourseController {
     try {
       const result = await sendAppEmail({
         ...buildManualCourseRequestEmail({ requester, courseName, city, state }),
+        ...getScorecardAttachment(req.file),
         from: process.env.COURSE_REQUEST_FROM,
       });
 
