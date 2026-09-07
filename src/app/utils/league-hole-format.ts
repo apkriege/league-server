@@ -17,13 +17,25 @@ export const normalizeLeagueHoleFormat = (value: unknown): LeagueHoleFormat => {
 export const getHandicapHoleBasis = (holeFormat: unknown): HandicapHoleBasis =>
   normalizeLeagueHoleFormat(holeFormat) === '9' ? 9 : 18;
 
-export const validateEventHolesForLeague = (holeFormat: unknown, eventHoles: unknown) => {
-  const normalizedFormat = normalizeLeagueHoleFormat(holeFormat);
+export const validateEventHoleCount = (eventHoles: unknown) => {
   const holes = Number(eventHoles);
   if (holes !== 9 && holes !== 18) {
     throw new Error('Invalid event holes: events must use 9 or 18 holes.');
   }
+  return holes as 9 | 18;
+};
+
+export const validateEventHolesForLeague = (
+  holeFormat: unknown,
+  eventHoles: unknown,
+  primaryCourseHoles?: unknown,
+) => {
+  const normalizedFormat = normalizeLeagueHoleFormat(holeFormat);
+  const holes = validateEventHoleCount(eventHoles);
+  const repeatsPhysicalNine =
+    normalizedFormat === '9' && holes === 18 && Number(primaryCourseHoles) <= 9;
   if (normalizedFormat !== 'mixed' && holes !== Number(normalizedFormat)) {
+    if (repeatsPhysicalNine) return holes;
     throw new Error(
       `Invalid event holes: a ${normalizedFormat}-hole league must use ${normalizedFormat}-hole events.`,
     );

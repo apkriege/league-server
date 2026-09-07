@@ -63,7 +63,7 @@ const event = (overrides: Partial<TeamProfileEvent> = {}): TeamProfileEvent => (
 });
 
 describe('buildTeamEventResults', () => {
-  it('combines assigned player and team points and resolves the opponent', () => {
+  it('keeps player results as context while totals use team points', () => {
     const [result] = buildTeamEventResults(1, [event()]);
 
     expect(result.opponents).toEqual([
@@ -72,12 +72,12 @@ describe('buildTeamEventResults', () => {
         name: 'Birdies',
         playerPoints: 3,
         teamPoints: 1,
-        totalPoints: 4,
+        totalPoints: 1,
       },
     ]);
     expect(result.playerPoints).toBe(5.5);
     expect(result.teamPoints).toBe(2);
-    expect(result.totalPoints).toBe(7.5);
+    expect(result.totalPoints).toBe(2);
     expect(result.playerRounds).toHaveLength(1);
     expect(result.playerRounds[0].playerName).toBe('Ada Lovelace');
   });

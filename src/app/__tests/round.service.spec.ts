@@ -67,11 +67,8 @@ describe('Round service', () => {
 
     expect(db.round.create).toHaveBeenCalledTimes(1);
     const createdScores = db.score.createMany.mock.calls[0][0].data;
-    expect(createdScores.find((score: any) => score.hole === 1).net).toBe(3);
-    expect(db.round.update).toHaveBeenCalledWith({
-      where: { id: 11 },
-      data: expect.objectContaining({ preHandicap: 10 }),
-    });
+    expect(createdScores.find((score: any) => score.hole === 1).net).toBe(2);
+    expect(db.round.update).not.toHaveBeenCalled();
   });
 
   it('does not halve a stored 9-hole handicap for a 9-hole league', async () => {
@@ -86,7 +83,7 @@ describe('Round service', () => {
     expect(createdScores.find((score: any) => score.hole === 1).net).toBe(2);
   });
 
-  it('uses the tee-adjusted Course Handicap for net scoring', async () => {
+  it('uses the stored player handicap without a tee conversion', async () => {
     db.event.findFirst.mockResolvedValue({
       ...event,
       league: { holeFormat: '9' },
@@ -109,10 +106,9 @@ describe('Round service', () => {
 
     const createdScores = db.score.createMany.mock.calls[0][0].data;
     expect(createdScores.find((score: any) => score.hole === 8).net).toBe(3);
-    expect(createdScores.find((score: any) => score.hole === 9).net).toBe(3);
-    expect(db.round.update).toHaveBeenCalledWith({
-      where: { id: 11 },
-      data: expect.objectContaining({ courseHandicap: 9 }),
+    expect(createdScores.find((score: any) => score.hole === 9).net).toBe(4);
+    expect(db.round.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ playingHandicap: 8 }),
     });
   });
 
@@ -151,11 +147,61 @@ describe('Round service', () => {
     await new Round(99, { playerId: 1, scores }, undefined, db).process();
 
     const createdScores = db.score.createMany.mock.calls[0][0].data;
-    expect(createdScores.find((score: any) => score.hole === 1)).toMatchObject({ par: 5, net: 3 });
-    expect(createdScores.find((score: any) => score.hole === 9)).toMatchObject({ par: 4, net: 2 });
-    expect(db.round.update).toHaveBeenCalledWith({
-      where: { id: 11 },
-      data: expect.objectContaining({ courseHandicap: 13, courseRating: 40, courseSlope: 140 }),
+    expect(createdScores.find((score: any) => score.hole === 1)).toMatchObject({ par: 5, net: 4 });
+    expect(createdScores.find((score: any) => score.hole === 9)).toMatchObject({ par: 4, net: 3 });
+    expect(db.round.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        playingHandicap: 8,
+        courseRating: 40,
+        courseSlope: 140,
+      }),
+    });
+  });
+
+  it('scores both selected nines with the combined route handicap', async () => {
+    const northTee = {
+      ...event.tee,
+      id: 21,
+      ratingMen: 35.2,
+      slopeMen: 121,
+      holes,
+    };
+    const southTee = {
+      ...event.tee,
+      id: 22,
+      ratingMen: 36.1,
+      slopeMen: 127,
+      holes: holes.map((hole) => ({ ...hole, par: hole.num === 5 ? 5 : 4 })),
+    };
+    db.event.findFirst.mockResolvedValue({
+      ...event,
+      holes: 18,
+      course: { id: 1, numHoles: 9 },
+      tee: northTee,
+      league: { holeFormat: '18' },
+      routeSegments: [
+        { position: 0, courseId: 1, teeId: 21, course: { id: 1, numHoles: 9 }, tee: northTee },
+        { position: 1, courseId: 2, teeId: 22, course: { id: 2, numHoles: 9 }, tee: southTee },
+      ],
+    });
+    db.round.create.mockResolvedValue({ id: 11, adjusted: 73 });
+    db.round.update.mockResolvedValue({ id: 11, adjusted: 73, preHandicap: 10 });
+    const routeScores = Object.fromEntries(
+      Array.from({ length: 18 }, (_, index) => [index + 1, 4]),
+    );
+
+    await new Round(99, { playerId: 1, scores: routeScores }, undefined, db).process();
+
+    const createdScores = db.score.createMany.mock.calls[0][0].data;
+    expect(createdScores).toHaveLength(18);
+    expect(createdScores[0]).toMatchObject({ hole: 1, gross: 4, net: 3 });
+    expect(createdScores[9]).toMatchObject({ hole: 10, gross: 4, net: 3 });
+    expect(db.round.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        courseRating: 71.3,
+        courseSlope: 124,
+        playingHandicap: 10,
+      }),
     });
   });
 
@@ -168,9 +214,9 @@ describe('Round service', () => {
 
     expect(db.score.update).toHaveBeenCalledTimes(9);
     expect(db.score.update.mock.calls[0][0].data.net).toBe(4);
-    expect(db.round.update).toHaveBeenLastCalledWith({
+    expect(db.round.update).toHaveBeenCalledWith({
       where: { id: 12 },
-      data: expect.objectContaining({ preHandicap: 0 }),
+      data: expect.objectContaining({ playingHandicap: 0 }),
     });
   });
 

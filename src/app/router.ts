@@ -186,6 +186,8 @@ router.post('/leagues/:leagueId/events', leagueAdminGuard, Event.createMultipleE
 router.put('/leagues/:leagueId/events/:eventId', leagueAdminGuard, Event.updateEvent);
 router.patch('/leagues/:leagueId/events/:eventId/cancel', leagueAdminGuard, Event.cancelEvent);
 router.delete('/leagues/:leagueId/events/:eventId', leagueAdminGuard, Event.deleteEvent);
+router.get('/leagues/:leagueId/events/:eventId/score-history', eventAdminGuard, Score.getScoreHistory);
+router.post('/leagues/:leagueId/events/:eventId/score-history/:revisionId/restore', eventAdminGuard, Score.restoreScores);
 router.post('/leagues/:leagueId/events/:eventId/scores', eventAdminGuard, Score.createLeagueEventScores);
 router.put('/leagues/:leagueId/events/:eventId/scores', eventAdminGuard, Score.updateLeagueEventScores);
 

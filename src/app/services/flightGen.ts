@@ -1,5 +1,5 @@
 import { prisma } from '../../prisma';
-import { getScoringFamilyForMode } from '../scoring';
+import { getScoringFamilyForMode, getScoringMode } from '../scoring';
 
 export const getFlightStartsAt = (
   eventStartsAt: Date | string,
@@ -45,6 +45,7 @@ export const validateFlightConfiguration = (league: any, event: any) => {
   if (flights.length === 0) throw new Error('Event requires at least one flight.');
 
   const format = String(event?.format || '').toLowerCase();
+  const scoringMode = getScoringMode(event?.scoringMode).id;
   const scoringFamily = getScoringFamilyForMode(event?.scoringMode);
   const assignedIds = new Set<number>();
 
@@ -111,6 +112,7 @@ export const validateFlightConfiguration = (league: any, event: any) => {
         throw new Error(`Invalid team matchup at flight index ${flightIndex}.`);
       }
 
+      const rosterSizes: number[] = [];
       for (const teamId of teamIds as number[]) {
         const team = teamsById.get(teamId);
         if (!team) throw new Error(`Unable to resolve team IDs for flight index ${flightIndex}.`);
@@ -118,10 +120,27 @@ export const validateFlightConfiguration = (league: any, event: any) => {
           throw new Error(`Team ${teamId} is assigned to more than one flight.`);
         }
         const rosterSize = Array.isArray(team.players) ? team.players.length : 0;
-        if (rosterSize < (scoringFamily === 'match' ? 2 : 1)) {
+        if (['four-ball-match', 'alternate-shot'].includes(scoringMode) && rosterSize !== 2) {
+          throw new Error(`Team ${teamId} requires exactly two active players for this format.`);
+        }
+        if (scoringMode === 'scramble' && (rosterSize < 2 || rosterSize > 4)) {
+          throw new Error(`Team ${teamId} requires two to four active players for a scramble.`);
+        }
+        if (scoringMode === 'match-play' && rosterSize < 2) {
+          throw new Error(`Team ${teamId} requires at least two active players for match play.`);
+        }
+        if (rosterSize < 1) {
           throw new Error(`Team ${teamId} does not have enough active players for this event.`);
         }
+        rosterSizes.push(rosterSize);
         assignedIds.add(teamId);
+      }
+      if (
+        ['stroke-play', 'stableford', 'maximum-score', 'best-ball', 'match-play', 'four-ball-match']
+          .includes(scoringMode) &&
+        new Set(rosterSizes).size !== 1
+      ) {
+        throw new Error(`Team flight ${flightIndex + 1} requires equal roster sizes.`);
       }
     });
   }
@@ -304,9 +323,8 @@ export class FlightGen {
       const team1Id = Number(team1.id);
       const team2Id = Number(team2.id);
 
-      // for match play only take 2 players from each team, for stroke play take all players on the team
-      const team1PlayerIds = team1.players.map((p: any) => p.id).slice(0, 2);
-      const team2PlayerIds = team2.players.map((p: any) => p.id).slice(0, 2);
+      const team1PlayerIds = team1.players.map((p: any) => p.id);
+      const team2PlayerIds = team2.players.map((p: any) => p.id);
 
       const startsAt = getFlightStartsAt(this.event.startsAt, this.event.interval, Number(i));
 

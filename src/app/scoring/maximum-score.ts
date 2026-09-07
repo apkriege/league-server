@@ -40,7 +40,7 @@ export const getMaximumGrossScore = ({
 }) => {
   if (rule.type === 'fixed') return rule.strokes;
   if (rule.type === 'relative-to-par') return par + rule.strokesOverPar;
-  return par + 2 + Math.max(0, pops);
+  return par + 2 + pops;
 };
 
 export const applyMaximumScore = ({
@@ -58,7 +58,7 @@ export const applyMaximumScore = ({
   const cappedGross = Math.min(gross, maximumGross);
   return {
     gross: cappedGross,
-    net: Math.max(0, cappedGross - Math.max(0, pops)),
+    net: Math.max(0, cappedGross - pops),
     maximumGross,
     wasCapped: cappedGross !== gross,
   };

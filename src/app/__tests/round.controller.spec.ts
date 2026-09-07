@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const processMock = vi.fn();
 const roundConstructorMock = vi.fn();
 const mockPrisma: any = {
+  $queryRaw: vi.fn().mockResolvedValue([]),
   event: { findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn(), findUnique: vi.fn() },
   flight: { findFirst: vi.fn(), findMany: vi.fn(), update: vi.fn() },
   round: { findFirst: vi.fn(), updateMany: vi.fn(), update: vi.fn() },
@@ -18,6 +19,13 @@ vi.mock('../services/round', () => ({
     roundConstructorMock(...args);
     return { process: processMock };
   },
+}));
+vi.mock('../services/seasonSync', () => ({
+  SeasonSync: { recalculateLeague: vi.fn().mockResolvedValue({}) },
+}));
+vi.mock('../services/scoreHistory', () => ({
+  readFlightScoreSnapshot: vi.fn().mockResolvedValue({ flightId: 1, players: [], teamScores: [] }),
+  recordScoreRevision: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../utils/audit', () => ({ writeAuditLog: vi.fn() }));
 

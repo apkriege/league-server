@@ -969,6 +969,207 @@ describe('API integration', () => {
     expect(audit).toBeTruthy();
   });
 
+  it('persists and recalculates every supported scoring mode', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const modes = [
+      'stroke-play',
+      'match-play',
+      'stableford',
+      'maximum-score',
+      'best-ball',
+      'four-ball-match',
+      'scramble',
+      'alternate-shot',
+    ];
+    const events = await prisma.event.findMany({
+      where: {
+        name: { startsWith: '[SCORING LAB]', contains: 'Ready to Score' },
+        scoringMode: { in: modes },
+        flights: { some: { status: { not: 'completed' }, deletedAt: null } },
+      },
+      orderBy: { id: 'asc' },
+      include: {
+        flights: {
+          where: { status: { not: 'completed' }, deletedAt: null },
+          orderBy: { id: 'asc' },
+          include: {
+            players: { orderBy: { id: 'asc' } },
+            teams: { orderBy: { id: 'asc' } },
+          },
+        },
+      },
+    });
+    const eventByMode = new Map(events.map((event) => [event.scoringMode, event]));
+    expect([...eventByMode.keys()].sort()).toEqual([...modes].sort());
+
+    for (const mode of modes) {
+      const event = eventByMode.get(mode);
+      expect(event).toBeTruthy();
+      const flight = event!.flights[0];
+      const scores = Object.fromEntries(
+        Array.from({ length: Number(event!.holes) }, (_, index) => [index + 1, 5]),
+      );
+      const shared = mode === 'scramble' || mode === 'alternate-shot';
+      const payload = shared
+        ? {
+            eventId: event!.id,
+            flightId: flight.id,
+            teamScores: flight.teams.map((entry) => ({ teamId: entry.teamId, scores })),
+          }
+        : {
+            eventId: event!.id,
+            flightId: flight.id,
+            players: flight.players.map((entry) => ({
+              playerId: entry.playerId,
+              teamId: entry.teamId,
+              opponentId: entry.opponentId,
+              scores,
+            })),
+          };
+
+      const create = await admin
+        .post(`/api/leagues/${event!.leagueId}/events/${event!.id}/scores`)
+        .send(payload);
+      expect(create.status, `${mode} create`).toBe(201);
+
+      const editedScores = { ...scores, 1: 6 };
+      const editedPayload = shared
+        ? {
+            ...payload,
+            teamScores: flight.teams.map((entry) => ({
+              teamId: entry.teamId,
+              scores: editedScores,
+            })),
+          }
+        : {
+            ...payload,
+            players: flight.players.map((entry) => ({
+              playerId: entry.playerId,
+              teamId: entry.teamId,
+              opponentId: entry.opponentId,
+              scores: editedScores,
+            })),
+          };
+      const update = await admin
+        .put(`/api/leagues/${event!.leagueId}/events/${event!.id}/scores`)
+        .send(editedPayload);
+      expect(update.status, `${mode} update`).toBe(200);
+
+      const savedGross = shared
+        ? (
+            await prisma.team_score.findFirstOrThrow({
+              where: {
+                hole: 1,
+                teamRound: { eventId: event!.id, teamId: flight.teams[0].teamId },
+              },
+            })
+          ).gross
+        : (
+            await prisma.score.findFirstOrThrow({
+              where: {
+                hole: 1,
+                round: { eventId: event!.id, playerId: flight.players[0].playerId },
+              },
+            })
+          ).gross;
+      expect(savedGross, `${mode} persisted edit`).toBe(6);
+    }
+  }, 60_000);
+
+  it('previews an event with each player handicap from the latest prior round', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const event = await prisma.event.findFirstOrThrow({
+      where: {
+        name: { startsWith: '[SCORING LAB] Individual Match Play — Ready to Score' },
+      },
+      include: { flights: { orderBy: { id: 'asc' }, include: { players: true } } },
+    });
+    const playerId = event.flights[0].players[0].playerId;
+    const priorRound = await prisma.round.findFirstOrThrow({
+      where: {
+        playerId,
+        status: 'completed',
+        deletedAt: null,
+        event: { leagueId: event.leagueId, startsAt: { lt: event.startsAt } },
+        postHandicap: { not: null },
+      },
+      orderBy: [{ date: 'desc' }, { id: 'desc' }],
+    });
+
+    const response = await admin.get(`/api/leagues/${event.leagueId}/events/${event.id}`);
+    expect(response.status).toBe(200);
+    const player = response.body.flights
+      .flatMap((flight: any) => flight.players)
+      .find((entry: any) => entry.playerId === playerId);
+    expect(player.handicapIndex).toBe(Number(priorRound.postHandicap));
+  });
+
+  it.each(['Scramble', 'Alternate Shot'])('ranks %s placement points across every team in the event', async (mode) => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const event = await prisma.event.findFirstOrThrow({
+      where: {
+        name: `[SCORING LAB] Team ${mode} — Ready to Score`,
+      },
+      include: {
+        flights: {
+          orderBy: { id: 'asc' },
+          include: { teams: { orderBy: { id: 'asc' } } },
+        },
+        teamRounds: { where: { deletedAt: null } },
+      },
+    });
+    const existingTeamIds = new Set(event.teamRounds.map((round) => round.teamId));
+    let teamIndex = 0;
+
+    for (const flight of event.flights) {
+      const teamScores = flight.teams.map((entry) => {
+        const gross = 3 + teamIndex * 2;
+        teamIndex += 1;
+        return {
+          teamId: entry.teamId,
+          scores: Object.fromEntries(
+            Array.from({ length: Number(event.holes) }, (_, index) => [index + 1, gross]),
+          ),
+        };
+      });
+      const hasSavedScores = flight.teams.every((entry) => existingTeamIds.has(entry.teamId));
+      const requestBuilder = hasSavedScores
+        ? admin.put(`/api/leagues/${event.leagueId}/events/${event.id}/scores`)
+        : admin.post(`/api/leagues/${event.leagueId}/events/${event.id}/scores`);
+      const response = await requestBuilder.send({
+        eventId: event.id,
+        flightId: flight.id,
+        teamScores,
+      });
+      expect(response.status).toBe(hasSavedScores ? 200 : 201);
+    }
+
+    const [teamRounds, eventPoints] = await Promise.all([
+      prisma.team_round.findMany({
+        where: { eventId: event.id, deletedAt: null },
+        orderBy: [{ net: 'asc' }, { teamId: 'asc' }],
+      }),
+      prisma.team_event_points.findMany({
+        where: { eventId: event.id },
+        orderBy: { points: 'desc' },
+      }),
+    ]);
+    expect(teamRounds).toHaveLength(4);
+    expect(teamRounds.map((round) => round.pointsEarned)).toEqual([10, 8, 6, 4]);
+    expect(eventPoints.map((row) => row.points)).toEqual([10, 8, 6, 4]);
+
+    const response = await admin.get(`/api/leagues/${event.leagueId}/events/${event.id}`);
+    expect(response.status).toBe(200);
+    expect(response.body.teamRounds).toHaveLength(4);
+    expect(
+      response.body.teamRounds.map((round: { pointsEarned: number }) => round.pointsEarned)
+        .sort((left: number, right: number) => right - left),
+    ).toEqual([10, 8, 6, 4]);
+  });
+
   it('rejects changes to completed flights', async () => {
     const admin = request.agent(app);
     await login(admin, 'admin@test.com');
@@ -1006,13 +1207,20 @@ describe('API integration', () => {
     });
     const targetFlight = league.events[0].flights[0];
     const untouchedFlight = league.events[0].flights[1];
-    const originalTargetIds = targetFlight.players.map((entry) => entry.playerId);
     const untouchedIds = untouchedFlight.players.map((entry) => entry.playerId);
-    const replacement = league.players.find((player) => !originalTargetIds.includes(player.id));
-    expect(replacement).toBeTruthy();
 
-    const payload = targetFlight.players.map((entry, index) => ({
-      playerId: index === 0 ? replacement!.id : entry.playerId,
+    const conflictingPayload = targetFlight.players.map((entry, index) => ({
+      playerId: index === 0 ? untouchedIds[0] : entry.playerId,
+      teamId: entry.teamId,
+      opponentId: entry.opponentId,
+    }));
+    const conflict = await admin
+      .put(`/api/flights/${targetFlight.id}/players`)
+      .send({ players: conflictingPayload });
+    expect(conflict.status).toBe(409);
+
+    const payload = [...targetFlight.players].reverse().map((entry) => ({
+      playerId: entry.playerId,
       teamId: entry.teamId,
       opponentId: entry.opponentId,
     }));

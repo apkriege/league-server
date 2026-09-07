@@ -94,6 +94,7 @@ model password_reset_token {
 }
 
 model email_verification_token {
+  pendingEmail String? @map("pending_email")
   id           Int       @id @default(autoincrement())
   userId       Int       @map("user_id")
   tokenHash    String    @unique @map("token_hash")
@@ -208,7 +209,7 @@ model course {
   externalId       String?   @map("external_id")
   scorecardUrl     String?   @map("scorecard_url")
   sourceUpdatedAt  DateTime? @map("source_updated_at") @db.Timestamptz(3)
-  usgaCourseId     Int?      @unique @map("usga_course_id")
+  usgaCourseId     Int?      @map("usga_course_id")
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(3)
@@ -218,8 +219,10 @@ model course {
   events     event[]
   rounds     round[]
   teamRounds team_round[]
+  eventRouteSegments event_route_segment[]
 
   @@index([clubId])
+  @@index([usgaCourseId])
   @@index([deletedAt])
   @@unique([externalProvider, externalId])
 }
@@ -255,6 +258,7 @@ model tee {
   events     event[]
   rounds     round[]
   teamRounds team_round[]
+  eventRouteSegments event_route_segment[]
 
   @@index([courseId])
   @@index([deletedAt])
@@ -351,6 +355,7 @@ model player {
   opponentOf    round[]             @relation("round_opponentId")
   user          user?               @relation(fields: [userId], references: [id])
   invitations   league_invitation[]
+  handicapAdjustments player_handicap_adjustment[]
 
   @@index([leagueId])
   @@index([teamId])
@@ -378,6 +383,23 @@ model team {
   @@index([deletedAt])
 }
 
+model event_route_segment {
+  id        Int      @id @default(autoincrement())
+  eventId   Int      @map("event_id")
+  courseId  Int      @map("course_id")
+  teeId     Int      @map("tee_id")
+  position  Int
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  event  event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  course course @relation(fields: [courseId], references: [id])
+  tee    tee    @relation(fields: [teeId], references: [id])
+
+  @@unique([eventId, position])
+  @@index([courseId])
+  @@index([teeId])
+}
+
 model event {
   id            Int       @id @default(autoincrement())
   leagueId      Int       @map("league_id")
@@ -393,6 +415,7 @@ model event {
   interval      Int
   scoringMode   String    @default("stroke-play") @map("scoring_mode")
   scoringConfig Json?     @map("scoring_config")
+  routeSnapshot Json?     @map("route_snapshot")
   ptsPerHole    Int?      @map("pts_per_hole")
   ptsPerMatch   Int?      @map("pts_per_match")
   ptsPerTeamWin Int?      @map("pts_per_team_win")
@@ -410,6 +433,7 @@ model event {
   rounds          round[]
   teamEventPoints team_event_points[]
   teamRounds      team_round[]
+  routeSegments   event_route_segment[]
 
   @@index([leagueId])
   @@index([courseId])
@@ -507,7 +531,9 @@ model round {
   putts           Int
   courseRating    Float     @map("course_rating")
   courseSlope     Float     @map("course_slope")
-  courseHandicap  Int?      @map("course_handicap")
+  playingHandicap Int?      @map("playing_handicap")
+  competitionGross Int?     @map("competition_gross")
+  competitionNet  Int?      @map("competition_net")
   differential    Float?
   preHandicap     Float?    @map("pre_handicap")
   postHandicap    Float?    @map("post_handicap")
@@ -560,6 +586,9 @@ model score {
   sandSave       Boolean? @map("sand_save")
   penaltyStrokes Int?     @map("penalty_strokes")
   popsReceived   Int?     @map("pops_received")
+  competitionGross Int?   @map("competition_gross")
+  competitionNet Int?     @map("competition_net")
+  competitionPops Int?    @map("competition_pops")
   points         Float    @default(0) @map("points")
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
@@ -582,7 +611,6 @@ model team_round {
   gross             Int
   net               Int
   adjusted          Int
-  courseHandicap    Int?      @map("course_handicap")
   handicapAllowance Float?    @map("handicap_allowance")
   handicapSnapshot  Json?     @map("handicap_snapshot")
   pointsEarned      Float     @default(0) @map("points_earned")
@@ -722,4 +750,14 @@ model league_onboarding {
   updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   league league @relation(fields: [leagueId], references: [id])
+}
+
+
+model player_handicap_adjustment {
+  id Int @id @default(autoincrement())
+  playerId Int @map("player_id")
+  handicap Float
+  effectiveAt DateTime @default(now()) @map("effective_at") @db.Timestamptz(3)
+  player player @relation(fields: [playerId], references: [id])
+  @@index([playerId, effectiveAt])
 }

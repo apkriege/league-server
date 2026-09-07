@@ -2,6 +2,8 @@ import { Request, Response } from 'express';
 import UserService from '../models/user';
 import { prisma } from '../../prisma';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+import { sendEmailVerificationEmail } from '../services/emailVerificationEmail';
 import { getPublicErrorResponse } from '../utils/error-response';
 
 const serializeUser = (user: any) => ({
@@ -127,22 +129,70 @@ class UserController {
         return res.status(400).json({ message: 'No valid fields provided for update' });
       }
 
-      if (updatedUser.password) {
+      const existing = await UserService.findById(id);
+      if (!existing) return res.status(404).json({ message: 'User not found' });
+      const changedEmail = typeof updatedUser.email === 'string' && updatedUser.email !== existing.email
+        ? updatedUser.email : null;
+      if (changedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(changedEmail)) {
+        return res.status(400).json({ message: 'Enter a valid email address' });
+      }
+      const passwordChanged = Boolean(updatedUser.password);
+      if (changedEmail || passwordChanged) {
+        const actor = await UserService.findById(sessionUser.id);
+        if (!actor || !await bcrypt.compare(String(req.body?.currentPassword || ''), actor.password)) {
+          return res.status(403).json({ message: 'Your current password is required for this change' });
+        }
+      }
+      if (passwordChanged) {
         if (String(updatedUser.password).length < 8) {
           return res.status(400).json({ message: 'Password must be at least 8 characters' });
         }
         updatedUser.password = await bcrypt.hash(String(updatedUser.password), 10);
       }
-      const user = await UserService.update(id, updatedUser);
+      delete updatedUser.email;
+      const verificationToken = changedEmail ? crypto.randomBytes(32).toString('hex') : null;
+      const user = await prisma.$transaction(async (tx) => {
+        if (changedEmail) {
+          const duplicate = await tx.user.findUnique({ where: { email: changedEmail }, select: { id: true } });
+          if (duplicate) throw new Error('Email address is already in use');
+          await tx.email_verification_token.updateMany({
+            where: { userId: id, usedAt: null }, data: { usedAt: new Date() },
+          });
+          await tx.email_verification_token.create({
+            data: {
+              userId: id, pendingEmail: changedEmail,
+              tokenHash: crypto.createHash('sha256').update(String(verificationToken)).digest('hex'),
+              redirectPath: '/leagues', expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            },
+          });
+        }
+        if (passwordChanged) {
+          await tx.session.deleteMany({
+            where: { sid: { not: req.sessionID }, sess: { path: ['userId'], equals: id } },
+          });
+          await tx.password_reset_token.updateMany({
+            where: { userId: id, usedAt: null }, data: { usedAt: new Date() },
+          });
+        }
+        return tx.user.update({ where: { id }, data: updatedUser });
+      });
+      if (changedEmail && verificationToken) {
+        await sendEmailVerificationEmail({
+          userId: id, email: changedEmail, firstName: user.firstName, token: verificationToken,
+        });
+      }
 
       if (!user) {
         res.status(404).send({ message: 'User not found' });
         return;
       }
 
-      res.status(200).json(serializeUser(user));
+      res.status(200).json({ ...serializeUser(user), ...(changedEmail ? { message: 'Verify your new email address to finish the change.' } : {}) });
     } catch (error) {
       console.error(error);
+      if (error instanceof Error && error.message === 'Email address is already in use') {
+        return res.status(409).json({ message: error.message });
+      }
       return sendPublicError(res, error);
     }
   };

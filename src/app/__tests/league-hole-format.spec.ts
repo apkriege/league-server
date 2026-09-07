@@ -18,6 +18,8 @@ describe('league hole format', () => {
     expect(validateEventHolesForLeague('mixed', 9)).toBe(9);
     expect(validateEventHolesForLeague('mixed', 18)).toBe(18);
     expect(() => validateEventHolesForLeague('9', 18)).toThrow('9-hole league');
+    expect(validateEventHolesForLeague('9', 18, 9)).toBe(18);
+    expect(() => validateEventHolesForLeague('9', 18, 18)).toThrow('9-hole league');
   });
 
   it('rejects unsupported league values', () => {

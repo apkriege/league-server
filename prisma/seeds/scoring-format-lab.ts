@@ -53,6 +53,7 @@ const fixtures: ModeFixture[] = [
     scoringConfig: {
       handicapAllowance: 1,
       stablefordPointScale: {
+        condorOrBetter: 6,
         albatrossOrBetter: 5,
         eagle: 4,
         birdie: 3,
@@ -94,6 +95,7 @@ const fixtures: ModeFixture[] = [
     scoringConfig: {
       handicapAllowance: 1,
       stablefordPointScale: {
+        condorOrBetter: 6,
         albatrossOrBetter: 5,
         eagle: 4,
         birdie: 3,
@@ -132,14 +134,14 @@ const fixtures: ModeFixture[] = [
     label: 'Team Scramble',
     model: 'team',
     scoringFamily: 'stroke',
-    scoringConfig: { handicapAllowance: 1 },
+    scoringConfig: { handicapAllowance: 1, sharedTeamScorecard: 'male' },
   },
   {
     mode: 'alternate-shot',
     label: 'Team Alternate Shot',
     model: 'team',
     scoringFamily: 'stroke',
-    scoringConfig: { handicapAllowance: 1 },
+    scoringConfig: { handicapAllowance: 1, sharedTeamScorecard: 'male' },
   },
 ];
 

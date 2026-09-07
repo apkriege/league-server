@@ -188,6 +188,10 @@ class LeagueController {
             include: {
               course: true,
               tee: true,
+              routeSegments: {
+                orderBy: { position: 'asc' },
+                include: { course: true, tee: true },
+              },
             },
           },
           players: {
@@ -341,6 +345,10 @@ class LeagueController {
             where: { deletedAt: null },
             include: {
               course: true,
+              routeSegments: {
+                orderBy: { position: 'asc' },
+                include: { course: true, tee: true },
+              },
               flights: {
                 include: {
                   teams: {

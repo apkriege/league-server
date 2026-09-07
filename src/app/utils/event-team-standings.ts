@@ -74,22 +74,21 @@ export const calculateEventTeamStandings = (
       players,
       playerPoints,
       teamPoints,
-      totalPoints: roundToOneDecimal(playerPoints + teamPoints),
+      totalPoints: teamPoints,
     };
   });
 
   standings.sort(
     (left, right) =>
-      right.totalPoints - left.totalPoints ||
-      right.playerPoints - left.playerPoints ||
+      right.teamPoints - left.teamPoints ||
       left.name.localeCompare(right.name),
   );
 
   let previousTotal: number | null = null;
   let previousRank = 0;
   return standings.map((standing, index) => {
-    const rank = previousTotal === standing.totalPoints ? previousRank : index + 1;
-    previousTotal = standing.totalPoints;
+    const rank = previousTotal === standing.teamPoints ? previousRank : index + 1;
+    previousTotal = standing.teamPoints;
     previousRank = rank;
     return { ...standing, rank };
   });

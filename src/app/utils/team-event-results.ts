@@ -1,6 +1,18 @@
+type SharedTeamResult = {
+  teamId: number;
+  gross: number;
+  net: number;
+  scores: Array<{ hole: number; gross: number; net: number; par: number }>;
+};
+
 type EventTeamPointsRow = {
   teamId: number;
   points: number | null;
+};
+
+type TeamEventRouteSegment = {
+  position: number;
+  course: { name: string };
 };
 
 type TeamEventRound = {
@@ -48,12 +60,17 @@ export type TeamProfileEvent = {
   status: string;
   holes: number;
   course: { name: string } | null;
+  routeSegments?: TeamEventRouteSegment[];
   teamEventPoints: EventTeamPointsRow[];
   flights: TeamEventFlight[];
   rounds: TeamEventRound[];
+  teamRounds?: SharedTeamResult[];
 };
 
 export type TeamEventResult = {
+  sharedRound?: SharedTeamResult;
+  fieldRank?: number | null;
+  fieldSize?: number;
   id: number;
   name: string;
   startsAt: Date | string;
@@ -141,6 +158,16 @@ export const buildTeamEventResults = (
       }
     }
 
+    const isMatch = ['match-play', 'four-ball-match'].includes(event.scoringMode);
+    if (!isMatch) opponents.clear();
+    const sharedRound = event.teamRounds?.find((round) => round.teamId === teamId);
+    const fieldSize = event.teamRounds?.length || event.teamEventPoints.length;
+    const ownPoints = event.teamEventPoints.find((row) => row.teamId === teamId)?.points;
+    const fieldRank = isMatch || event.status !== 'completed' ? null
+      : sharedRound ? 1 + (event.teamRounds ?? []).filter((round) => round.net < sharedRound.net).length
+      : ownPoints != null && event.teamEventPoints.some((row) => Number(row.points) !== 0)
+        ? 1 + event.teamEventPoints.filter((row) => Number(row.points) > ownPoints).length : null;
+
     const assignedPlayerIds = assignedPlayerIdsByTeamId.get(teamId) ?? new Set<number>();
     const playerRounds = event.rounds
       .filter((round) => assignedPlayerIds.has(Number(round.playerId)))
@@ -202,13 +229,16 @@ export const buildTeamEventResults = (
           playerPoints: opponentPlayerPoints,
           teamPoints: opponentTeamPoints,
           totalPoints: opponentHasResult
-            ? roundToOneDecimal(opponentPlayerPoints + opponentTeamPoints)
+            ? opponentTeamPoints
             : null,
         };
       })
       .sort((left, right) => left.name.localeCompare(right.name));
 
     return {
+      sharedRound,
+      fieldRank,
+      fieldSize,
       id: Number(event.id),
       name: String(event.name || 'Event'),
       startsAt: event.startsAt,
@@ -218,14 +248,20 @@ export const buildTeamEventResults = (
       type: String(event.type || ''),
       status: String(event.status || ''),
       holes: Number(event.holes || 0),
-      courseName: event.course?.name || null,
+      courseName:
+        (event.routeSegments ?? [])
+          .slice()
+          .sort((left, right) => left.position - right.position)
+          .map((segment) => segment.course.name)
+          .filter(Boolean)
+          .join(' → ') || event.course?.name || null,
       flightId: assignedFlights[0]?.id ? Number(assignedFlights[0].id) : null,
       flightStartsAt: assignedFlights[0]?.startsAt || null,
       isAssigned: assignedFlights.length > 0,
       opponents: opponentResults,
       playerPoints,
       teamPoints,
-      totalPoints: hasRecordedResult ? roundToOneDecimal(playerPoints + teamPoints) : null,
+      totalPoints: hasRecordedResult ? teamPoints : null,
       playerRounds,
     };
   });

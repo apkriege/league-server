@@ -12,6 +12,10 @@ import {
 } from '../emailTemplates/courseRequest';
 import { sendAppEmail } from '../services/email';
 import { normalizeTimeZone } from '../utils/time-zone';
+import {
+  CourseTeeValidationError,
+  validateCourseTeeData,
+} from '../utils/course-tee-validation';
 
 const nullableNumber = (value: unknown) =>
   value === null || value === undefined || value === '' ? null : Number(value);
@@ -76,6 +80,7 @@ const normalizeTee = (tee: any) => ({
 
 const buildCourseData = (course: any) => {
   const tees = Array.isArray(course?.tees) ? course.tees.map(normalizeTee) : null;
+  validateCourseTeeData({ numHoles: course.numHoles, par: course.par, tees: tees || [] });
 
   return {
     clubId: Number(course.clubId),
@@ -312,6 +317,9 @@ class CourseController {
       if (error instanceof Error && error.message.startsWith('Invalid IANA timezone')) {
         return res.status(400).json({ message: error.message });
       }
+      if (error instanceof CourseTeeValidationError) {
+        return res.status(400).json({ message: error.message });
+      }
       res.status(500).json({ message: 'Internal server error' });
     }
   };
@@ -346,6 +354,9 @@ class CourseController {
               ...normalizeTee(tee),
             }))
           : null;
+      if (incomingTees) {
+        validateCourseTeeData({ numHoles: course.numHoles, par: course.par, tees: incomingTees });
+      }
 
       await prisma.$transaction(async (tx: any) => {
         // 1. Update base course fields
@@ -380,7 +391,17 @@ class CourseController {
             },
             select: { id: true },
           });
-          if (scheduledEvent) {
+          const scheduledRouteSegment = await tx.event_route_segment.findFirst({
+            where: {
+              teeId: { in: removedTeeIds },
+              event: {
+                deletedAt: null,
+                status: { notIn: ['completed', 'canceled'] },
+              },
+            },
+            select: { id: true },
+          });
+          if (scheduledEvent || scheduledRouteSegment) {
             throw new Error('A selected tee is assigned to an upcoming event. Update that event first.');
           }
           await tx.tee.updateMany({
@@ -422,6 +443,9 @@ class CourseController {
       ) {
         return res.status(400).json({ message: error.message });
       }
+      if (error instanceof CourseTeeValidationError) {
+        return res.status(400).json({ message: error.message });
+      }
       if (error instanceof Error && error.message.includes('upcoming event')) {
         return res.status(409).json({ message: error.message });
       }
@@ -440,7 +464,17 @@ class CourseController {
         },
         select: { id: true },
       });
-      if (scheduledEvent) {
+      const scheduledRouteSegment = await prisma.event_route_segment.findFirst({
+        where: {
+          courseId: id,
+          event: {
+            deletedAt: null,
+            status: { notIn: ['completed', 'canceled'] },
+          },
+        },
+        select: { id: true },
+      });
+      if (scheduledEvent || scheduledRouteSegment) {
         return res.status(409).json({
           message: 'This course is assigned to an upcoming event. Update that event first.',
         });

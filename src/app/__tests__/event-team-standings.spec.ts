@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { calculateEventTeamStandings } from '../utils/event-team-standings';
 
 describe('event team standings', () => {
-  it('combines each player total with the separately awarded team points', () => {
+  it('ranks teams only by separately awarded team points', () => {
     const standings = calculateEventTeamStandings(
       [
         { teamId: 10, name: 'Team Ten' },
@@ -44,13 +44,13 @@ describe('event team standings', () => {
       teamId: 10,
       playerPoints: 9,
       teamPoints: 2,
-      totalPoints: 11,
+      totalPoints: 2,
     });
     expect(standings[0].players).toEqual([
       { playerId: 1, name: 'Alex Ace', points: 5 },
       { playerId: 2, name: 'Blake Birdie', points: 4 },
     ]);
-    expect(standings[1]).toMatchObject({ rank: 2, teamId: 20, totalPoints: 7 });
+    expect(standings[1]).toMatchObject({ rank: 2, teamId: 20, totalPoints: 0 });
   });
 
   it('keeps assigned teams visible when no team-points row exists', () => {

@@ -1,6 +1,8 @@
+import { lockScoringEvent } from '../services/scoringTransaction';
 import { Request, Response } from 'express';
 import { prisma } from '../../prisma';
 import { writeAuditLog } from '../utils/audit';
+import { modelEventTeeForRound } from '../utils/event-route';
 
 export default class FlightController {
   static getFlight = async (req: Request, res: Response) => {
@@ -44,7 +46,19 @@ export default class FlightController {
 
       const flight = await prisma.flight.findUnique({
         where: { id: flightId },
-        include: { event: { select: { leagueId: true } } },
+        include: {
+          teams: { where: { deletedAt: null }, select: { teamId: true } },
+          event: {
+            include: {
+              course: true,
+              tee: true,
+              routeSegments: {
+                orderBy: { position: 'asc' },
+                include: { course: true, tee: true },
+              },
+            },
+          },
+        },
       });
       if (!flight) {
         return res.status(404).json({ message: 'Flight not found' });
@@ -72,13 +86,40 @@ export default class FlightController {
       }
       const validPlayers = await prisma.player.findMany({
         where: { id: { in: playerIds }, leagueId: flight.event.leagueId, deletedAt: null },
-        select: { id: true },
+        select: { id: true, gender: true },
       });
       if (validPlayers.length !== playerIds.length) {
         return res.status(400).json({ message: 'All flight players must belong to the event league' });
       }
+      const conflictingAssignment = await prisma.flight_player.findFirst({
+        where: {
+          playerId: { in: playerIds },
+          deletedAt: null,
+          flightId: { not: flightId },
+          flight: { eventId: flight.eventId, deletedAt: null },
+        },
+        select: { playerId: true },
+      });
+      if (conflictingAssignment) {
+        return res.status(409).json({
+          message: 'A player cannot be assigned to more than one flight in the same event.',
+        });
+      }
+      try {
+        validPlayers.forEach((player) => modelEventTeeForRound(flight.event, player.gender));
+      } catch (error) {
+        return res.status(400).json({
+          message: error instanceof Error ? error.message : 'The event tee is not valid for every player.',
+        });
+      }
 
       const teamIds = [...new Set(players.map((player: any) => Number(player?.teamId)).filter(Boolean))];
+      if (
+        String(flight.event.format).toLowerCase() === 'team' &&
+        players.some((player: any) => !Number.isInteger(Number(player?.teamId)) || Number(player.teamId) <= 0)
+      ) {
+        return res.status(400).json({ message: 'Every player in a team event must have an assigned team' });
+      }
       if (teamIds.length > 0) {
         const validTeams = await prisma.team.findMany({
           where: { id: { in: teamIds }, leagueId: flight.event.leagueId, deletedAt: null },
@@ -87,17 +128,48 @@ export default class FlightController {
         if (validTeams.length !== teamIds.length) {
           return res.status(400).json({ message: 'All flight teams must belong to the event league' });
         }
+        const assignedTeamIds = new Set(flight.teams.map((team) => Number(team.teamId)));
+        if (teamIds.some((teamId) => !assignedTeamIds.has(teamId))) {
+          return res.status(400).json({ message: 'Flight players must stay on a team assigned to this flight' });
+        }
       }
 
-      const opponentIds = players.map((player: any) => Number(player?.opponentId)).filter(Boolean);
+      const opponentByPlayerId = new Map<number, number>();
+      for (const player of players) {
+        if (player?.opponentId == null || player.opponentId === '') continue;
+        const playerId = Number(player.playerId);
+        const opponentId = Number(player.opponentId);
+        if (!Number.isInteger(opponentId) || opponentId <= 0 || opponentId === playerId) {
+          return res.status(400).json({ message: 'Flight opponents must be different valid players' });
+        }
+        opponentByPlayerId.set(playerId, opponentId);
+      }
+      const opponentIds = [...opponentByPlayerId.values()];
       const flightPlayerIds = new Set(playerIds);
       if (opponentIds.some((id: number) => !flightPlayerIds.has(id))) {
         return res.status(400).json({
           message: 'Flight opponents must be players in the same flight',
         });
       }
+      if (
+        [...opponentByPlayerId].some(
+          ([playerId, opponentId]) => opponentByPlayerId.get(opponentId) !== playerId,
+        )
+      ) {
+        return res.status(400).json({ message: 'Flight opponents must be reciprocal pairs' });
+      }
 
       await prisma.$transaction(async (tx) => {
+        await lockScoringEvent(tx, flight.event.leagueId, flight.eventId, false);
+        const current = await tx.flight.findUnique({ where: { id: flightId } });
+        if (!current || current.deletedAt || current.status === 'completed') throw new Error('Flight cannot be edited after scoring');
+        const conflict = await tx.flight_player.findFirst({
+          where: {
+            playerId: { in: playerIds }, flightId: { not: flightId }, deletedAt: null,
+            flight: { eventId: flight.eventId, deletedAt: null },
+          },
+        });
+        if (conflict) throw new Error('Player is already assigned to another flight');
         await Promise.all(
           existingFlightPlayers.map((existingRow, idx) => {
             const nextPlayer = players[idx] || {};

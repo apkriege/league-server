@@ -18,10 +18,15 @@ export type ScoringRound = {
   playerId: number;
   teamId: number | null;
   opponentId: number | null;
-  courseHandicap: number;
+  playerHandicap: number;
+  playingHandicap?: number;
+  competitionGross?: number;
+  competitionNet?: number;
+  competitionPops?: Map<number, number>;
   gross: number;
   net: number;
   scores: ScoredHole[];
+  holes?: ScoringHole[];
   pointsEarned: number;
   matchPoints: number;
 };

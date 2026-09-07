@@ -6,14 +6,9 @@ export const toScoringNumber = (value: unknown, fallback = 0) => {
 export const roundScoringPoints = (value: number) => Math.round(value * 10) / 10;
 
 export const parsePlacementPoints = (raw: unknown): number[] => {
-  if (Array.isArray(raw)) {
-    return raw.map(Number).filter((value) => Number.isFinite(value) && value >= 0);
-  }
-  if (typeof raw === 'string') {
-    return raw
-      .split(',')
-      .map((value) => Number(value.trim()))
-      .filter((value) => Number.isFinite(value) && value >= 0);
-  }
-  return [];
+  const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(',') : [];
+  return values
+    .filter((value) => value != null && String(value).trim() !== '')
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value >= 0);
 };

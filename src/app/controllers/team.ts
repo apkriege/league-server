@@ -98,6 +98,13 @@ class TeamController {
               status: true,
               holes: true,
               course: { select: { name: true } },
+              routeSegments: {
+                orderBy: { position: 'asc' },
+                select: {
+                  position: true,
+                  course: { select: { name: true } },
+                },
+              },
               teamEventPoints: {
                 select: { teamId: true, points: true },
               },
@@ -135,6 +142,13 @@ class TeamController {
                       player: { select: { teamId: true } },
                     },
                   },
+                },
+              },
+              teamRounds: {
+                where: { deletedAt: null, status: 'completed' },
+                select: {
+                  teamId: true, gross: true, net: true,
+                  scores: { select: { hole: true, gross: true, net: true, par: true }, orderBy: { hole: 'asc' } },
                 },
               },
               rounds: {
@@ -431,8 +445,10 @@ class TeamController {
         const scheduledAssignment = await tx.flight_team.findFirst({
           where: {
             teamId: id,
+            deletedAt: null,
             flight: {
-              event: { status: { not: 'canceled' } },
+              deletedAt: null,
+              event: { deletedAt: null, status: { notIn: ['canceled', 'completed'] } },
             },
           },
           select: { id: true },

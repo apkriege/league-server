@@ -7,6 +7,11 @@ import {
 import { parsePlacementPoints, roundScoringPoints, toScoringNumber } from './numeric';
 import { calculateStablefordPoints } from './stableford';
 import { addTeamEventPoints, getFlightTeamIds } from './team-points';
+import {
+  buildAbsolutePops,
+  getCompetitionHoleNet,
+  getCompetitionNetTotal,
+} from './playing-handicap';
 import type {
   ScoringEvent,
   ScoringFlight,
@@ -33,12 +38,14 @@ export const assignTeamAggregatePoints = ({
   flights,
   roundsByPlayerId,
   teamPoints,
+  holes = [],
 }: {
   event: ScoringEvent;
   mode: AggregateTeamMode;
   flights: ScoringFlight[];
   roundsByPlayerId: Map<number, ScoringRound>;
   teamPoints: TeamEventPointsAccumulator;
+  holes?: ScoringHole[];
 }) => {
   for (const round of roundsByPlayerId.values()) {
     round.pointsEarned = 0;
@@ -46,24 +53,32 @@ export const assignTeamAggregatePoints = ({
   }
   const placementPoints = parsePlacementPoints(event.strokePoints);
   const configuration = normalizeScoringConfiguration(event.scoringConfig, mode);
+  const allRounds = [...roundsByPlayerId.values()];
+  const popsByPlayerId = buildAbsolutePops(
+    allRounds,
+    holes,
+    configuration.handicapAllowance,
+  );
 
-  for (const flight of flights) {
-    const totals = getFlightTeamIds(flight).map((teamId) => {
+  const totals = flights
+    .flatMap((flight) =>
+      getFlightTeamIds(flight).map((teamId) => {
       const rounds = roundsForTeam(flight, teamId, roundsByPlayerId);
       const total = rounds.reduce(
         (value, round) => {
           if (mode === 'maximum-score') {
-            const competition = getMaximumScoreCompetitionTotal(event, round);
+            const roundPops = popsByPlayerId.get(round.playerId);
+            const competition = getMaximumScoreCompetitionTotal(event, round, roundPops);
             return {
               gross: value.gross + competition.gross,
               net: value.net + competition.net,
               stableford:
-                value.stableford + getMaximumScoreStablefordPoints(event, round),
+                value.stableford + getMaximumScoreStablefordPoints(event, round, roundPops),
             };
           }
           return {
             gross: value.gross + round.gross,
-            net: value.net + round.net,
+            net: value.net + getCompetitionNetTotal(round, popsByPlayerId),
             stableford:
               value.stableford +
               (mode === 'stableford' || mode === 'stroke-play'
@@ -71,7 +86,7 @@ export const assignTeamAggregatePoints = ({
                     (sum, score) =>
                       sum +
                       calculateStablefordPoints(
-                        score.net,
+                        getCompetitionHoleNet(round, score.hole, popsByPlayerId) ?? score.net,
                         score.par,
                         configuration.stablefordPointScale,
                       ),
@@ -82,46 +97,47 @@ export const assignTeamAggregatePoints = ({
         },
         { gross: 0, net: 0, stableford: 0 },
       );
-      return { teamId, roundsPlayed: rounds.length, ...total };
-    }).filter((total) => total.roundsPlayed > 0);
+        return { teamId, roundsPlayed: rounds.length, ...total };
+      }),
+    )
+    .filter((total) => total.roundsPlayed > 0);
 
-    if (placementPoints.length === 0) {
-      for (const total of totals) {
-        addTeamEventPoints(
-          teamPoints,
-          event.leagueId,
-          event.id,
-          total.teamId,
-          roundScoringPoints(total.stableford),
-        );
-      }
-      continue;
-    }
-
-    const ranked = [...totals].sort((left, right) =>
-      mode === 'stableford'
-        ? right.stableford - left.stableford || left.net - right.net
-        : left.net - right.net || left.gross - right.gross,
-    );
-    let cursor = 0;
-    while (cursor < ranked.length) {
-      let end = cursor;
-      const isTied = (index: number) =>
-        mode === 'stableford'
-          ? ranked[index].stableford === ranked[cursor].stableford &&
-            ranked[index].net === ranked[cursor].net
-          : ranked[index].net === ranked[cursor].net &&
-            ranked[index].gross === ranked[cursor].gross;
-      while (end + 1 < ranked.length && isTied(end + 1)) end += 1;
-      const points = roundScoringPoints(
-        placementPoints.slice(cursor, end + 1).reduce((sum, value) => sum + value, 0) /
-          (end - cursor + 1),
+  if (placementPoints.length === 0) {
+    for (const total of totals) {
+      addTeamEventPoints(
+        teamPoints,
+        event.leagueId,
+        event.id,
+        total.teamId,
+        roundScoringPoints(total.stableford),
       );
-      for (let index = cursor; index <= end; index += 1) {
-        addTeamEventPoints(teamPoints, event.leagueId, event.id, ranked[index].teamId, points);
-      }
-      cursor = end + 1;
     }
+    return;
+  }
+
+  const ranked = [...totals].sort((left, right) =>
+    mode === 'stableford'
+      ? right.stableford - left.stableford || left.net - right.net
+      : left.net - right.net || left.gross - right.gross,
+  );
+  let cursor = 0;
+  while (cursor < ranked.length) {
+    let end = cursor;
+    const isTied = (index: number) =>
+      mode === 'stableford'
+        ? ranked[index].stableford === ranked[cursor].stableford &&
+          ranked[index].net === ranked[cursor].net
+        : ranked[index].net === ranked[cursor].net &&
+          ranked[index].gross === ranked[cursor].gross;
+    while (end + 1 < ranked.length && isTied(end + 1)) end += 1;
+    const points = roundScoringPoints(
+      placementPoints.slice(cursor, end + 1).reduce((sum, value) => sum + value, 0) /
+        (end - cursor + 1),
+    );
+    for (let index = cursor; index <= end; index += 1) {
+      addTeamEventPoints(teamPoints, event.leagueId, event.id, ranked[index].teamId, points);
+    }
+    cursor = end + 1;
   }
 };
 
@@ -146,10 +162,13 @@ export const assignFourBallMatchPoints = ({
   for (const flight of flights) {
     const [leftTeamId, rightTeamId] = getFlightTeamIds(flight);
     if (!leftTeamId || !rightTeamId) continue;
+    const leftRounds = roundsForTeam(flight, leftTeamId, roundsByPlayerId);
+    const rightRounds = roundsForTeam(flight, rightTeamId, roundsByPlayerId);
+    if (leftRounds.length === 0 && rightRounds.length === 0) continue;
     const result = calculateFourBallMatch({
       holes,
-      left: { teamId: leftTeamId, rounds: roundsForTeam(flight, leftTeamId, roundsByPlayerId) },
-      right: { teamId: rightTeamId, rounds: roundsForTeam(flight, rightTeamId, roundsByPlayerId) },
+      left: { teamId: leftTeamId, rounds: leftRounds },
+      right: { teamId: rightTeamId, rounds: rightRounds },
       pointsPerHole: toScoringNumber(event.ptsPerHole, 0),
       pointsPerMatch: toScoringNumber(event.ptsPerTeamWin, 0),
       handicapAllowance: configuration.handicapAllowance,

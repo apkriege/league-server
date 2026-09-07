@@ -1,17 +1,14 @@
+import { lockLeagueCapacity } from './billingLock';
 import { prisma } from '../../prisma';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
-import {
-  calculateCourseHandicap,
-  calculateRoundDifferential,
-  calculateStrokePops,
-  modelTeeForRound,
-  selectRoundHoles,
-} from '../utils/tee-rating';
+import { calculateRoundDifferential, calculateStrokePops } from '../utils/tee-rating';
+import { modelEventTeeForRound, selectEventRouteHoles } from '../utils/event-route';
 import { normalizeEventFormat } from '../utils/event-mode';
 import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
 import { getHandicapHoleBasis, type HandicapHoleBasis } from '../utils/league-hole-format';
 import {
   addTeamEventPoints,
+  applyMaximumScore,
   assignBestBallPoints,
   assignFourBallMatchPoints,
   assignMatchPlayPoints,
@@ -21,13 +18,16 @@ import {
   assignTeamAggregatePoints,
   assignTeamMatchPlayPoints,
   getScoringMode,
+  normalizeScoringConfiguration,
+  persistSharedTeamRounds,
+  recalculateSharedTeamEventPoints,
   type ScoredHole,
   type ScoringHole,
   type ScoringRound,
   type TeamEventPointsAccumulator,
 } from '../scoring';
 
-type PrismaTx = any;
+type PrismaTx = import('@prisma/client').Prisma.TransactionClient;
 
 type ScoreStats = {
   totalGross: number;
@@ -63,7 +63,7 @@ type RoundCalculation = ScoringRound & {
   differential: number;
   adjusted: number;
   stats: ScoreStats;
-  tee: ReturnType<typeof modelTeeForRound>;
+  tee: ReturnType<typeof modelEventTeeForRound>;
 };
 
 export type SeasonSyncResult = {
@@ -207,7 +207,7 @@ const buildModeledScores = ({
         hole: holeNumber,
         par: hole.par,
         gross,
-        adjusted: Math.min(gross, hole.par + 2 + Math.max(0, popCount)),
+        adjusted: Math.min(gross, hole.par + 2 + popCount),
         net: Math.max(0, gross - popCount),
         pops: popCount,
       } satisfies ScoredHole;
@@ -264,14 +264,7 @@ const recalculateEvent = async ({
   teamPoints: TeamEventPointsAccumulator;
   handicapHoleBasis: HandicapHoleBasis;
 }) => {
-  const holes = normalizeHoles(
-    selectRoundHoles(
-      event.tee,
-      event.course?.numHoles,
-      Number(event.holes),
-      String(event.startSide || ''),
-    ).holes,
-  );
+  const holes = normalizeHoles(selectEventRouteHoles(event, 'male').holes);
   const flightPlayerLookup = getFlightPlayerLookup(event);
   const calculations: RoundCalculation[] = [];
   const calculationsByPlayerId = new Map<number, RoundCalculation>();
@@ -282,20 +275,12 @@ const recalculateEvent = async ({
 
     const playerState = getOrCreatePlayerState(playerStates, round.player);
     const preHandicap = playerState.currentHandicap;
-    const tee = modelTeeForRound(event.tee, Number(event.holes), event.startSide, {
-      courseHoles: event.course?.numHoles,
-      gender: round.player?.gender,
-    });
+    const tee = modelEventTeeForRound(event, round.player?.gender);
     const playerHoles = normalizeHoles(tee.holes);
-    const courseHandicap = calculateCourseHandicap(
-      preHandicap,
-      tee,
-      handicapHoleBasis,
-    );
     const scores = buildModeledScores({
       scoreRows,
       holes: playerHoles,
-      handicap: courseHandicap,
+      handicap: preHandicap,
     });
 
     if (scores.length === 0) continue;
@@ -317,7 +302,7 @@ const recalculateEvent = async ({
       teamId,
       opponentId,
       preHandicap,
-      courseHandicap,
+      playerHandicap: preHandicap,
       postHandicap: handicapData.handicap,
       differential: handicapData.differential,
       gross: stats.totalGross,
@@ -325,6 +310,7 @@ const recalculateEvent = async ({
       adjusted: stats.totalAdjusted,
       stats,
       scores,
+      holes: playerHoles,
       pointsEarned: 0,
       matchPoints: 0,
       tee,
@@ -348,29 +334,26 @@ const recalculateEvent = async ({
   const eventFormat = normalizeEventFormat(event.format, 'individual');
   const scoringMode = getScoringMode(event.scoringMode).id;
   const pointsEnabled = event.pointsEnabled !== false;
+  const scoredTeamIds = new Set(
+    eventFormat === 'team'
+      ? calculations
+          .map((calculation) => calculation.teamId)
+          .filter((teamId): teamId is number => teamId != null)
+      : [],
+  );
 
   if (eventFormat === 'team') {
-    const scoredTeamIds = new Set(
-      calculations
-        .map((calculation) => calculation.teamId)
-        .filter((teamId): teamId is number => teamId != null),
-    );
     for (const teamId of scoredTeamIds) {
       addTeamEventPoints(teamPoints, Number(event.leagueId), Number(event.id), teamId, 0);
     }
   }
 
-  if (!pointsEnabled) {
-    for (const calculation of calculations) {
-      calculation.pointsEarned = 0;
-      calculation.matchPoints = 0;
-    }
-  } else if (eventFormat === 'individual' && scoringMode === 'stroke-play') {
-    assignStrokePlayPoints(event, calculations);
+  if (eventFormat === 'individual' && scoringMode === 'stroke-play') {
+    assignStrokePlayPoints(event, calculations, holes);
   } else if (eventFormat === 'individual' && scoringMode === 'stableford') {
-    assignStablefordPoints(event, calculations);
+    assignStablefordPoints(event, calculations, holes);
   } else if (eventFormat === 'individual' && scoringMode === 'maximum-score') {
-    assignMaximumScorePoints(event, calculations);
+    assignMaximumScorePoints(event, calculations, holes);
   } else if (eventFormat === 'individual' && scoringMode === 'match-play') {
     assignMatchPlayPoints({ event, holes, rounds: calculations });
   } else if (eventFormat === 'team' && scoringMode === 'match-play') {
@@ -409,7 +392,41 @@ const recalculateEvent = async ({
       flights: event.flights || [],
       roundsByPlayerId: calculationsByPlayerId,
       teamPoints,
+      holes,
     });
+  }
+
+  if (!pointsEnabled) {
+    for (const calculation of calculations) {
+      calculation.pointsEarned = 0;
+      calculation.matchPoints = 0;
+    }
+    for (const teamId of scoredTeamIds) {
+      const key = `${teamId}:${Number(event.id)}`;
+      const existing = teamPoints.get(key);
+      if (existing) existing.points = 0;
+    }
+  }
+
+  const maximumScoreRule =
+    scoringMode === 'maximum-score'
+      ? normalizeScoringConfiguration(event.scoringConfig, 'maximum-score').maximumScore
+      : null;
+  for (const calculation of calculations) {
+    calculation.competitionGross = calculation.gross;
+    if (!maximumScoreRule) continue;
+    calculation.competitionGross = 0;
+    calculation.competitionNet = 0;
+    for (const score of calculation.scores) {
+      const result = applyMaximumScore({
+        gross: score.gross,
+        par: score.par,
+        pops: calculation.competitionPops?.get(score.hole) || 0,
+        rule: maximumScoreRule,
+      });
+      calculation.competitionGross += result.gross;
+      calculation.competitionNet += result.net;
+    }
   }
 
   let scoresUpdated = 0;
@@ -429,7 +446,9 @@ const recalculateEvent = async ({
         putts: toNumber(calculation.round.putts, 0),
         courseRating: toNumber(calculation.tee.rating, 0),
         courseSlope: toNumber(calculation.tee.slope, 0),
-        courseHandicap: calculation.courseHandicap,
+        playingHandicap: calculation.playingHandicap ?? Math.round(calculation.playerHandicap),
+        competitionGross: calculation.competitionGross ?? calculation.gross,
+        competitionNet: calculation.competitionNet ?? calculation.net,
         differential: calculation.differential,
         preHandicap: roundToTwoDecimals(calculation.preHandicap),
         postHandicap: calculation.postHandicap,
@@ -459,6 +478,17 @@ const recalculateEvent = async ({
     }
 
     for (const score of calculation.scores) {
+      const competitionResult = maximumScoreRule
+        ? applyMaximumScore({
+            gross: score.gross,
+            par: score.par,
+            pops: calculation.competitionPops?.get(score.hole) || 0,
+            rule: maximumScoreRule,
+          })
+        : {
+            gross: score.gross,
+            net: score.gross - (calculation.competitionPops?.get(score.hole) || 0),
+          };
       await tx.score.update({
         where: {
           roundId_hole: {
@@ -472,6 +502,9 @@ const recalculateEvent = async ({
           adjusted: score.adjusted,
           net: score.net,
           popsReceived: score.pops,
+          competitionGross: competitionResult.gross,
+          competitionNet: competitionResult.net,
+          competitionPops: calculation.competitionPops?.get(score.hole) || 0,
         },
       });
       scoresUpdated += 1;
@@ -513,6 +546,7 @@ export class SeasonSync {
     }
 
     const recalculate = async (tx: PrismaTx) => {
+        await lockLeagueCapacity(tx, leagueId);
         const league = await tx.league.findFirst({
           where: {
             id: leagueId,
@@ -521,6 +555,7 @@ export class SeasonSync {
           include: {
             players: {
               where: { deletedAt: null },
+              include: { handicapAdjustments: { orderBy: [{ effectiveAt: 'asc' }, { id: 'asc' }] } },
             },
             teams: {
               where: { deletedAt: null },
@@ -534,6 +569,10 @@ export class SeasonSync {
               include: {
                 course: true,
                 tee: true,
+                routeSegments: {
+                  orderBy: { position: 'asc' },
+                  include: { course: true, tee: true },
+                },
                 flights: {
                   where: { deletedAt: null },
                   include: {
@@ -562,6 +601,7 @@ export class SeasonSync {
                 },
                 teamRounds: {
                   where: { deletedAt: null, status: 'completed' },
+                  include: { scores: { orderBy: { hole: 'asc' } } },
                   orderBy: [{ date: 'asc' }, { id: 'asc' }],
                 },
               },
@@ -597,21 +637,69 @@ export class SeasonSync {
           },
         });
 
+        const adjustments = (league.players ?? []).flatMap((player) =>
+          player.handicapAdjustments.map((adjustment) => ({ ...adjustment, playerId: player.id })),
+        ).sort((a, b) => a.effectiveAt.getTime() - b.effectiveAt.getTime() || a.id - b.id);
+        let adjustmentIndex = 0;
+        const applyAdjustments = (through: number) => {
+          while (adjustmentIndex < adjustments.length && adjustments[adjustmentIndex].effectiveAt.getTime() <= through) {
+            const adjustment = adjustments[adjustmentIndex++];
+            const state = playerStates.get(adjustment.playerId);
+            if (state) state.currentHandicap = adjustment.handicap;
+          }
+        };
+
         let eventsProcessed = 0;
         let roundsUpdated = 0;
         let scoresUpdated = 0;
 
         for (const event of league.events || []) {
-          for (const teamRound of event.teamRounds || []) {
-            addTeamEventPoints(
-              teamPoints,
-              Number(event.leagueId),
-              Number(event.id),
-              Number(teamRound.teamId),
-              event.pointsEnabled === false
-                ? 0
-                : Number(teamRound.pointsEarned || 0) + Number(teamRound.matchPoints || 0),
-            );
+          applyAdjustments(new Date(event.startsAt).getTime());
+          if ((event.teamRounds || []).length > 0) {
+            for (const flight of event.flights || []) {
+              const flightTeamRounds = (event.teamRounds || []).filter(
+                (teamRound: any) => Number(teamRound.flightId) === Number(flight.id),
+              );
+              if (flightTeamRounds.length === 0) continue;
+
+              for (const assignment of flight.players || []) {
+                const state = playerStates.get(Number(assignment.playerId));
+                if (!state) continue;
+                await tx.player.update({
+                  where: { id: state.id },
+                  data: { handicap: roundToTwoDecimals(state.currentHandicap) },
+                });
+              }
+
+              await persistSharedTeamRounds({
+                db: tx,
+                eventId: Number(event.id),
+                flightId: Number(flight.id),
+                isEdit: true,
+                rawTeamScores: flightTeamRounds.map((teamRound: any) => ({
+                  teamId: Number(teamRound.teamId),
+                  scores: Object.fromEntries(
+                    (teamRound.scores || []).map((score: any) => [
+                      Number(score.hole),
+                      Number(score.gross),
+                    ]),
+                  ),
+                })),
+              });
+            }
+            const recalculatedTeamPoints = await recalculateSharedTeamEventPoints({
+              db: tx,
+              eventId: Number(event.id),
+            });
+            for (const row of recalculatedTeamPoints) {
+              addTeamEventPoints(
+                teamPoints,
+                Number(event.leagueId),
+                Number(event.id),
+                Number(row.teamId),
+                Number(row.points),
+              );
+            }
           }
 
           if (!event.rounds || event.rounds.length === 0) {
@@ -690,6 +778,7 @@ export class SeasonSync {
           })),
         );
 
+        applyAdjustments(Infinity);
         for (const state of playerStates.values()) {
           await tx.player.update({
             where: { id: state.id },

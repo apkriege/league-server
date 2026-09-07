@@ -15,14 +15,30 @@ const makeRound = (
     teeId?: number;
     points?: number;
     opponentId?: number | null;
-    scores?: Array<{ hole: number; par: number; gross: number; net?: number }>;
+    scores?: Array<{
+      hole: number;
+      par: number;
+      gross: number;
+      net?: number;
+      courseId?: number;
+      courseName?: string;
+      teeId?: number;
+      teeName?: string;
+    }>;
   } = {},
 ): IntelligenceRound => {
   const scores = (values.scores ?? [
     { hole: 1, par: 4, gross: 5 },
     { hole: 2, par: 3, gross: 3 },
     { hole: 3, par: 5, gross: 4 },
-  ]).map((score) => ({ ...score, net: score.net ?? score.gross }));
+  ]).map((score) => ({
+    ...score,
+    net: score.net ?? score.gross,
+    courseId: score.courseId ?? values.courseId ?? 1,
+    courseName: score.courseName ?? values.courseName ?? 'North Course',
+    teeId: score.teeId ?? values.teeId ?? 1,
+    teeName: score.teeName ?? 'Blue',
+  }));
   return {
     id,
     eventId: values.eventId ?? id,
@@ -134,6 +150,21 @@ describe('buildPlayerIntelligence', () => {
 
     expect(result.ringers).toHaveLength(3);
     expect(result.ringers.every((ringer) => ringer.holes === 3)).toBe(true);
+  });
+
+  it('attributes each routed nine to its own course and local holes', () => {
+    const result = build([{ id: 1, name: 'Ada Player', rounds: [makeRound(1, {
+      scores: [
+        { hole: 1, par: 4, gross: 4, courseId: 1, courseName: 'North', teeId: 11 },
+        { hole: 1, par: 4, gross: 5, courseId: 2, courseName: 'South', teeId: 22 },
+      ],
+    })] }]);
+
+    expect(result.courseSplits).toEqual([
+      expect.objectContaining({ courseId: 1, courseName: 'North', holesPlayed: 1 }),
+      expect.objectContaining({ courseId: 2, courseName: 'South', holesPlayed: 1 }),
+    ]);
+    expect(result.ringers).toHaveLength(2);
   });
 
   it('calculates configured head-to-head and team rivalry records from recorded points', () => {

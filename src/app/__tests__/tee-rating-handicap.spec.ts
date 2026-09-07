@@ -18,6 +18,7 @@ const nineHoleTee: RoundTee = {
   gender: 'male',
   side: 'front',
   isNineHoleCourse: true,
+  isRepeatedNine: false,
 };
 
 describe('nine-hole handicap differentials', () => {

@@ -1,4 +1,5 @@
 export type StablefordPointScale = {
+  condorOrBetter: number;
   albatrossOrBetter: number;
   eagle: number;
   birdie: number;
@@ -8,7 +9,8 @@ export type StablefordPointScale = {
 };
 
 export const DEFAULT_STABLEFORD_POINT_SCALE: StablefordPointScale = {
-  albatrossOrBetter: 4,
+  condorOrBetter: 6,
+  albatrossOrBetter: 5,
   eagle: 4,
   birdie: 3,
   par: 2,
@@ -29,7 +31,9 @@ export const normalizeStablefordPointScale = (raw: unknown): StablefordPointScal
   for (const key of keys) {
     if (source[key] === undefined) continue;
     const value = Number(source[key]);
-    if (!Number.isFinite(value)) throw new Error(`Stableford ${key} points must be numeric.`);
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Stableford ${key} points must be 0 or higher.`);
+    }
     scale[key] = value;
   }
   return scale;
@@ -41,7 +45,8 @@ export const calculateStablefordPoints = (
   scale: StablefordPointScale = DEFAULT_STABLEFORD_POINT_SCALE,
 ) => {
   const difference = net - par;
-  if (difference <= -3) return scale.albatrossOrBetter;
+  if (difference <= -4) return scale.condorOrBetter;
+  if (difference === -3) return scale.albatrossOrBetter;
   if (difference === -2) return scale.eagle;
   if (difference === -1) return scale.birdie;
   if (difference === 0) return scale.par;

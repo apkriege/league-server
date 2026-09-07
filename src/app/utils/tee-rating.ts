@@ -37,6 +37,7 @@ export type RoundTee = {
   gender: Gender;
   side: RoundSide;
   isNineHoleCourse: boolean;
+  isRepeatedNine: boolean;
 };
 
 const positiveNumber = (value: unknown) => {
@@ -101,22 +102,34 @@ export const selectRoundHoles = (
     .sort((left, right) => left.num - right.num);
   const courseHoleCount = getCourseHoleCount(courseHoles, tee);
   const isNineHoleCourse = courseHoleCount <= 9;
-
-  if (isNineHoleCourse && holesPlayed === 18) {
-    throw new Error('A 9-hole course can only be used for a 9-hole event.');
-  }
+  const isRepeatedNine = isNineHoleCourse && holesPlayed === 18;
 
   const side = isNineHoleCourse ? 'front' : normalizeRoundSide(startSide);
-  const holes =
-    holesPlayed === 18 || isNineHoleCourse
+  const selectedHoles =
+    isRepeatedNine
+      ? [
+          ...allHoles.slice(0, 9).map((hole) => ({ ...hole, hcp: hole.hcp * 2 - 1 })),
+          ...allHoles.slice(0, 9).map((hole) => ({
+            ...hole,
+            num: hole.num + 9,
+            hcp: hole.hcp * 2,
+          })),
+        ]
+      : holesPlayed === 18 || isNineHoleCourse
       ? allHoles.slice(0, holesPlayed)
       : allHoles.filter((hole) => (side === 'front' ? hole.num <= 9 : hole.num > 9));
 
-  if (holes.length !== holesPlayed) {
+  if (selectedHoles.length !== holesPlayed) {
     throw new Error(`Selected tee must contain exactly ${holesPlayed} scoreable holes.`);
   }
 
-  return { holes, holesPlayed: holesPlayed as 9 | 18, side, isNineHoleCourse };
+  return {
+    holes: selectedHoles,
+    holesPlayed: holesPlayed as 9 | 18,
+    side,
+    isNineHoleCourse,
+    isRepeatedNine,
+  };
 };
 
 const getGenderValues = (tee: TeeRatingSource, gender: Gender) =>
@@ -148,14 +161,20 @@ export const modelTeeForRound = (
   const selection = selectRoundHoles(tee, options.courseHoles, numHoles, startSide, gender);
   const values = getGenderValues(tee, gender);
 
-  const slope = selection.isNineHoleCourse
+  const baseNineSlope = values.fullSlope ?? values.frontSlope;
+  const baseNineRating = values.fullRating ?? values.frontRating;
+  const slope = selection.isRepeatedNine
+    ? baseNineSlope
+    : selection.isNineHoleCourse
     ? values.fullSlope ?? values.frontSlope
     : selection.holesPlayed === 18
       ? values.fullSlope
       : selection.side === 'front'
         ? values.frontSlope
         : values.backSlope;
-  const rating = selection.isNineHoleCourse
+  const rating = selection.isRepeatedNine
+    ? baseNineRating == null ? null : baseNineRating * 2
+    : selection.isNineHoleCourse
     ? values.fullRating ?? values.frontRating
     : selection.holesPlayed === 18
       ? values.fullRating
@@ -178,6 +197,7 @@ export const modelTeeForRound = (
     gender,
     side: selection.side,
     isNineHoleCourse: selection.isNineHoleCourse,
+    isRepeatedNine: selection.isRepeatedNine,
   };
 };
 
@@ -185,26 +205,13 @@ const roundHalfUp = (value: number) => Math.round(value);
 
 const roundToOneDecimal = (value: number) => roundHalfUp(value * 10) / 10;
 
-export const calculateCourseHandicap = (
-  handicapIndex: number,
-  tee: RoundTee,
-  handicapHoleBasis: 9 | 18 = 18,
-) => {
-  const index = Number(handicapIndex);
-  if (!Number.isFinite(index)) throw new Error('A valid Handicap Index is required.');
-  if (handicapHoleBasis === 9 && tee.holesPlayed !== 9) {
-    throw new Error('A 9-hole handicap can only be used for a 9-hole round.');
-  }
-  const adjustedIndex =
-    tee.holesPlayed === 9 && handicapHoleBasis === 18 ? roundToOneDecimal(index / 2) : index;
-  return roundHalfUp(adjustedIndex * (tee.slope / 113) + (tee.rating - tee.par));
-};
-
-export const calculateStrokePops = (courseHandicap: number, holes: TeeHole[]) => {
-  const sorted = [...holes].sort((left, right) => left.hcp - right.hcp);
+export const calculateStrokePops = (playerHandicap: number, holes: TeeHole[]) => {
+  const direction = playerHandicap < 0 ? -1 : 1;
+  const sorted = [...holes].sort((left, right) =>
+    direction < 0 ? right.hcp - left.hcp : left.hcp - right.hcp,
+  );
   const pops = new Map<number, number>();
-  let remaining = Math.abs(Math.round(courseHandicap));
-  const direction = courseHandicap < 0 ? -1 : 1;
+  let remaining = Math.abs(Math.round(playerHandicap));
   let index = 0;
 
   while (remaining > 0 && sorted.length > 0) {
@@ -215,18 +222,6 @@ export const calculateStrokePops = (courseHandicap: number, holes: TeeHole[]) =>
   }
 
   return pops;
-};
-
-export const calculateMatchPops = (
-  leftCourseHandicap: number,
-  rightCourseHandicap: number,
-  holes: TeeHole[],
-) => {
-  const baseline = Math.min(leftCourseHandicap, rightCourseHandicap);
-  return [
-    calculateStrokePops(leftCourseHandicap - baseline, holes),
-    calculateStrokePops(rightCourseHandicap - baseline, holes),
-  ] as const;
 };
 
 // The USGA expected-score lookup is not published as a reusable table. Keep the
@@ -240,12 +235,11 @@ export const calculateRoundDifferential = (
   handicapIndex: number,
   handicapHoleBasis: 9 | 18 = 18,
 ) => {
-  if (handicapHoleBasis === 9 && tee.holesPlayed !== 9) {
-    throw new Error('A 9-hole handicap can only be calculated from a 9-hole round.');
-  }
   const playedDifferential = ((Number(adjustedScore) - tee.rating) * 113) / tee.slope;
   const normalized =
-    tee.holesPlayed === 9 && handicapHoleBasis === 18
+    handicapHoleBasis === 9 && tee.holesPlayed === 18
+      ? playedDifferential / 2
+      : tee.holesPlayed === 9 && handicapHoleBasis === 18
       ? playedDifferential + calculateExpectedNineHoleDifferential(handicapIndex)
       : playedDifferential;
   return Number(normalized.toFixed(2));

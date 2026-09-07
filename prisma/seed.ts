@@ -236,7 +236,7 @@ async function main() {
       adminId: adminUser.id,
       entitlementId: seededEntitlement.id,
       startDate: new Date('2026-05-01T00:00:00.000Z'),
-      endDate: new Date('2026-09-01T00:00:00.000Z'),
+      endDate: new Date('2027-04-30T00:00:00.000Z'),
       contactFirstName: 'Adam',
       contactLastName: 'Admin',
       contactEmail: 'admin@test.com',

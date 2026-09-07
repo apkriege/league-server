@@ -1,17 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
   assignBestBallPoints,
+  assignFourBallMatchPoints,
+  assignTeamAggregatePoints,
   assignMaximumScorePoints,
   assignMatchPlayPoints,
   assignStablefordPoints,
   assignStrokePlayPoints,
+  applyMaximumScore,
   calculateAlternateShotHandicap,
   calculateFourBallMatch,
   calculateScrambleTeamScore,
   calculateScrambleHandicap,
+  calculateSharedTeamPoints,
   getScoringMode,
   modelSharedTeamRound,
   normalizeScoringConfiguration,
+  parsePlacementPoints,
   validateScoringMode,
   type ScoringRound,
   type TeamEventPointsAccumulator,
@@ -33,7 +38,7 @@ const buildRound = ({
   playerId,
   teamId,
   opponentId,
-  courseHandicap: 0,
+  playerHandicap: 0,
   gross,
   net,
   scores: [
@@ -59,18 +64,18 @@ const buildMultiHoleRound = ({
   opponentId = null,
   teamId = null,
   grossScores,
-  courseHandicap = 0,
+  playerHandicap = 0,
 }: {
   playerId: number;
   opponentId?: number | null;
   teamId?: number | null;
   grossScores: number[];
-  courseHandicap?: number;
+  playerHandicap?: number;
 }): ScoringRound => ({
   playerId,
   opponentId,
   teamId,
-  courseHandicap,
+  playerHandicap,
   gross: grossScores.reduce((sum, score) => sum + score, 0),
   net: grossScores.reduce((sum, score) => sum + score, 0),
   scores: grossScores.map((gross, index) => ({
@@ -185,6 +190,157 @@ describe('scoring calculators', () => {
     expect(teamPoints.get('200:10')?.points).toBe(2);
   });
 
+  it('applies allowances to player handicaps without tee-par adjustments', () => {
+    const lowerPar = buildRound({ playerId: 1, gross: 4, net: 4 });
+    const higherPar = buildRound({ playerId: 2, gross: 4, net: 4 });
+    lowerPar.playerHandicap = 0.51;
+    higherPar.playerHandicap = 0.51;
+    higherPar.scores[0].par = 5;
+
+    assignStrokePlayPoints(
+      { ...event, strokePoints: [5, 2], scoringConfig: { handicapAllowance: 0.9 } },
+      [lowerPar, higherPar],
+      holes,
+    );
+
+    expect(lowerPar.playingHandicap).toBe(0);
+    expect(higherPar.playingHandicap).toBe(0);
+    expect(lowerPar.competitionNet).toBe(4);
+    expect(higherPar.competitionNet).toBe(4);
+  });
+
+  it('compares a match using player handicaps without tee-par adjustments', () => {
+    const lowerPar = buildRound({ playerId: 1, opponentId: 2, gross: 4, net: 4 });
+    const higherPar = buildRound({ playerId: 2, opponentId: 1, gross: 4, net: 4 });
+    higherPar.scores[0].par = 5;
+
+    assignMatchPlayPoints({
+      event: { ...event, ptsPerHole: 1, ptsPerMatch: 2 },
+      holes,
+      rounds: [lowerPar, higherPar],
+    });
+
+    expect(lowerPar.playingHandicap).toBe(0);
+    expect(higherPar.playingHandicap).toBe(0);
+    expect(lowerPar.competitionNet).toBe(4);
+    expect(higherPar.competitionNet).toBe(4);
+    expect({ lower: lowerPar.pointsEarned, higher: higherPar.pointsEarned }).toEqual({
+      lower: 0.5,
+      higher: 0.5,
+    });
+  });
+
+  it('treats blank placement points as absent and preserves an explicit zero place', () => {
+    expect(parsePlacementPoints('')).toEqual([]);
+    expect(parsePlacementPoints(['', null, '  '])).toEqual([]);
+    expect(parsePlacementPoints([0])).toEqual([0]);
+  });
+
+  it('includes plus-handicap strokes in a maximum-score competition net', () => {
+    expect(
+      applyMaximumScore({
+        gross: 8,
+        par: 4,
+        pops: -1,
+        rule: { type: 'net-double-bogey' },
+      }),
+    ).toMatchObject({ gross: 5, net: 6, maximumGross: 5, wasCapped: true });
+  });
+
+  it('ranks aggregate team placement points across the entire event', () => {
+    const rounds = [
+      buildRound({ playerId: 1, teamId: 100, gross: 3, net: 3 }),
+      buildRound({ playerId: 2, teamId: 200, gross: 4, net: 4 }),
+      buildRound({ playerId: 3, teamId: 300, gross: 5, net: 5 }),
+      buildRound({ playerId: 4, teamId: 400, gross: 6, net: 6 }),
+    ];
+    const teamPoints: TeamEventPointsAccumulator = new Map();
+
+    assignTeamAggregatePoints({
+      event: { ...event, strokePoints: [10, 8, 6, 4] },
+      mode: 'stroke-play',
+      holes,
+      flights: [
+        {
+          teams: [{ teamId: 100 }, { teamId: 200 }],
+          players: rounds.slice(0, 2).map((round) => ({
+            playerId: round.playerId,
+            teamId: round.teamId,
+          })),
+        },
+        {
+          teams: [{ teamId: 300 }, { teamId: 400 }],
+          players: rounds.slice(2).map((round) => ({
+            playerId: round.playerId,
+            teamId: round.teamId,
+          })),
+        },
+      ],
+      roundsByPlayerId: new Map(rounds.map((round) => [round.playerId, round])),
+      teamPoints,
+    });
+
+    expect([100, 200, 300, 400].map((teamId) => teamPoints.get(`${teamId}:10`)?.points)).toEqual([
+      10, 8, 6, 4,
+    ]);
+  });
+
+  it('ranks best-ball placement points across the entire event', () => {
+    const rounds = [
+      buildRound({ playerId: 1, teamId: 100, gross: 3, net: 3 }),
+      buildRound({ playerId: 2, teamId: 200, gross: 4, net: 4 }),
+      buildRound({ playerId: 3, teamId: 300, gross: 5, net: 5 }),
+      buildRound({ playerId: 4, teamId: 400, gross: 6, net: 6 }),
+    ];
+    const teamPoints: TeamEventPointsAccumulator = new Map();
+
+    assignBestBallPoints({
+      event: { ...event, strokePoints: [10, 8, 6, 4] },
+      holes,
+      flights: [
+        {
+          teams: [{ teamId: 100 }, { teamId: 200 }],
+          players: rounds.slice(0, 2).map((round) => ({
+            playerId: round.playerId,
+            teamId: round.teamId,
+          })),
+        },
+        {
+          teams: [{ teamId: 300 }, { teamId: 400 }],
+          players: rounds.slice(2).map((round) => ({
+            playerId: round.playerId,
+            teamId: round.teamId,
+          })),
+        },
+      ],
+      roundsByPlayerId: new Map(rounds.map((round) => [round.playerId, round])),
+      teamPoints,
+    });
+
+    expect([100, 200, 300, 400].map((teamId) => teamPoints.get(`${teamId}:10`)?.points)).toEqual([
+      10, 8, 6, 4,
+    ]);
+  });
+
+  it('ranks shared team rounds across the entire event', () => {
+    expect(
+      calculateSharedTeamPoints(
+        [
+          { teamId: 100, net: 30, stablefordPoints: 0 },
+          { teamId: 200, net: 31, stablefordPoints: 0 },
+          { teamId: 300, net: 32, stablefordPoints: 0 },
+          { teamId: 400, net: 33, stablefordPoints: 0 },
+        ],
+        [10, 8, 6, 4],
+      ),
+    ).toEqual([
+      { teamId: 100, points: 10 },
+      { teamId: 200, points: 8 },
+      { teamId: 300, points: 6 },
+      { teamId: 400, points: 4 },
+    ]);
+  });
+
   it('calculates a shared scramble team score and rejects duplicate holes', () => {
     expect(
       calculateScrambleTeamScore([
@@ -208,6 +364,7 @@ describe('scoring calculators', () => {
         ...event,
         scoringConfig: {
           stablefordPointScale: {
+            condorOrBetter: 10,
             albatrossOrBetter: 9,
             eagle: 6,
             birdie: 4,
@@ -234,6 +391,27 @@ describe('scoring calculators', () => {
     expect([cappedA.pointsEarned, cappedB.pointsEarned]).toEqual([8, 8]);
   });
 
+  it('uses standard Stableford albatross points and rejects negative scales', () => {
+    const albatross = buildRound({ playerId: 1, gross: 1, net: 1 });
+    assignStablefordPoints(event, [albatross]);
+    expect(albatross.pointsEarned).toBe(5);
+    expect(() =>
+      normalizeScoringConfiguration(
+        { stablefordPointScale: { birdie: -1 } },
+        'stableford',
+      ),
+    ).toThrow(/0 or higher/i);
+  });
+
+  it('uses an explicitly selected scorecard for shared team formats', () => {
+    expect(
+      normalizeScoringConfiguration({ sharedTeamScorecard: 'female' }, 'scramble'),
+    ).toMatchObject({ sharedTeamScorecard: 'female' });
+    expect(() =>
+      normalizeScoringConfiguration({ sharedTeamScorecard: 'mixed' }, 'alternate-shot'),
+    ).toThrow(/male or female/i);
+  });
+
   it('models shared team scores with pops and a competition cap', () => {
     const configuration = normalizeScoringConfiguration(
       { maximumScore: { type: 'relative-to-par', strokesOverPar: 2 } },
@@ -246,7 +424,7 @@ describe('scoring calculators', () => {
         { num: 2, par: 5, hcp: 2 },
       ],
       rawScores: { 1: 10, 2: 5 },
-      courseHandicap: 1,
+      playingHandicap: 1,
       configuration,
     });
 
@@ -257,7 +435,7 @@ describe('scoring calculators', () => {
         mode: 'scramble',
         holes: [{ num: 1, par: 4, hcp: 1 }],
         rawScores: {},
-        courseHandicap: 0,
+        playingHandicap: 0,
         configuration,
       }),
     ).toThrow('one valid stroke total for every hole');
@@ -300,6 +478,41 @@ describe('scoring calculators', () => {
         right: { teamId: 200, rounds: rightRounds },
       }),
     ).toThrow('exactly two players on each side');
+  });
+
+  it('ignores an unscored four-ball flight while another flight is complete', () => {
+    const rounds = [
+      buildRound({ playerId: 1, teamId: 100, gross: 4, net: 4 }),
+      buildRound({ playerId: 2, teamId: 100, gross: 5, net: 5 }),
+      buildRound({ playerId: 3, teamId: 200, gross: 5, net: 5 }),
+      buildRound({ playerId: 4, teamId: 200, gross: 6, net: 6 }),
+    ];
+    const teamPoints: TeamEventPointsAccumulator = new Map();
+
+    assignFourBallMatchPoints({
+      event: { ...event, ptsPerHole: 1, ptsPerTeamWin: 2 },
+      holes,
+      flights: [
+        {
+          teams: [{ teamId: 100 }, { teamId: 200 }],
+          players: rounds.map((round) => ({ playerId: round.playerId, teamId: round.teamId })),
+        },
+        {
+          teams: [{ teamId: 300 }, { teamId: 400 }],
+          players: [
+            { playerId: 5, teamId: 300 },
+            { playerId: 6, teamId: 300 },
+            { playerId: 7, teamId: 400 },
+            { playerId: 8, teamId: 400 },
+          ],
+        },
+      ],
+      roundsByPlayerId: new Map(rounds.map((round) => [round.playerId, round])),
+      teamPoints,
+    });
+
+    expect(teamPoints.has('100:10')).toBe(true);
+    expect(teamPoints.has('300:10')).toBe(false);
   });
 
   it('enforces which formats apply to individual and team events', () => {

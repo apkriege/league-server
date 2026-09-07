@@ -1,33 +1,9 @@
-import { calculateStrokePops } from '../utils/tee-rating';
-import { applyHandicapAllowance } from './team-handicap';
+import { buildRelativePops } from './playing-handicap';
 import type { ScoringHole, ScoringRound } from './types';
 
 type FourBallSide = {
   teamId: number;
   rounds: ScoringRound[];
-};
-
-const buildRelativePops = (
-  rounds: ScoringRound[],
-  holes: ScoringHole[],
-  allowance: number,
-) => {
-  const playingHandicaps = new Map(
-    rounds.map((round) => [
-      round.playerId,
-      applyHandicapAllowance(round.courseHandicap, allowance),
-    ]),
-  );
-  const baseline = Math.min(...playingHandicaps.values());
-  return new Map(
-    rounds.map((round) => [
-      round.playerId,
-      calculateStrokePops(
-        Math.max(0, Number(playingHandicaps.get(round.playerId)) - baseline),
-        holes,
-      ),
-    ]),
-  );
 };
 
 const bestNetForSide = (

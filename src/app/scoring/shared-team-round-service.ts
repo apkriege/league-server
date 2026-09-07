@@ -1,10 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
-import { getHandicapHoleBasis } from '../utils/league-hole-format';
-import {
-  calculateCourseHandicap,
-  modelTeeForRound,
-} from '../utils/tee-rating';
+import { modelEventTeeForRound } from '../utils/event-route';
 import { normalizeScoringConfiguration } from './config';
 import { getScoringMode, type ScoringMode } from './modes';
 import { parsePlacementPoints, roundScoringPoints } from './numeric';
@@ -48,7 +44,7 @@ const normalizeTeamSubmissions = (raw: unknown): TeamScoreSubmission[] => {
   return submissions;
 };
 
-const assignTeamPoints = (
+export const calculateSharedTeamPoints = (
   rounds: Array<{ teamId: number; net: number; stablefordPoints: number }>,
   strokePointsRaw: unknown,
 ): PersistedTeamPoints[] => {
@@ -105,7 +101,10 @@ export const persistSharedTeamRounds = async ({
     include: {
       course: true,
       tee: true,
-      league: { select: { holeFormat: true } },
+      routeSegments: {
+        orderBy: { position: 'asc' },
+        include: { course: true, tee: true },
+      },
       flights: {
         where: { id: flightId, deletedAt: null },
         include: {
@@ -134,18 +133,7 @@ export const persistSharedTeamRounds = async ({
   }
 
   const configuration = normalizeScoringConfiguration(event.scoringConfig, mode);
-  const handicapHoleBasis = getHandicapHoleBasis(event.league.holeFormat);
-  const competitionGender = flight.players.every(
-    (entry) => String(entry.player.gender || '').toLowerCase() === 'female',
-  )
-    ? 'female'
-    : 'male';
-  const selectedTee = modelTeeForRound(event.tee, event.holes, event.startSide, {
-    courseHoles: event.course.numHoles,
-    gender: competitionGender,
-  });
-
-  const modeledRounds = submissions.map((submission) => {
+  const preparedRounds = submissions.map((submission) => {
     const assignments = flight.players.filter((entry) => entry.teamId === submission.teamId);
     const expectedPlayers = mode === 'alternate-shot' ? 2 : null;
     if (
@@ -158,55 +146,55 @@ export const persistSharedTeamRounds = async ({
           : 'Scramble requires two, three, or four assigned players per team.',
       );
     }
+    const scorecardGender = configuration.sharedTeamScorecard || 'male';
+    const selectedTee = modelEventTeeForRound(event, scorecardGender);
 
     const playerHandicaps = assignments.map((assignment) => {
-      const playerTee = modelTeeForRound(event.tee, event.holes, event.startSide, {
-        courseHoles: event.course.numHoles,
-        gender: assignment.player.gender,
-      });
+      const playerHandicap = Number(assignment.player.handicap);
+      if (!Number.isFinite(playerHandicap)) {
+        throw new Error(`Player ${assignment.playerId} has an invalid handicap.`);
+      }
       return {
         playerId: assignment.playerId,
-        courseHandicap: calculateCourseHandicap(
-          assignment.player.handicap,
-          playerTee,
-          handicapHoleBasis,
-        ),
+        playerHandicap,
       };
     });
     const baseTeamHandicap =
       mode === 'scramble'
-        ? calculateScrambleHandicap(playerHandicaps.map((entry) => entry.courseHandicap))
-        : calculateAlternateShotHandicap(playerHandicaps.map((entry) => entry.courseHandicap));
-    const courseHandicap = applyHandicapAllowance(
+        ? calculateScrambleHandicap(playerHandicaps.map((entry) => entry.playerHandicap))
+        : calculateAlternateShotHandicap(
+            playerHandicaps.map((entry) => entry.playerHandicap),
+          );
+    return {
+      submission,
+      teamId: submission.teamId,
+      playerHandicaps,
+      scorecardGender,
+      selectedTee,
       baseTeamHandicap,
+    };
+  });
+  const modeledRounds = preparedRounds.map((prepared) => {
+    const playingHandicap = applyHandicapAllowance(
+      prepared.baseTeamHandicap,
       configuration.handicapAllowance,
     );
     const round = modelSharedTeamRound({
       mode,
-      holes: selectedTee.holes,
-      rawScores: submission.scores,
-      courseHandicap,
+      holes: prepared.selectedTee.holes,
+      rawScores: prepared.submission.scores,
+      playingHandicap,
       configuration,
     });
     return {
-      teamId: submission.teamId,
-      courseHandicap,
-      playerHandicaps,
+      teamId: prepared.teamId,
+      playingHandicap,
+      playerHandicaps: prepared.playerHandicaps,
+      scorecardGender: prepared.scorecardGender,
+      baseTeamHandicap: prepared.baseTeamHandicap,
       round,
     };
   });
-
-  const teamPoints = event.pointsEnabled
-    ? assignTeamPoints(
-        modeledRounds.map(({ teamId, round }) => ({
-          teamId,
-          net: round.net,
-          stablefordPoints: round.stablefordPoints,
-        })),
-        event.strokePoints,
-      )
-    : modeledRounds.map(({ teamId }) => ({ teamId, points: 0 }));
-  const pointsByTeamId = new Map(teamPoints.map((entry) => [entry.teamId, entry.points]));
 
   for (const modeled of modeledRounds) {
     const existing = await db.team_round.findUnique({
@@ -226,19 +214,15 @@ export const persistSharedTeamRounds = async ({
       gross: modeled.round.gross,
       net: modeled.round.net,
       adjusted: modeled.round.adjusted,
-      courseHandicap: modeled.courseHandicap,
       handicapAllowance: configuration.handicapAllowance,
       handicapSnapshot: {
         formula: mode,
+        scorecardGender: modeled.scorecardGender,
         players: modeled.playerHandicaps,
-        baseTeamHandicap:
-          mode === 'scramble'
-            ? calculateScrambleHandicap(modeled.playerHandicaps.map((entry) => entry.courseHandicap))
-            : calculateAlternateShotHandicap(
-                modeled.playerHandicaps.map((entry) => entry.courseHandicap),
-              ),
+        baseTeamHandicap: modeled.baseTeamHandicap,
+        playingTeamHandicap: modeled.playingHandicap,
       },
-      pointsEarned: pointsByTeamId.get(modeled.teamId) || 0,
+      pointsEarned: 0,
       matchPoints: 0,
       date: dateOnlyInTimeZone(event.startsAt, event.timeZone),
       deletedAt: null,
@@ -257,5 +241,42 @@ export const persistSharedTeamRounds = async ({
     });
   }
 
+  return recalculateSharedTeamEventPoints({ db, eventId });
+};
+
+export const recalculateSharedTeamEventPoints = async ({
+  db,
+  eventId,
+}: {
+  db: PrismaTx;
+  eventId: number;
+}): Promise<PersistedTeamPoints[]> => {
+  const event = await db.event.findUnique({
+    where: { id: eventId },
+    select: { pointsEnabled: true, strokePoints: true },
+  });
+  if (!event) throw new Error('Event not found.');
+
+  const rounds = await db.team_round.findMany({
+    where: { eventId, status: 'completed', deletedAt: null },
+    include: { scores: true },
+  });
+  const teamPoints = event.pointsEnabled
+    ? calculateSharedTeamPoints(
+        rounds.map((round) => ({
+          teamId: round.teamId,
+          net: round.net,
+          stablefordPoints: round.scores.reduce((sum, score) => sum + score.points, 0),
+        })),
+        event.strokePoints,
+      )
+    : rounds.map((round) => ({ teamId: round.teamId, points: 0 }));
+
+  for (const row of teamPoints) {
+    await db.team_round.update({
+      where: { eventId_teamId: { eventId, teamId: row.teamId } },
+      data: { pointsEarned: row.points },
+    });
+  }
   return teamPoints;
 };

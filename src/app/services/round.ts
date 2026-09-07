@@ -1,13 +1,7 @@
 import { prisma } from '../../prisma';
-import {
-  calculateCourseHandicap,
-  calculateRoundDifferential,
-  calculateStrokePops,
-  modelTeeForRound,
-} from '../utils/tee-rating';
+import { calculateStrokePops } from '../utils/tee-rating';
+import { modelEventTeeForRound } from '../utils/event-route';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
-import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
-import { getHandicapHoleBasis, type HandicapHoleBasis } from '../utils/league-hole-format';
 
 export class Round {
   private eventId: number;
@@ -15,8 +9,7 @@ export class Round {
   private event: any;
   private tee: any;
   private player: any;
-  private courseHandicap = 0;
-  private handicapHoleBasis: HandicapHoleBasis = 18;
+  private playerHandicap = 0;
   private isEdit = false;
   private round?: any;
   private db: any;
@@ -35,11 +28,9 @@ export class Round {
       await this.setEventData();
 
       if (this.isEdit && this.round.id) {
-        const round = await this.updateRound(this.round.id, this.playerRound);
-        await this.processHandicap(round);
+        await this.updateRound(this.round.id, this.playerRound);
       } else {
-        const round = await this.createRound();
-        await this.processHandicap(round);
+        await this.createRound();
       }
     } catch (error) {
       console.error('Error processing rounds:', error);
@@ -76,7 +67,7 @@ export class Round {
         putts: 0,
         courseRating: this.tee.rating,
         courseSlope: this.tee.slope,
-        courseHandicap: this.courseHandicap,
+        playingHandicap: Math.round(this.playerHandicap),
         pointsEarned: this.playerRound.points || 0,
         matchPoints: this.playerRound.matchPoints || 0,
         eagles: stats.eagles,
@@ -134,7 +125,7 @@ export class Round {
         adjusted: stats.totalAdjusted,
         courseRating: this.tee.rating,
         courseSlope: this.tee.slope,
-        courseHandicap: this.courseHandicap,
+        playingHandicap: Math.round(this.playerHandicap),
         pointsEarned: this.playerRound.points || 0,
         matchPoints: this.playerRound.matchPoints || 0,
         eagles: stats.eagles,
@@ -184,7 +175,7 @@ export class Round {
   }
 
   private calculateScores(playerRound: any) {
-    const hcp = this.courseHandicap;
+    const hcp = this.playerHandicap;
     const grossScores = playerRound.scores;
     if (!grossScores || Array.isArray(grossScores) || typeof grossScores !== 'object') {
       throw new Error('Scores must include a value for every hole.');
@@ -243,7 +234,7 @@ export class Round {
 
     for (const [hole, score] of Object.entries(scores)) {
       const par = this.tee.holes.find((h: any) => Number(h.num) === Number(hole))?.par || 0;
-      const maxAllowed = par + 2 + Math.max(0, pops.get(Number(hole)) || 0);
+      const maxAllowed = par + 2 + (pops.get(Number(hole)) || 0);
 
       adjustedHoles[Number(hole)] = Math.min(score as number, maxAllowed);
     }
@@ -321,7 +312,10 @@ export class Round {
       include: {
         course: true,
         tee: true,
-        league: { select: { holeFormat: true } },
+        routeSegments: {
+          orderBy: { position: 'asc' },
+          include: { course: true, tee: true },
+        },
       },
     });
 
@@ -330,110 +324,13 @@ export class Round {
     }
 
     this.event = event;
-    this.handicapHoleBasis = getHandicapHoleBasis(event.league?.holeFormat);
-    this.tee = this.modelTee(
-      event?.tee,
-      event?.course?.numHoles,
-      event.holes,
-      event.startSide,
-      this.player.gender,
-    );
-    const handicapIndex = Number(
+    this.tee = modelEventTeeForRound(event, this.player.gender);
+    this.playerHandicap = Number(
       this.isEdit ? this.round?.preHandicap : this.player.handicap,
     );
-    this.courseHandicap = calculateCourseHandicap(
-      handicapIndex,
-      this.tee,
-      this.handicapHoleBasis,
-    );
-  }
-
-  private modelTee(
-    tee: any,
-    courseHoles: number,
-    numHoles: number,
-    startSide: string,
-    gender: string,
-  ) {
-    return modelTeeForRound(tee, numHoles, startSide, { courseHoles, gender });
-  }
-
-  private async processHandicap(round: any) {
-    const handicapData = await this.calculateHandicapIndex(
-      this.playerRound.playerId,
-      round.adjusted,
-    );
-
-    await this.db.round.update({
-      where: { id: round.id },
-      data: {
-        preHandicap: this.isEdit ? round.preHandicap : this.player.handicap,
-        postHandicap: handicapData.handicap,
-        differential: handicapData.differential,
-        courseRating: this.tee.rating,
-        courseSlope: this.tee.slope,
-        courseHandicap: this.courseHandicap,
-      },
-    });
-
-    await this.db.player.update({
-      where: { id: this.player.id },
-      data: { handicap: handicapData.handicap },
-    });
-  }
-
-  // HANDICAP CALCULATIONS
-  private async calculateHandicapIndex(
-    playerId: number,
-    adjustedScore: number,
-  ): Promise<{ handicap: number; differential: number }> {
-    const roundsWhere =
-      this.isEdit && this.round?.id
-        ? { id: { not: this.round.id } } // Exclude current round if editing
-        : undefined;
-
-    const player = await this.db.player.findUnique({
-      where: { id: playerId },
-      include: {
-        rounds: {
-          where: roundsWhere,
-          select: { differential: true },
-          take: 19,
-          orderBy: { createdAt: 'desc' },
-        },
-      },
-    });
-
-    if (!player) {
-      throw new Error('Player not found');
+    if (!Number.isFinite(this.playerHandicap)) {
+      throw new Error('Player handicap must be numeric.');
     }
-
-    // Get past differentials
-    const differentials = player.rounds
-      .map((r: any) => r.differential)
-      .filter((value: any): value is number =>
-        typeof value === 'number' && Number.isFinite(value),
-      );
-
-    // Add current differential
-    const hcpToUse = Number(this.isEdit ? this.round.preHandicap : player.handicap);
-    const differential = calculateRoundDifferential(
-      adjustedScore,
-      this.tee,
-      hcpToUse,
-      this.handicapHoleBasis,
-    );
-    differentials.push(differential);
-    const calculated = calculateHandicapIndexFromDifferentials(
-      differentials,
-      hcpToUse,
-      Number(player.startingHandicap),
-    );
-    const newHandicap = calculated ?? hcpToUse;
-
-    return {
-      handicap: newHandicap,
-      differential,
-    };
   }
+
 }

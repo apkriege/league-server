@@ -13,6 +13,7 @@ const validationMessagePatterns = [
   /^Hole /i,
   /^Selected /i,
   /^Scoring /i,
+  /^Scores /i,
   /required/i,
   /not found/i,
   /already exists/i,

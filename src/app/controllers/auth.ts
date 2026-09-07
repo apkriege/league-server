@@ -151,24 +151,26 @@ class AuthController {
       }
 
       const hashedPassword = await bcrypt.hash(password, 10);
-      await prisma.$transaction([
-        prisma.user.update({
+      const reset = await prisma.$transaction(async (tx) => {
+        const claimed = await tx.password_reset_token.updateMany({
+          where: { id: resetToken.id, usedAt: null, expiresAt: { gt: new Date() } },
+          data: { usedAt: new Date() },
+        });
+        if (claimed.count !== 1) return false;
+        await tx.user.update({
           where: { id: resetToken.userId },
           data: { password: hashedPassword },
-        }),
-        prisma.password_reset_token.updateMany({
+        });
+        await tx.password_reset_token.updateMany({
           where: { userId: resetToken.userId, usedAt: null },
           data: { usedAt: new Date() },
-        }),
-        prisma.session.deleteMany({
-          where: {
-            sess: {
-              path: ['userId'],
-              equals: resetToken.userId,
-            },
-          },
-        }),
-      ]);
+        });
+        await tx.session.deleteMany({
+          where: { sess: { path: ['userId'], equals: resetToken.userId } },
+        });
+        return true;
+      });
+      if (!reset) return res.status(400).json({ message: 'This password reset link is invalid or expired' });
 
       return res.status(200).json({ message: 'Password reset successfully' });
     } catch (error) {
@@ -397,16 +399,26 @@ class AuthController {
           where: { userId: verification.userId, usedAt: null },
           data: { usedAt: now },
         });
+        if (verification.pendingEmail) {
+          await tx.session.deleteMany({ where: { sess: { path: ['userId'], equals: verification.userId } } });
+          await tx.password_reset_token.updateMany({
+            where: { userId: verification.userId, usedAt: null },
+            data: { usedAt: now },
+          });
+        }
         return tx.user.update({
           where: { id: verification.userId },
-          data: { emailVerifiedAt: now },
+          data: {
+            emailVerifiedAt: now,
+            ...(verification.pendingEmail ? { email: verification.pendingEmail } : {}),
+          },
         });
       });
       if (!verifiedUser) {
         return res.status(400).json({ message: 'This verification link is invalid or expired' });
       }
 
-      await sendSignupNotification({
+      if (!verification.pendingEmail) await sendSignupNotification({
         id: verifiedUser.id,
         firstName: verifiedUser.firstName,
         lastName: verifiedUser.lastName,

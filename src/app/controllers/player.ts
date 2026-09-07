@@ -14,7 +14,23 @@ import {
 
 const playerStatsRoundInclude = Prisma.validator<Prisma.roundInclude>()({
   event: {
-    select: { id: true, name: true, startsAt: true, timeZone: true, startSide: true },
+    select: {
+      id: true,
+      name: true,
+      startsAt: true,
+      timeZone: true,
+      startSide: true,
+      routeSegments: {
+        orderBy: { position: 'asc' },
+        select: {
+          position: true,
+          courseId: true,
+          teeId: true,
+          course: { select: { name: true } },
+          tee: { select: { name: true } },
+        },
+      },
+    },
   },
   opponent: {
     select: { id: true, firstName: true, lastName: true },
@@ -43,12 +59,21 @@ const toIntelligenceRound = (round: PlayerStatsRound): IntelligenceRound => ({
   pars: round.pars,
   handicap: round.postHandicap == null ? null : Number(round.postHandicap),
   opponentId: round.opponentId,
-  scores: round.scores.map((score) => ({
-    hole: score.hole,
-    par: score.par,
-    gross: score.gross,
-    net: score.net,
-  })),
+  scores: round.scores.map((score) => {
+    const routes = round.event.routeSegments;
+    const routeIndex = routes.length > 1 ? Math.floor((score.hole - 1) / 9) : 0;
+    const route = routes[Math.min(routeIndex, routes.length - 1)];
+    return {
+      hole: routes.length > 1 ? ((score.hole - 1) % 9) + 1 : score.hole,
+      par: score.par,
+      gross: score.gross,
+      net: score.net,
+      courseId: route?.courseId ?? round.courseId,
+      courseName: route?.course.name ?? round.course.name,
+      teeId: route?.teeId ?? round.teeId,
+      teeName: route?.tee.name ?? round.tee.name,
+    };
+  }),
 });
 
 const getSeasonLeagueIds = (
@@ -154,6 +179,16 @@ export default class PlayerController {
                   startsAt: true,
                   timeZone: true,
                   startSide: true,
+                  routeSegments: {
+                    orderBy: { position: 'asc' },
+                    select: {
+                      position: true,
+                      courseId: true,
+                      teeId: true,
+                      course: { select: { id: true, name: true } },
+                      tee: { select: { id: true, name: true } },
+                    },
+                  },
                 },
               },
               scores: true,
@@ -168,7 +203,16 @@ export default class PlayerController {
         return res.status(404).json({ message: 'Player not found' });
       }
 
-      res.status(200).json(player);
+      res.status(200).json({
+        ...player,
+        rounds: player.rounds.map((round) => ({
+          ...round,
+          routeName:
+            round.event.routeSegments.length > 1
+              ? round.event.routeSegments.map((segment) => segment.course.name).join(' → ')
+              : round.course.name,
+        })),
+      });
     } catch (error) {
       console.error(error);
       res.status(500).json({ message: 'Internal server error' });
@@ -444,7 +488,7 @@ export default class PlayerController {
 
       const existingPlayer = await prisma.player.findFirst({
         where: { id: Number(id), deletedAt: null },
-        select: { id: true, leagueId: true, type: true },
+        select: { id: true, leagueId: true, type: true, handicap: true },
       });
       if (!existingPlayer) {
         return res.status(404).json({ message: 'Player not found' });
@@ -533,6 +577,12 @@ export default class PlayerController {
           }
         }
 
+        const current = await tx.player.findUniqueOrThrow({ where: { id: Number(id) } });
+        if (handicap !== current.handicap) {
+          await tx.player_handicap_adjustment.create({
+            data: { playerId: current.id, handicap },
+          });
+        }
         return tx.player.update({ where: { id: Number(id) }, data });
       });
 
@@ -586,7 +636,7 @@ export default class PlayerController {
             deletedAt: null,
             event: {
               deletedAt: null,
-              status: { not: 'canceled' },
+              status: { notIn: ['canceled', 'completed'] },
             },
           },
         },

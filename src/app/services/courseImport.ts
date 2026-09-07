@@ -306,6 +306,25 @@ const buildHoles = (tee: ApiTee, holeCount: number) =>
     };
   });
 
+const hasRepeatedNineScorecard = (tee: ApiTee | null) => {
+  if (!tee || !Array.isArray(tee.holes) || tee.holes.length < 18) return false;
+  return tee.holes.slice(0, 9).every((frontHole, index) => {
+    const backHole = tee.holes?.[index + 9];
+    const frontPar = positiveNumber(frontHole?.par);
+    const backPar = positiveNumber(backHole?.par);
+    const frontYardage = positiveNumber(frontHole?.yardage);
+    const backYardage = positiveNumber(backHole?.yardage);
+    return (
+      frontPar != null &&
+      backPar != null &&
+      frontYardage != null &&
+      backYardage != null &&
+      frontPar === backPar &&
+      frontYardage === backYardage
+    );
+  });
+};
+
 export const mapImportedCourse = (detail: ApiCourse): ImportedCourse => {
   const warnings: string[] = [
     'GolfCourseAPI does not provide public/private access; confirm the access type before saving.',
@@ -318,7 +337,10 @@ export const mapImportedCourse = (detail: ApiCourse): ImportedCourse => {
     const female = femaleTees.find((tee) => teeKey(tee) === key) ?? null;
     const representative = male ?? female;
     if (!representative) throw new Error('Invalid provider tee data');
-    const holeCount = positiveNumber(representative.number_of_holes) ??
+    const repeatedNine = hasRepeatedNineScorecard(representative) &&
+      (!male || hasRepeatedNineScorecard(male)) &&
+      (!female || hasRepeatedNineScorecard(female));
+    const holeCount = repeatedNine ? 9 : positiveNumber(representative.number_of_holes) ??
       Math.max(male?.holes?.length || 0, female?.holes?.length || 0, 18);
     const holes = buildHoles(representative, holeCount);
     const holesWomen = female ? buildHoles(female, holeCount) : holes;
@@ -327,6 +349,11 @@ export const mapImportedCourse = (detail: ApiCourse): ImportedCourse => {
     const name = String(representative.tee_name || 'Tee').trim();
     if (!male) warnings.push(`${name} tee has no men's rating data.`);
     if (!female) warnings.push(`${name} tee has no women's rating data.`);
+    if (repeatedNine) {
+      warnings.push(
+        `${name} tee was reduced to its physical 9-hole layout. Add its official 9-hole rating before scheduling an event.`,
+      );
+    }
     if (holes.some((hole) => hole.dis === 0)) warnings.push(`${name} tee has missing yardages.`);
     if (holeCount > 9) warnings.push(`${name} tee needs official front/back ratings before use in 9-hole events.`);
     if (male && female && JSON.stringify(male.holes) !== JSON.stringify(female.holes)) {
@@ -335,21 +362,29 @@ export const mapImportedCourse = (detail: ApiCourse): ImportedCourse => {
     return {
       name,
       color: name.toLowerCase(),
-      distance: positiveNumber(representative.total_yards) ?? sum(holes.map((hole) => hole.dis)),
-      par: positiveNumber(representative.par_total) ?? sum(holes.map((hole) => hole.par)),
+      distance: repeatedNine
+        ? sum(holes.map((hole) => hole.dis))
+        : positiveNumber(representative.total_yards) ?? sum(holes.map((hole) => hole.dis)),
+      par: repeatedNine
+        ? sum(holes.map((hole) => hole.par))
+        : positiveNumber(representative.par_total) ?? sum(holes.map((hole) => hole.par)),
       frontPar,
       backPar,
-      slopeMen: positiveNumber(male?.slope_rating),
-      slopeFrontMen: holeCount <= 9 ? positiveNumber(male?.slope_rating) : null,
+      slopeMen: repeatedNine ? null : positiveNumber(male?.slope_rating),
+      slopeFrontMen:
+        holeCount <= 9 && !repeatedNine ? positiveNumber(male?.slope_rating) : null,
       slopeBackMen: null,
-      slopeWomen: positiveNumber(female?.slope_rating),
-      slopeFrontWomen: holeCount <= 9 ? positiveNumber(female?.slope_rating) : null,
+      slopeWomen: repeatedNine ? null : positiveNumber(female?.slope_rating),
+      slopeFrontWomen:
+        holeCount <= 9 && !repeatedNine ? positiveNumber(female?.slope_rating) : null,
       slopeBackWomen: null,
-      ratingMen: positiveNumber(male?.course_rating),
-      ratingFrontMen: holeCount <= 9 ? positiveNumber(male?.course_rating) : null,
+      ratingMen: repeatedNine ? null : positiveNumber(male?.course_rating),
+      ratingFrontMen:
+        holeCount <= 9 && !repeatedNine ? positiveNumber(male?.course_rating) : null,
       ratingBackMen: null,
-      ratingWomen: positiveNumber(female?.course_rating),
-      ratingFrontWomen: holeCount <= 9 ? positiveNumber(female?.course_rating) : null,
+      ratingWomen: repeatedNine ? null : positiveNumber(female?.course_rating),
+      ratingFrontWomen:
+        holeCount <= 9 && !repeatedNine ? positiveNumber(female?.course_rating) : null,
       ratingBackWomen: null,
       holes,
       holesWomen,

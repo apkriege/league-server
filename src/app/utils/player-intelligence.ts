@@ -3,6 +3,10 @@ export type IntelligenceScore = {
   par: number;
   gross: number;
   net: number;
+  courseId: number;
+  courseName: string;
+  teeId: number;
+  teeName: string;
 };
 
 export type IntelligenceRound = {
@@ -70,12 +74,6 @@ const normalizedToPar = (round: IntelligenceRound) => {
   if (validScores.length === 0) return null;
   const toPar = validScores.reduce((sum, score) => sum + score.gross - score.par, 0);
   return (toPar / validScores.length) * 18;
-};
-
-const actualToPar = (round: IntelligenceRound) => {
-  const validScores = round.scores.filter((score) => score.gross > 0 && score.par > 0);
-  if (validScores.length === 0) return null;
-  return validScores.reduce((sum, score) => sum + score.gross - score.par, 0);
 };
 
 const resultFromPoints = (left: number, right: number): 'win' | 'loss' | 'tie' => {
@@ -213,7 +211,7 @@ export const buildPlayerIntelligence = ({
     for (const round of leaguePlayer.rounds) {
       for (const score of round.scores) {
         if (score.gross <= 0) continue;
-        const key = `${round.courseId}:${round.teeId}:${score.hole}`;
+        const key = `${score.courseId ?? round.courseId}:${score.teeId ?? round.teeId}:${score.hole}`;
         const values = leagueHoleValues.get(key) ?? [];
         values.push(score.gross - score.par);
         leagueHoleValues.set(key, values);
@@ -228,11 +226,15 @@ export const buildPlayerIntelligence = ({
   for (const round of rounds) {
     for (const score of round.scores) {
       if (score.gross <= 0) continue;
-      const key = `${round.courseId}:${round.teeId}:${score.hole}`;
+      const courseId = score.courseId ?? round.courseId;
+      const courseName = score.courseName ?? round.courseName;
+      const teeId = score.teeId ?? round.teeId;
+      const teeName = score.teeName ?? round.teeName;
+      const key = `${courseId}:${teeId}:${score.hole}`;
       const row = playerHoleValues.get(key) ?? {
-        courseId: round.courseId,
-        courseName: round.courseName,
-        teeName: round.teeName,
+        courseId,
+        courseName,
+        teeName,
         hole: score.hole,
         par: score.par,
         values: [],
@@ -273,23 +275,49 @@ export const buildPlayerIntelligence = ({
     .sort((left, right) => Number(right.versusLeague) - Number(left.versusLeague))
     .slice(0, 3);
 
-  const courseGroups = new Map<string, IntelligenceRound[]>();
-  for (const round of rounds) {
-    const key = `${round.courseId}:${round.teeId}:${round.holesPlayed}`;
+  const courseSegments = rounds.flatMap((round) => {
+    const grouped = new Map<string, IntelligenceScore[]>();
+    for (const rawScore of round.scores) {
+      const score = {
+        ...rawScore,
+        courseId: rawScore.courseId ?? round.courseId,
+        courseName: rawScore.courseName ?? round.courseName,
+        teeId: rawScore.teeId ?? round.teeId,
+        teeName: rawScore.teeName ?? round.teeName,
+      };
+      const key = `${score.courseId}:${score.teeId}`;
+      const scores = grouped.get(key) ?? [];
+      scores.push(score);
+      grouped.set(key, scores);
+    }
+    return [...grouped.values()].map((scores) => ({
+      roundId: round.id,
+      courseId: scores[0].courseId,
+      courseName: scores[0].courseName,
+      teeId: scores[0].teeId,
+      teeName: scores[0].teeName,
+      scores,
+      gross: scores.reduce((sum, score) => sum + score.gross, 0),
+      net: scores.reduce((sum, score) => sum + score.net, 0),
+    }));
+  });
+  const courseGroups = new Map<string, typeof courseSegments>();
+  for (const segment of courseSegments) {
+    const key = `${segment.courseId}:${segment.teeId}:${segment.scores.length}`;
     const values = courseGroups.get(key) ?? [];
-    values.push(round);
+    values.push(segment);
     courseGroups.set(key, values);
   }
   const courseSplits = [...courseGroups.values()]
     .map((courseRounds) => {
-      const toParValues = courseRounds
-        .map(actualToPar)
-        .filter((value): value is number => value != null);
+      const toParValues = courseRounds.map((segment) =>
+        segment.scores.reduce((sum, score) => sum + score.gross - score.par, 0),
+      );
       return {
         courseId: courseRounds[0].courseId,
         courseName: courseRounds[0].courseName,
         teeName: courseRounds[0].teeName,
-        holesPlayed: courseRounds[0].holesPlayed,
+        holesPlayed: courseRounds[0].scores.length,
         rounds: courseRounds.length,
         averageGross: roundToOne(Number(mean(courseRounds.map((round) => round.gross)) ?? 0)),
         averageNet: roundToOne(Number(mean(courseRounds.map((round) => round.net)) ?? 0)),
@@ -299,18 +327,18 @@ export const buildPlayerIntelligence = ({
     })
     .sort((left, right) => right.rounds - left.rounds || left.courseName.localeCompare(right.courseName));
 
-  const ringerGroups = new Map<string, IntelligenceRound[]>();
-  for (const round of rounds) {
-    const key = `${round.courseId}:${round.teeId}`;
+  const ringerGroups = new Map<string, typeof courseSegments>();
+  for (const segment of courseSegments) {
+    const key = `${segment.courseId}:${segment.teeId}`;
     const values = ringerGroups.get(key) ?? [];
-    values.push(round);
+    values.push(segment);
     ringerGroups.set(key, values);
   }
   const ringers = [...ringerGroups.values()]
     .map((courseRounds) => {
       const bestByHole = new Map<number, IntelligenceScore>();
-      for (const round of courseRounds) {
-        for (const score of round.scores) {
+      for (const segment of courseRounds) {
+        for (const score of segment.scores) {
           if (score.gross <= 0) continue;
           const existing = bestByHole.get(score.hole);
           if (!existing || score.gross < existing.gross) bestByHole.set(score.hole, score);

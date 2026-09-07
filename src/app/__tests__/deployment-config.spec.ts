@@ -36,6 +36,11 @@ describe('deployment configuration', () => {
       '20260830120000_remove_legacy_scoring_format',
       '20260831000000_course_import_sources',
       '20260901000000_add_usga_rating_references',
+      '20260901010000_add_event_course_routes',
+      '20260901020000_add_event_route_snapshot',
+      '20260901030000_add_competition_handicap_results',
+      '20260901040000_remove_course_handicaps',
+      '20260904000000_app_audit_integrity',
     ]);
     for (const migrationDirectory of migrationDirectories) {
       expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(

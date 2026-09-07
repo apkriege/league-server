@@ -2,16 +2,26 @@ import { normalizeScoringConfiguration } from './config';
 import { applyMaximumScore } from './maximum-score';
 import { parsePlacementPoints, roundScoringPoints } from './numeric';
 import { calculateStablefordPoints } from './stableford';
-import type { ScoringEvent, ScoringRound } from './types';
+import { buildAbsolutePops, getCompetitionHoleNet } from './playing-handicap';
+import type { ScoringEvent, ScoringHole, ScoringRound } from './types';
 
-export const assignStablefordPoints = (event: ScoringEvent, rounds: ScoringRound[]) => {
+export const assignStablefordPoints = (
+  event: ScoringEvent,
+  rounds: ScoringRound[],
+  holes: ScoringHole[] = [],
+) => {
   const configuration = normalizeScoringConfiguration(event.scoringConfig, 'stableford');
+  const popsByPlayerId = buildAbsolutePops(rounds, holes, configuration.handicapAllowance);
   for (const round of rounds) {
     round.pointsEarned = roundScoringPoints(
       round.scores.reduce(
         (total, score) =>
           total +
-          calculateStablefordPoints(score.net, score.par, configuration.stablefordPointScale),
+          calculateStablefordPoints(
+            getCompetitionHoleNet(round, score.hole, popsByPlayerId) ?? score.net,
+            score.par,
+            configuration.stablefordPointScale,
+          ),
         0,
       ),
     );
@@ -22,6 +32,7 @@ export const assignStablefordPoints = (event: ScoringEvent, rounds: ScoringRound
 export const getMaximumScoreCompetitionTotal = (
   event: ScoringEvent,
   round: ScoringRound,
+  pops?: Map<number, number>,
 ) => {
   const configuration = normalizeScoringConfiguration(event.scoringConfig, 'maximum-score');
   if (!configuration.maximumScore) throw new Error('A maximum-score rule is required.');
@@ -30,7 +41,7 @@ export const getMaximumScoreCompetitionTotal = (
       const capped = applyMaximumScore({
         gross: score.gross,
         par: score.par,
-        pops: score.pops,
+        pops: pops?.get(score.hole) ?? score.pops,
         rule: configuration.maximumScore!,
       });
       return { gross: total.gross + capped.gross, net: total.net + capped.net };
@@ -42,6 +53,7 @@ export const getMaximumScoreCompetitionTotal = (
 export const getMaximumScoreStablefordPoints = (
   event: ScoringEvent,
   round: ScoringRound,
+  pops?: Map<number, number>,
 ) => {
   const configuration = normalizeScoringConfiguration(event.scoringConfig, 'maximum-score');
   if (!configuration.maximumScore) throw new Error('A maximum-score rule is required.');
@@ -49,7 +61,7 @@ export const getMaximumScoreStablefordPoints = (
     const capped = applyMaximumScore({
       gross: score.gross,
       par: score.par,
-      pops: score.pops,
+      pops: pops?.get(score.hole) ?? score.pops,
       rule: configuration.maximumScore!,
     });
     return (
@@ -59,17 +71,28 @@ export const getMaximumScoreStablefordPoints = (
   }, 0);
 };
 
-export const assignMaximumScorePoints = (event: ScoringEvent, rounds: ScoringRound[]) => {
+export const assignMaximumScorePoints = (
+  event: ScoringEvent,
+  rounds: ScoringRound[],
+  holes: ScoringHole[] = [],
+) => {
+  const configuration = normalizeScoringConfiguration(event.scoringConfig, 'maximum-score');
   const placementPoints = parsePlacementPoints(event.strokePoints);
+  const popsByPlayerId = buildAbsolutePops(rounds, holes, configuration.handicapAllowance);
   if (placementPoints.length === 0) {
     for (const round of rounds) {
-      round.pointsEarned = roundScoringPoints(getMaximumScoreStablefordPoints(event, round));
+      round.pointsEarned = roundScoringPoints(
+        getMaximumScoreStablefordPoints(event, round, popsByPlayerId.get(round.playerId)),
+      );
       round.matchPoints = 0;
     }
     return;
   }
   const ranked = rounds
-    .map((round) => ({ round, total: getMaximumScoreCompetitionTotal(event, round) }))
+    .map((round) => ({
+      round,
+      total: getMaximumScoreCompetitionTotal(event, round, popsByPlayerId.get(round.playerId)),
+    }))
     .sort((left, right) => left.total.net - right.total.net || left.total.gross - right.total.gross);
 
   let cursor = 0;

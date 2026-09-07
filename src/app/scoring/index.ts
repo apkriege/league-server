@@ -14,7 +14,11 @@ export {
 } from './match-play';
 export { calculateScrambleTeamScore } from './scramble';
 export { modelSharedTeamRound, normalizeSharedTeamGrossScores } from './shared-team-round';
-export { persistSharedTeamRounds } from './shared-team-round-service';
+export {
+  calculateSharedTeamPoints,
+  persistSharedTeamRounds,
+  recalculateSharedTeamEventPoints,
+} from './shared-team-round-service';
 export { normalizeScoringConfiguration } from './config';
 export {
   applyMaximumScore,

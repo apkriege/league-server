@@ -62,17 +62,17 @@ export const normalizeSharedTeamGrossScores = (
 export const modelSharedTeamRound = ({
   holes,
   rawScores,
-  courseHandicap,
+  playingHandicap,
   configuration,
 }: {
   mode: SharedTeamRoundMode;
   holes: TeeHole[];
   rawScores: unknown;
-  courseHandicap: number;
+  playingHandicap: number;
   configuration: ScoringConfiguration;
 }): ModeledSharedTeamRound => {
   const grossScores = normalizeSharedTeamGrossScores(rawScores, holes);
-  const pops = calculateStrokePops(courseHandicap, holes);
+  const pops = calculateStrokePops(playingHandicap, holes);
   const scores = holes.map((hole) => {
     const submittedGross = grossScores.get(hole.num);
     if (submittedGross == null) throw new Error(`Missing score for hole ${hole.num}.`);

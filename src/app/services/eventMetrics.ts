@@ -17,6 +17,8 @@ type MetricRound = {
   postHandicap: number | null;
   gross: number;
   net: number;
+  competitionGross: number | null;
+  competitionNet: number | null;
   pointsEarned: number;
   matchPoints: number;
   eagles: number;
@@ -34,6 +36,8 @@ type MetricRound = {
     hole: number;
     gross: number;
     net: number;
+    competitionGross: number | null;
+    competitionNet: number | null;
     par: number;
   }>;
 };
@@ -74,6 +78,8 @@ export class EventMetrics {
           postHandicap: true,
           gross: true,
           net: true,
+          competitionGross: true,
+          competitionNet: true,
           pointsEarned: true,
           matchPoints: true,
           eagles: true,
@@ -94,6 +100,8 @@ export class EventMetrics {
               hole: true,
               gross: true,
               net: true,
+              competitionGross: true,
+              competitionNet: true,
               par: true,
             },
             orderBy: { hole: 'asc' },
@@ -178,15 +186,19 @@ export class EventMetrics {
       },
       preHandicap: round.preHandicap,
       postHandicap: round.postHandicap,
-      gross: round.gross,
-      net: round.net,
+      gross: round.competitionGross ?? round.gross,
+      net: round.competitionNet ?? round.net,
       pointsEarned: round.pointsEarned,
       matchPoints: round.matchPoints,
       eagles: round.eagles,
       birdies: round.birdies,
       pars: round.pars,
       bogeys: round.bogeys,
-      scores: round.scores,
+      scores: round.scores.map((score) => ({
+        ...score,
+        gross: score.competitionGross ?? score.gross,
+        net: score.competitionNet ?? score.net,
+      })),
     }));
   }
 
@@ -196,8 +208,8 @@ export class EventMetrics {
       name: playerName(round),
       handicap: round.player.handicap,
       points: round.pointsEarned + round.matchPoints,
-      gross: round.gross,
-      net: round.net,
+      gross: round.competitionGross ?? round.gross,
+      net: round.competitionNet ?? round.net,
     }));
 
     return {
@@ -247,7 +259,11 @@ export class EventMetrics {
         entries.push({
           playerId: round.playerId,
           name: playerName(round),
-          value: Number(score[valueKey]),
+          value: Number(
+            valueKey === 'gross'
+              ? score.competitionGross ?? score.gross
+              : score.competitionNet ?? score.net,
+          ),
           par: Number(score.par),
         });
         scoresByHole.set(score.hole, entries);

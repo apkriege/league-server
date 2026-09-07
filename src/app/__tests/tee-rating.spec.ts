@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  calculateCourseHandicap,
-  calculateMatchPops,
   calculateRoundDifferential,
   calculateStrokePops,
   modelTeeForRound,
@@ -116,6 +114,7 @@ describe('modelTeeForRound', () => {
       par: 36,
       side: 'front',
       isNineHoleCourse: true,
+      isRepeatedNine: false,
     });
     expect(modeled.holes).toHaveLength(9);
   });
@@ -137,13 +136,34 @@ describe('modelTeeForRound', () => {
     expect(modeled).toMatchObject({ rating: 35.9, slope: 121, par: 36 });
   });
 
-  it('rejects an 18-hole event on a true 9-hole course', () => {
-    expect(() =>
-      modelTeeForRound({ ...tee, holes: holes.slice(0, 9) }, 18, 'front', {
+  it('models an 18-hole round as two independent loops of a true 9-hole course', () => {
+    const modeled = modelTeeForRound(
+      {
+        ...tee,
+        holes: holes.slice(0, 9),
+        par: 36,
+        ratingMen: 34.5,
+        slopeMen: 121,
+      },
+      18,
+      'front',
+      {
         courseHoles: 9,
         gender: 'male',
-      }),
-    ).toThrow('A 9-hole course can only be used for a 9-hole event.');
+      },
+    );
+
+    expect(modeled).toMatchObject({
+      rating: 69,
+      slope: 121,
+      par: 72,
+      isNineHoleCourse: true,
+      isRepeatedNine: true,
+    });
+    expect(modeled.holes).toHaveLength(18);
+    expect(modeled.holes.slice(0, 3).map((hole) => hole.hcp)).toEqual([1, 3, 5]);
+    expect(modeled.holes.slice(9, 12).map((hole) => hole.hcp)).toEqual([2, 4, 6]);
+    expect(modeled.holes[9]).toMatchObject({ num: 10, par: holes[0].par });
   });
 
   it('does not silently substitute men values when women values are missing', () => {
@@ -157,60 +177,36 @@ describe('modelTeeForRound', () => {
 });
 
 describe('round handicap calculations', () => {
-  it('uses the selected tee to adjust a same-length league handicap', () => {
-    const modeled = modelTeeForRound({ ...tee, ratingFrontMen: 32, slopeFrontMen: 90 }, 9, 'front', {
-      courseHoles: 18,
-      gender: 'male',
-    });
-
-    expect(calculateCourseHandicap(12.34, modeled, 9)).toBe(6);
-  });
-
-  it('uses half an 18-hole index plus the selected nine-hole tee adjustment', () => {
-    const modeled = modelTeeForRound({ ...tee, ratingFrontMen: 32, slopeFrontMen: 90 }, 9, 'front', {
-      courseHoles: 18,
-      gender: 'male',
-    });
-
-    expect(calculateCourseHandicap(12.6, modeled, 18)).toBe(1);
-  });
-
-  it('calculates a 9-hole Course Handicap from half the Handicap Index', () => {
-    const modeled = modelTeeForRound({ ...tee, ratingFrontMen: 35.3 }, 9, 'front', {
-      courseHoles: 18,
-      gender: 'male',
-    });
-
-    expect(calculateCourseHandicap(8.7, modeled)).toBe(4);
-  });
-
-  it('uses a stored 9-hole handicap directly for a 9-hole league', () => {
-    const modeled = modelTeeForRound({ ...tee, ratingFrontMen: 35.3 }, 9, 'front', {
-      courseHoles: 18,
-      gender: 'male',
-    });
-
-    expect(calculateCourseHandicap(4.4, modeled, 9)).toBe(4);
-  });
-
-  it('calculates an 18-hole Course Handicap from the full Handicap Index', () => {
-    const modeled = modelTeeForRound(tee, 18, 'front', {
-      courseHoles: 18,
-      gender: 'male',
-    });
-
-    expect(calculateCourseHandicap(10, modeled)).toBe(12);
-  });
-
-  it('rounds a plus Course Handicap upward at a half stroke', () => {
+  it('uses the nine-hole slope and doubled rating/par for an 18-hole repeated-nine round', () => {
     const modeled = modelTeeForRound(
-      { ...tee, ratingMen: 72, slopeMen: 113 },
+      {
+        ...tee,
+        holes: holes.slice(0, 9),
+        ratingMen: 34.5,
+        slopeMen: 121,
+      },
       18,
       'front',
-      { courseHoles: 18, gender: 'male' },
+      { courseHoles: 9, gender: 'male' },
     );
 
-    expect(calculateCourseHandicap(-2.5, modeled)).toBe(-2);
+    expect(calculateRoundDifferential(80, modeled, 10)).toBe(10.27);
+  });
+
+  it('keeps a 9-hole league handicap on its native scale for a repeated-nine event', () => {
+    const modeled = modelTeeForRound(
+      {
+        ...tee,
+        holes: holes.slice(0, 9),
+        ratingMen: 34.5,
+        slopeMen: 121,
+      },
+      18,
+      'front',
+      { courseHoles: 9, gender: 'male' },
+    );
+
+    expect(calculateRoundDifferential(80, modeled, 5, 9)).toBe(5.14);
   });
 
   it('normalizes a 9-hole differential to the 18-hole scale', () => {
@@ -235,7 +231,7 @@ describe('round handicap calculations', () => {
     expect(calculateRoundDifferential(42.2, modeled, 7, 9)).toBe(7.2);
   });
 
-  it('allocates stroke and match-play pops from Course Handicaps', () => {
+  it('allocates strokes directly from player handicaps', () => {
     const nineHoles = holes.slice(0, 9);
     expect([...calculateStrokePops(4, nineHoles).entries()]).toEqual([
       [1, 1],
@@ -244,12 +240,9 @@ describe('round handicap calculations', () => {
       [4, 1],
     ]);
 
-    const [left, right] = calculateMatchPops(4, 7, nineHoles);
-    expect(left.size).toBe(0);
-    expect([...right.entries()]).toEqual([
-      [1, 1],
-      [2, 1],
-      [3, 1],
+    expect([...calculateStrokePops(-2, nineHoles).entries()]).toEqual([
+      [9, -1],
+      [8, -1],
     ]);
   });
 });

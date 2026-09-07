@@ -103,6 +103,69 @@ describe('course import service', () => {
     );
   });
 
+  it('collapses a provider-generated repeated back nine to the physical 9-hole course', () => {
+    const front = Array.from({ length: 9 }, (_, index) => ({
+      par: index === 4 ? 5 : 4,
+      yardage: 300 + index * 10,
+      handicap: index + 1,
+    }));
+    const repeated = [...front, ...front.map((hole) => ({ ...hole }))];
+    const imported = mapImportedCourse({
+      id: 'repeated9',
+      club_name: 'Nine Hole Club',
+      course_name: 'Nine Hole Course',
+      location: { city: 'Lansing', state: 'MI' },
+      tees: {
+        male: [{
+          tee_name: 'Blue',
+          course_rating: 70.4,
+          slope_rating: 123,
+          total_yards: 6120,
+          number_of_holes: 18,
+          par_total: 74,
+          holes: repeated,
+        }],
+        female: [],
+      },
+    });
+
+    expect(imported.course).toMatchObject({ numHoles: 9, par: 37 });
+    expect(imported.course.tees[0]).toMatchObject({
+      distance: 3060,
+      par: 37,
+      ratingMen: null,
+      slopeMen: null,
+    });
+    expect(imported.course.tees[0].holes).toHaveLength(9);
+    expect(imported.warnings).toContain(
+      'Blue tee was reduced to its physical 9-hole layout. Add its official 9-hole rating before scheduling an event.',
+    );
+  });
+
+  it('does not infer a repeated nine when the provider scorecard lacks yardages', () => {
+    const sparseHoles = Array.from({ length: 18 }, (_, index) => ({
+      par: index % 4 === 0 ? 5 : 4,
+      handicap: index + 1,
+    }));
+    const imported = mapImportedCourse({
+      id: 'sparse18',
+      club_name: 'Sparse Club',
+      course_name: 'Sparse Course',
+      tees: {
+        male: [{
+          tee_name: 'Blue',
+          course_rating: 71.2,
+          slope_rating: 124,
+          number_of_holes: 18,
+          holes: sparseHoles,
+        }],
+      },
+    });
+
+    expect(imported.course.numHoles).toBe(18);
+    expect(imported.course.tees[0].holes).toHaveLength(18);
+  });
+
   it('lists state discoveries without spending one provider request per course', async () => {
     const fetchMock = vi.fn().mockImplementation(async (url: string) => {
       if (url.includes('opengolfapi.org')) {

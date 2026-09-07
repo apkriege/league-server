@@ -1,18 +1,18 @@
 const rounded = (value: number) => Math.round(value);
 
-export const applyHandicapAllowance = (courseHandicap: number, allowance = 1) => {
-  if (!Number.isFinite(courseHandicap)) throw new Error('Course handicap must be numeric.');
+export const applyHandicapAllowance = (playerHandicap: number, allowance = 1) => {
+  if (!Number.isFinite(playerHandicap)) throw new Error('Player handicap must be numeric.');
   if (!Number.isFinite(allowance) || allowance < 0 || allowance > 1) {
     throw new Error('Handicap allowance must be between 0 and 1.');
   }
-  return rounded(courseHandicap * allowance);
+  return rounded(playerHandicap * allowance);
 };
 
-export const calculateAlternateShotHandicap = (courseHandicaps: number[]) => {
-  if (courseHandicaps.length !== 2 || courseHandicaps.some((value) => !Number.isFinite(value))) {
-    throw new Error('Alternate shot requires two valid course handicaps.');
+export const calculateAlternateShotHandicap = (playerHandicaps: number[]) => {
+  if (playerHandicaps.length !== 2 || playerHandicaps.some((value) => !Number.isFinite(value))) {
+    throw new Error('Alternate shot requires two valid player handicaps.');
   }
-  return rounded((courseHandicaps[0] + courseHandicaps[1]) * 0.5);
+  return rounded((playerHandicaps[0] + playerHandicaps[1]) * 0.5);
 };
 
 const scrambleAllowances: Record<number, number[]> = {
@@ -21,12 +21,12 @@ const scrambleAllowances: Record<number, number[]> = {
   4: [0.25, 0.2, 0.15, 0.1],
 };
 
-export const calculateScrambleHandicap = (courseHandicaps: number[]) => {
-  const allowances = scrambleAllowances[courseHandicaps.length];
-  if (!allowances || courseHandicaps.some((value) => !Number.isFinite(value))) {
+export const calculateScrambleHandicap = (playerHandicaps: number[]) => {
+  const allowances = scrambleAllowances[playerHandicaps.length];
+  if (!allowances || playerHandicaps.some((value) => !Number.isFinite(value))) {
     throw new Error('Scramble handicap calculation requires two, three, or four players.');
   }
-  const ordered = [...courseHandicaps].sort((left, right) => left - right);
+  const ordered = [...playerHandicaps].sort((left, right) => left - right);
   return rounded(
     ordered.reduce((total, handicap, index) => total + handicap * allowances[index], 0),
   );

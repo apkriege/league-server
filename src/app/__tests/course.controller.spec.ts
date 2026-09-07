@@ -13,6 +13,9 @@ const mockPrisma: any = {
   event: {
     findFirst: vi.fn(),
   },
+  event_route_segment: {
+    findFirst: vi.fn(),
+  },
   tee: {
     findMany: vi.fn(),
     updateMany: vi.fn(),
@@ -43,6 +46,13 @@ const buildResponse = () => {
   return response;
 };
 
+const validHoles = Array.from({ length: 18 }, (_, index) => ({
+  num: index + 1,
+  par: 4,
+  dis: 350,
+  hcp: index + 1,
+}));
+
 describe('CourseController tee removal', async () => {
   const CourseController = (await import('../controllers/course')).default;
 
@@ -57,6 +67,7 @@ describe('CourseController tee removal', async () => {
     mockPrisma.tee.update.mockResolvedValue({});
     mockPrisma.tee.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.event.findFirst.mockResolvedValue(null);
+    mockPrisma.event_route_segment.findFirst.mockResolvedValue(null);
     loadCourseMock.mockResolvedValue({
       club: { name: 'Test Club', location: 'Saginaw, MI' },
       course: { name: 'Test Course', location: 'Saginaw, MI' },
@@ -88,7 +99,8 @@ describe('CourseController tee removal', async () => {
             ratingMen: 71.2,
             ratingFrontMen: 35.4,
             ratingBackMen: 35.8,
-            holes: [],
+            holes: validHoles,
+            holesWomen: validHoles,
           },
         ],
       },

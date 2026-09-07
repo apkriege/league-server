@@ -1,4 +1,5 @@
-import { calculateMatchPops } from '../utils/tee-rating';
+import { normalizeScoringConfiguration } from './config';
+import { buildRelativePops } from './playing-handicap';
 import { roundScoringPoints, toScoringNumber } from './numeric';
 import { addTeamEventPoints, getFlightTeamIds } from './team-points';
 import type {
@@ -23,11 +24,10 @@ export const calculateMatchPlayPair = ({
   left: ScoringRound;
   right: ScoringRound;
 }) => {
-  const [leftPops, rightPops] = calculateMatchPops(
-    left.courseHandicap,
-    right.courseHandicap,
-    holes,
-  );
+  const configuration = normalizeScoringConfiguration(event.scoringConfig, 'match-play');
+  const popsByPlayerId = buildRelativePops([left, right], holes, configuration.handicapAllowance);
+  const leftPops = popsByPlayerId.get(left.playerId) || new Map<number, number>();
+  const rightPops = popsByPlayerId.get(right.playerId) || new Map<number, number>();
   const pointsPerHole = toScoringNumber(event.ptsPerHole, 0);
   const pointsPerMatch = toScoringNumber(event.ptsPerMatch, 0);
   let leftHolePoints = 0;
