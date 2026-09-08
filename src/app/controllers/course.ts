@@ -11,6 +11,7 @@ import {
   buildManualCourseRequestEmail,
 } from '../emailTemplates/courseRequest';
 import { sendAppEmail } from '../services/email';
+import { excludeExistingCourses } from '../services/courseDuplicate';
 import { normalizeTimeZone } from '../utils/time-zone';
 import {
   CourseTeeValidationError,
@@ -126,12 +127,11 @@ class CourseController {
     try {
       const results = await searchCourseDirectory(name, state || undefined);
       const existing = await prisma.course.findMany({
-        where: { externalProvider: 'GolfCourseAPI', externalId: { in: results.map((result) => result.externalId) } },
-        select: { externalId: true },
+        where: { deletedAt: null },
+        select: { name: true, location: true, club: { select: { location: true } } },
       });
-      const existingIds = new Set(existing.map((course) => course.externalId));
       return res.status(200).json({
-        results: results.map((result) => ({ ...result, alreadyImported: existingIds.has(result.externalId) })),
+        results: excludeExistingCourses(results, existing),
         attribution: 'Course and scorecard data provided by GolfCourseAPI.',
       });
     } catch (error) {
@@ -149,13 +149,12 @@ class CourseController {
     try {
       const page = await searchStateCourseDirectory(state, offset);
       const existing = await prisma.course.findMany({
-        where: { externalProvider: 'GolfCourseAPI', externalId: { in: page.results.map((result) => result.externalId) } },
-        select: { externalId: true },
+        where: { deletedAt: null },
+        select: { name: true, location: true, club: { select: { location: true } } },
       });
-      const existingIds = new Set(existing.map((course) => course.externalId));
       return res.status(200).json({
         ...page,
-        results: page.results.map((result) => ({ ...result, alreadyImported: existingIds.has(result.externalId) })),
+        results: excludeExistingCourses(page.results, existing),
         attribution: 'State discovery by OpenGolfAPI; course data provided by GolfCourseAPI.',
       });
     } catch (error) {

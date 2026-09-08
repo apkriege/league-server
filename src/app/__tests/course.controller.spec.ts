@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { loadCourseMock, sendAppEmailMock } = vi.hoisted(() => ({
+const { loadCourseMock, searchCourseMock, searchStateMock, sendAppEmailMock } = vi.hoisted(() => ({
   loadCourseMock: vi.fn(),
+  searchCourseMock: vi.fn(),
+  searchStateMock: vi.fn(),
   sendAppEmailMock: vi.fn(),
 }));
 
@@ -9,6 +11,7 @@ const mockPrisma: any = {
   course: {
     update: vi.fn(),
     findUnique: vi.fn(),
+    findMany: vi.fn(),
   },
   event: {
     findFirst: vi.fn(),
@@ -31,7 +34,8 @@ mockPrisma.$transaction = vi.fn(async (callback: (transaction: typeof mockPrisma
 vi.mock('../../prisma', () => ({ prisma: mockPrisma }));
 vi.mock('../services/courseImport', () => ({
   loadCourseFromDirectory: loadCourseMock,
-  searchCourseDirectory: vi.fn(),
+  searchCourseDirectory: searchCourseMock,
+  searchStateCourseDirectory: searchStateMock,
 }));
 vi.mock('../services/email', () => ({
   sendAppEmail: sendAppEmailMock,
@@ -73,6 +77,79 @@ describe('CourseController tee removal', async () => {
       course: { name: 'Test Course', location: 'Saginaw, MI' },
     });
     sendAppEmailMock.mockResolvedValue({ status: 'sent', emailId: 'email_123' });
+    mockPrisma.course.findMany.mockResolvedValue([]);
+  });
+
+  it('removes database duplicates from a course-name search by name and city', async () => {
+    searchCourseMock.mockResolvedValue([
+      {
+        externalId: 'directory-course-12',
+        clubName: 'The Fortress',
+        courseName: 'The Fortress Golf Course',
+        city: 'Frankenmuth',
+        state: 'MI',
+        location: 'Frankenmuth, MI',
+        accessType: 'public',
+        par: 72,
+        phone: '',
+        website: '',
+        maleTeeCount: 4,
+        femaleTeeCount: 3,
+      },
+    ]);
+    mockPrisma.course.findMany.mockResolvedValue([
+      { name: 'Fortress', location: 'Frankenmuth, MI', club: { location: null } },
+    ]);
+    const response = buildResponse();
+
+    await CourseController.searchCourseDirectory(
+      { query: { name: 'Fortress' } } as any,
+      response,
+    );
+
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({ results: [] }),
+    );
+  });
+
+  it('removes database duplicates from a state search by name and city', async () => {
+    const duplicate = {
+      externalId: 'lookup-course-12',
+      clubName: 'Lakeside',
+      courseName: 'Lakeside Golf Club',
+      city: 'Lansing',
+      state: 'MI',
+      location: 'Lansing, MI',
+      accessType: 'public',
+      par: null,
+      phone: '',
+      website: '',
+      maleTeeCount: 0,
+      femaleTeeCount: 0,
+      availabilityUnchecked: true,
+    };
+    searchStateMock.mockResolvedValue({
+      results: [duplicate],
+      offset: 0,
+      checked: 1,
+      unavailable: 0,
+      total: 1,
+      hasMore: false,
+      nextOffset: 1,
+    });
+    mockPrisma.course.findMany.mockResolvedValue([
+      { name: 'Lakeside', location: null, club: { location: 'Lansing, MI' } },
+    ]);
+    const response = buildResponse();
+
+    await CourseController.searchStateCourseDirectory(
+      { query: { state: 'MI', offset: '0' } } as any,
+      response,
+    );
+
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({ results: [], total: 1 }),
+    );
   });
 
   it('soft-deletes an existing tee omitted from the edited course payload', async () => {
