@@ -6,11 +6,11 @@ export default class CourseService {
   }
 
   static async findAll() {
-    return await prisma.club.findMany();
+    return await prisma.club.findMany({ where: { deletedAt: null } });
   }
 
   static async findById(id: number) {
-    return await prisma.club.findUnique({ where: { id } });
+    return await prisma.club.findFirst({ where: { id, deletedAt: null } });
   }
 
   static async create(club: any) {

@@ -395,7 +395,11 @@ export const mapImportedCourse = (detail: ApiCourse): ImportedCourse => {
   const city = String(location.city || '').trim();
   const state = normalizeState(location.state);
   const shortLocation = [city, state].filter(Boolean).join(', ');
-  const fullLocation = String(location.address || shortLocation).trim();
+  const address = String(location.address || '').trim();
+  const addressIncludesCity = city && normalizeText(address).includes(normalizeText(city));
+  const fullLocation = [address, addressIncludesCity ? '' : shortLocation]
+    .filter(Boolean)
+    .join(', ');
   const externalId = String(detail.id || '').trim();
   const numHoles = tees.length > 0 ? Math.max(...tees.map((tee) => tee.holes.length)) : 18;
   return {

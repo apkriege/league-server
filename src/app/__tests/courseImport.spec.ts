@@ -88,6 +88,7 @@ describe('course import service', () => {
       scorecardUrl: 'https://example.com/scorecard',
       numHoles: 18,
     });
+    expect(imported.club.location).toBe('1 Golf Way, Saginaw, MI');
     expect(imported.course.tees[0]).toMatchObject({
       name: 'Blue',
       ratingMen: 71.1,
