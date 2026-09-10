@@ -11,7 +11,7 @@ import {
   buildManualCourseRequestEmail,
 } from '../emailTemplates/courseRequest';
 import { sendAppEmail } from '../services/email';
-import { excludeExistingCourses } from '../services/courseDuplicate';
+import { excludeExistingCourses, markExistingCourses } from '../services/courseDuplicate';
 import { normalizeTimeZone } from '../utils/time-zone';
 import {
   CourseTeeValidationError,
@@ -131,7 +131,7 @@ class CourseController {
         select: { name: true, location: true, club: { select: { location: true } } },
       });
       return res.status(200).json({
-        results: excludeExistingCourses(results, existing),
+        results: markExistingCourses(results, existing),
         attribution: 'Course and scorecard data provided by GolfCourseAPI.',
       });
     } catch (error) {

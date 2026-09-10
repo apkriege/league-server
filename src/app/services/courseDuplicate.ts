@@ -33,10 +33,7 @@ const cityFromLocation = (location: string | null) => {
   return parts.length > 1 ? parts.at(-2) || '' : parts[0] || '';
 };
 
-export const excludeExistingCourses = (
-  results: CourseImportSearchResult[],
-  existingCourses: ExistingCourse[],
-) => {
+const existingCourseKeys = (existingCourses: ExistingCourse[]) => {
   const existingKeys = new Set<string>();
   existingCourses.forEach((course) => {
     const name = normalizeName(course.name);
@@ -46,9 +43,27 @@ export const excludeExistingCourses = (
       .filter(Boolean);
     cities.forEach((city) => existingKeys.add(`${name}\u0000${city}`));
   });
+  return existingKeys;
+};
 
-  return results.filter((result) => {
-    const key = `${normalizeName(result.courseName)}\u0000${normalizeCity(result.city)}`;
-    return !existingKeys.has(key);
-  });
+const resultKey = (result: CourseImportSearchResult) =>
+  `${normalizeName(result.courseName)}\u0000${normalizeCity(result.city)}`;
+
+export const markExistingCourses = (
+  results: CourseImportSearchResult[],
+  existingCourses: ExistingCourse[],
+) => {
+  const existingKeys = existingCourseKeys(existingCourses);
+  return results.map((result) => ({
+    ...result,
+    alreadyImported: existingKeys.has(resultKey(result)),
+  }));
+};
+
+export const excludeExistingCourses = (
+  results: CourseImportSearchResult[],
+  existingCourses: ExistingCourse[],
+) => {
+  const existingKeys = existingCourseKeys(existingCourses);
+  return results.filter((result) => !existingKeys.has(resultKey(result)));
 };

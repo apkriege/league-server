@@ -80,7 +80,7 @@ describe('CourseController tee removal', async () => {
     mockPrisma.course.findMany.mockResolvedValue([]);
   });
 
-  it('removes database duplicates from a course-name search by name and city', async () => {
+  it('flags database duplicates in a course-name search by name and city', async () => {
     searchCourseMock.mockResolvedValue([
       {
         externalId: 'directory-course-12',
@@ -108,7 +108,9 @@ describe('CourseController tee removal', async () => {
     );
 
     expect(response.json).toHaveBeenCalledWith(
-      expect.objectContaining({ results: [] }),
+      expect.objectContaining({
+        results: [expect.objectContaining({ alreadyImported: true })],
+      }),
     );
   });
 

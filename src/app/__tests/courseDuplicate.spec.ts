@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { excludeExistingCourses } from '../services/courseDuplicate';
+import { excludeExistingCourses, markExistingCourses } from '../services/courseDuplicate';
 
 const result = (courseName: string, city: string) => ({
   externalId: `${courseName}-${city}`,
@@ -17,6 +17,22 @@ const result = (courseName: string, city: string) => ({
 });
 
 describe('course duplicate filtering', () => {
+  it('flags matching results while keeping them in the response', () => {
+    const results = [result('The Sawmill Golf Club', 'Saginaw'), result('The Sawmill', 'Lansing')];
+    const existing = [
+      {
+        name: 'Sawmill',
+        location: 'Saginaw, MI',
+        club: { location: null },
+      },
+    ];
+
+    expect(markExistingCourses(results, existing)).toEqual([
+      { ...results[0], alreadyImported: true },
+      { ...results[1], alreadyImported: false },
+    ]);
+  });
+
   it('removes matching course names and cities despite formatting differences', () => {
     const results = [result('The Fortress Golf Course', 'Frankenmuth'), result('Fortress', 'Detroit')];
     const existing = [
