@@ -157,6 +157,9 @@ class EventController {
               where: { deletedAt: null },
               include: { scores: { orderBy: { hole: 'asc' } }, team: true },
             },
+            teamEventPoints: {
+              select: { teamId: true, points: true },
+            },
             flights: {
               orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
               include: {

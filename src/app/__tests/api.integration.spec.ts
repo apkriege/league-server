@@ -1165,6 +1165,11 @@ describe('API integration', () => {
     expect(response.status).toBe(200);
     expect(response.body.teamRounds).toHaveLength(4);
     expect(
+      response.body.teamEventPoints
+        .map((row: { points: number }) => row.points)
+        .sort((left: number, right: number) => right - left),
+    ).toEqual([10, 8, 6, 4]);
+    expect(
       response.body.teamRounds.map((round: { pointsEarned: number }) => round.pointsEarned)
         .sort((left: number, right: number) => right - left),
     ).toEqual([10, 8, 6, 4]);
@@ -1239,7 +1244,7 @@ describe('API integration', () => {
         orderBy: { id: 'asc' },
       }),
       prisma.audit_log.findFirst({
-        where: { entity: 'flight', entityId: targetFlight.id, action: 'swap_players' },
+        where: { entity: 'flight', entityId: targetFlight.id, action: 'sub_players' },
         orderBy: { id: 'desc' },
       }),
     ]);

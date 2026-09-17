@@ -190,8 +190,8 @@ export default class FlightController {
         leagueId: flight?.event?.leagueId ?? null,
         entity: 'flight',
         entityId: flightId,
-        action: 'swap_players',
-        summary: 'Updated flight player assignments.',
+        action: 'sub_players',
+        summary: 'Updated flight substitutes.',
       });
 
       res.status(200).json({ message: 'Flights updated successfully' });
