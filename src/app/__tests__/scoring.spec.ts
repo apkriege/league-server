@@ -230,6 +230,23 @@ describe('scoring calculators', () => {
     });
   });
 
+  it('keeps full-handicap net separate from relative match strokes', () => {
+    const player = buildRound({ playerId: 1, opponentId: 2, gross: 44, net: 34 });
+    const opponent = buildRound({ playerId: 2, opponentId: 1, gross: 40, net: 36 });
+    player.playerHandicap = 10;
+    opponent.playerHandicap = 4;
+
+    assignMatchPlayPoints({
+      event: { ...event, ptsPerHole: 1, ptsPerMatch: 2 },
+      holes,
+      rounds: [player, opponent],
+    });
+
+    expect(player.playingHandicap).toBe(10);
+    expect(player.competitionNet).toBe(34);
+    expect(player.competitionPops?.get(1)).toBe(6);
+  });
+
   it('treats blank placement points as absent and preserves an explicit zero place', () => {
     expect(parsePlacementPoints('')).toEqual([]);
     expect(parsePlacementPoints(['', null, '  '])).toEqual([]);
@@ -455,6 +472,10 @@ describe('scoring calculators', () => {
       buildMultiHoleRound({ playerId: 3, teamId: 200, grossScores: [5, 5] }),
       buildMultiHoleRound({ playerId: 4, teamId: 200, grossScores: [6, 5] }),
     ];
+    for (const round of [...leftRounds, ...rightRounds]) {
+      round.playerHandicap = 10;
+      round.net = round.gross - 10;
+    }
     const result = calculateFourBallMatch({
       holes: [
         { num: 1, par: 4, hcp: 1 },
@@ -471,6 +492,8 @@ describe('scoring calculators', () => {
       leftHolePoints: 2,
       leftMatchPoints: 2,
     });
+    expect(leftRounds[0].competitionNet).toBe(leftRounds[0].net);
+    expect(leftRounds[0].playingHandicap).toBe(10);
     expect(() =>
       calculateFourBallMatch({
         holes: [{ num: 1, par: 4, hcp: 1 }],

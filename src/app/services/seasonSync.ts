@@ -412,6 +412,7 @@ const recalculateEvent = async ({
     scoringMode === 'maximum-score'
       ? normalizeScoringConfiguration(event.scoringConfig, 'maximum-score').maximumScore
       : null;
+  const usesRelativeMatchStrokes = scoringMode === 'match-play' || scoringMode === 'four-ball-match';
   for (const calculation of calculations) {
     calculation.competitionGross = calculation.gross;
     if (!maximumScoreRule) continue;
@@ -485,6 +486,8 @@ const recalculateEvent = async ({
             pops: calculation.competitionPops?.get(score.hole) || 0,
             rule: maximumScoreRule,
           })
+        : usesRelativeMatchStrokes
+          ? { gross: score.gross, net: score.net }
         : {
             gross: score.gross,
             net: score.gross - (calculation.competitionPops?.get(score.hole) || 0),

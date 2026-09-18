@@ -63,7 +63,7 @@ export class EventMetrics {
   async processEvent() {
     const activeLeagueRounds = {
       deletedAt: null,
-      event: {
+        event: {
         leagueId: this.leagueId,
         deletedAt: null,
       },
@@ -126,6 +126,7 @@ export class EventMetrics {
       prisma.event?.findFirst?.({
         where: { id: this.eventId, leagueId: this.leagueId, deletedAt: null },
         select: {
+          scoringMode: true,
           flights: {
             where: { deletedAt: null },
             select: {
@@ -158,17 +159,20 @@ export class EventMetrics {
     const playerTeamAssignments = (eventTeamData?.flights ?? []).flatMap(
       (flight) => flight.players,
     );
+    const useCanonicalNet = ['match-play', 'four-ball-match'].includes(
+      String(eventTeamData?.scoringMode),
+    );
 
     return {
-      scores: this.scores(rounds),
-      leaderboards: this.createLeaderboards(rounds),
+      scores: this.scores(rounds, useCanonicalNet),
+      leaderboards: this.createLeaderboards(rounds, useCanonicalNet),
       teamStandings: calculateEventTeamStandings(
         teamAssignments,
         playerTeamAssignments,
         eventTeamData?.teamEventPoints ?? [],
         rounds,
       ),
-      skins: this.createSkins(rounds),
+      skins: this.createSkins(rounds, useCanonicalNet),
       scoreDistribution: this.scoreDistribution(
         rounds,
         seasonAggregate._sum,
@@ -177,7 +181,7 @@ export class EventMetrics {
     };
   }
 
-  private scores(rounds: MetricRound[]) {
+  private scores(rounds: MetricRound[], useCanonicalNet = false) {
     return rounds.map((round) => ({
       playerId: round.playerId,
       player: {
@@ -187,7 +191,7 @@ export class EventMetrics {
       preHandicap: round.preHandicap,
       postHandicap: round.postHandicap,
       gross: round.competitionGross ?? round.gross,
-      net: round.competitionNet ?? round.net,
+      net: useCanonicalNet ? round.net : round.competitionNet ?? round.net,
       pointsEarned: round.pointsEarned,
       matchPoints: round.matchPoints,
       eagles: round.eagles,
@@ -197,19 +201,19 @@ export class EventMetrics {
       scores: round.scores.map((score) => ({
         ...score,
         gross: score.competitionGross ?? score.gross,
-        net: score.competitionNet ?? score.net,
+        net: useCanonicalNet ? score.net : score.competitionNet ?? score.net,
       })),
     }));
   }
 
-  private createLeaderboards(rounds: MetricRound[]) {
+  private createLeaderboards(rounds: MetricRound[], useCanonicalNet = false) {
     const entries = rounds.map((round) => ({
       playerId: round.playerId,
       name: playerName(round),
       handicap: round.player.handicap,
       points: round.pointsEarned + round.matchPoints,
       gross: round.competitionGross ?? round.gross,
-      net: round.competitionNet ?? round.net,
+      net: useCanonicalNet ? round.net : round.competitionNet ?? round.net,
     }));
 
     return {
@@ -240,14 +244,18 @@ export class EventMetrics {
     };
   }
 
-  private createSkins(rounds: MetricRound[]) {
+  private createSkins(rounds: MetricRound[], useCanonicalNet = false) {
     return {
       playerSkins: this.findSkins(rounds, 'gross'),
-      playerNetSkins: this.findSkins(rounds, 'net'),
+      playerNetSkins: this.findSkins(rounds, 'net', useCanonicalNet),
     };
   }
 
-  private findSkins(rounds: MetricRound[], valueKey: 'gross' | 'net') {
+  private findSkins(
+    rounds: MetricRound[],
+    valueKey: 'gross' | 'net',
+    useCanonicalNet = false,
+  ) {
     const scoresByHole = new Map<
       number,
       Array<{ playerId: number; name: string; value: number; par: number }>
@@ -262,7 +270,7 @@ export class EventMetrics {
           value: Number(
             valueKey === 'gross'
               ? score.competitionGross ?? score.gross
-              : score.competitionNet ?? score.net,
+              : useCanonicalNet ? score.net : score.competitionNet ?? score.net,
           ),
           par: Number(score.par),
         });

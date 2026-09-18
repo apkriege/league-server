@@ -73,7 +73,11 @@ export const buildRelativePops = (
       ),
     ]),
   );
-  applyCompetitionValues(rounds, relativePlayingHandicaps, popsByPlayerId);
+  for (const round of rounds) {
+    round.playingHandicap = Number(playingHandicaps.get(round.playerId) ?? 0);
+    round.competitionPops = popsByPlayerId.get(round.playerId) ?? new Map<number, number>();
+    round.competitionNet = round.net;
+  }
   return popsByPlayerId;
 };
 
