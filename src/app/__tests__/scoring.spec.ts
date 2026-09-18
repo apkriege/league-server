@@ -117,7 +117,7 @@ describe('scoring calculators', () => {
     expect({ hole: right.pointsEarned, match: right.matchPoints }).toEqual({ hole: 0, match: 0 });
   });
 
-  it('decides match play by holes won instead of aggregate strokes', () => {
+  it('keeps hole points head-to-head and awards the player match bonus by net total', () => {
     const matchHoles = [1, 2, 3].map((num) => ({ num, par: 4, hcp: num }));
     const left = buildMultiHoleRound({
       playerId: 1,
@@ -136,8 +136,8 @@ describe('scoring calculators', () => {
       rounds: [left, right],
     });
 
-    expect({ holes: left.pointsEarned, match: left.matchPoints }).toEqual({ holes: 2, match: 2 });
-    expect({ holes: right.pointsEarned, match: right.matchPoints }).toEqual({ holes: 1, match: 0 });
+    expect({ holes: left.pointsEarned, match: left.matchPoints }).toEqual({ holes: 2, match: 0 });
+    expect({ holes: right.pointsEarned, match: right.matchPoints }).toEqual({ holes: 1, match: 2 });
   });
 
   it('adds player match points and awards the team medal by combined net', () => {
@@ -160,7 +160,8 @@ describe('scoring calculators', () => {
       teamPoints,
     });
 
-    expect(rounds.slice(0, 2).map((round) => round.pointsEarned + round.matchPoints)).toEqual([3, 3]);
+    expect(rounds.map((round) => round.pointsEarned)).toEqual([1, 1, 0, 0]);
+    expect(rounds.map((round) => round.matchPoints)).toEqual([0, 0, 2, 2]);
     expect(teamPoints.get('100:10')?.points ?? 0).toBe(0);
     expect(teamPoints.get('200:10')?.points).toBe(4);
   });
