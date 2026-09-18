@@ -147,43 +147,34 @@ export const assignTeamMatchPlayPoints = ({
     if (teamIds.length < 2) continue;
 
     const [leftTeamId, rightTeamId] = teamIds;
-    let leftHolesWon = 0;
-    let rightHolesWon = 0;
-    let playedMatchups = 0;
-    const processedPairs = new Set<string>();
-
-    for (const flightPlayer of flight.players || []) {
-      const round = roundsByPlayerId.get(Number(flightPlayer.playerId));
-      if (!round?.opponentId) continue;
-      const opponent = roundsByPlayerId.get(round.opponentId);
-      if (!opponent) continue;
-
-      const key = pairKey(round.playerId, opponent.playerId);
-      if (processedPairs.has(key)) continue;
-      processedPairs.add(key);
-
-      const points = calculateMatchPlayPair({ event, holes, left: round, right: opponent });
-      const leftIsTeamOne = round.teamId === leftTeamId;
-      const rightIsTeamOne = opponent.teamId === leftTeamId;
-
-      if (leftIsTeamOne && opponent.teamId === rightTeamId) {
-        leftHolesWon += points.leftHolesWon;
-        rightHolesWon += points.rightHolesWon;
-        playedMatchups += points.playedHoles > 0 ? 1 : 0;
-      } else if (rightIsTeamOne && round.teamId === rightTeamId) {
-        leftHolesWon += points.rightHolesWon;
-        rightHolesWon += points.leftHolesWon;
-        playedMatchups += points.playedHoles > 0 ? 1 : 0;
-      }
-    }
+    const flightPlayers = (teamId: number) =>
+      (flight.players || []).filter(
+        (player) => Number(player.teamId ?? player.player?.teamId) === teamId,
+      );
+    const leftPlayers = flightPlayers(leftTeamId);
+    const rightPlayers = flightPlayers(rightTeamId);
+    const flightRounds = (players: typeof leftPlayers) =>
+      players
+        .map((player) => roundsByPlayerId.get(Number(player.playerId)))
+        .filter((round): round is ScoringRound => Boolean(round));
+    const leftRounds = flightRounds(leftPlayers);
+    const rightRounds = flightRounds(rightPlayers);
 
     const teamWinPoints = toScoringNumber(event.ptsPerTeamWin, 0);
-    if (teamWinPoints <= 0 || playedMatchups === 0) continue;
+    if (
+      teamWinPoints <= 0 ||
+      leftRounds.length === 0 ||
+      rightRounds.length === 0 ||
+      leftRounds.length !== leftPlayers.length ||
+      rightRounds.length !== rightPlayers.length
+    ) continue;
+    const leftNet = leftRounds.reduce((total, round) => total + round.net, 0);
+    const rightNet = rightRounds.reduce((total, round) => total + round.net, 0);
 
-    if (leftHolesWon === rightHolesWon) {
+    if (leftNet === rightNet) {
       addTeamEventPoints(teamPoints, event.leagueId, event.id, leftTeamId, teamWinPoints / 2);
       addTeamEventPoints(teamPoints, event.leagueId, event.id, rightTeamId, teamWinPoints / 2);
-    } else if (leftHolesWon > rightHolesWon) {
+    } else if (leftNet < rightNet) {
       addTeamEventPoints(teamPoints, event.leagueId, event.id, leftTeamId, teamWinPoints);
     } else {
       addTeamEventPoints(teamPoints, event.leagueId, event.id, rightTeamId, teamWinPoints);

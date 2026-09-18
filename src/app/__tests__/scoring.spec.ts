@@ -5,6 +5,7 @@ import {
   assignTeamAggregatePoints,
   assignMaximumScorePoints,
   assignMatchPlayPoints,
+  assignTeamMatchPlayPoints,
   assignStablefordPoints,
   assignStrokePlayPoints,
   applyMaximumScore,
@@ -137,6 +138,31 @@ describe('scoring calculators', () => {
 
     expect({ holes: left.pointsEarned, match: left.matchPoints }).toEqual({ holes: 2, match: 2 });
     expect({ holes: right.pointsEarned, match: right.matchPoints }).toEqual({ holes: 1, match: 0 });
+  });
+
+  it('adds player match points and awards the team medal by combined net', () => {
+    const rounds = [
+      buildRound({ playerId: 1, teamId: 100, opponentId: 3, gross: 35, net: 35 }),
+      buildRound({ playerId: 2, teamId: 100, opponentId: 4, gross: 38, net: 38 }),
+      buildRound({ playerId: 3, teamId: 200, opponentId: 1, gross: 36, net: 34 }),
+      buildRound({ playerId: 4, teamId: 200, opponentId: 2, gross: 39, net: 37 }),
+    ];
+    const teamPoints: TeamEventPointsAccumulator = new Map();
+
+    assignTeamMatchPlayPoints({
+      event: { ...event, ptsPerHole: 1, ptsPerMatch: 2, ptsPerTeamWin: 4 },
+      holes,
+      flights: [{
+        teams: [{ teamId: 100 }, { teamId: 200 }],
+        players: rounds.map((round) => ({ playerId: round.playerId, teamId: round.teamId })),
+      }],
+      roundsByPlayerId: new Map(rounds.map((round) => [round.playerId, round])),
+      teamPoints,
+    });
+
+    expect(rounds.slice(0, 2).map((round) => round.pointsEarned + round.matchPoints)).toEqual([3, 3]);
+    expect(teamPoints.get('100:10')?.points ?? 0).toBe(0);
+    expect(teamPoints.get('200:10')?.points).toBe(4);
   });
 
   it('uses each team best net score for best-ball points', () => {
