@@ -19,6 +19,7 @@ import { calculateSeasonSkinLeaderboards } from '../utils/season-skins';
 import { calculatePlayerResults } from '../utils/player-results';
 import { getLeagueRoundProgress } from '../utils/league-round-progress';
 import {
+  assertCanCreateNextSeason,
   LeagueSeasonRenewalError,
   prepareLeagueRenewalTemplate,
   shiftSeasonDate,
@@ -512,6 +513,10 @@ class LeagueController {
                 where: { deletedAt: null },
                 select: { id: true, userId: true },
               },
+              events: {
+                where: { deletedAt: null },
+                select: { status: true, type: true },
+              },
               renewedLeague: { select: { id: true } },
             },
           })
@@ -525,6 +530,7 @@ class LeagueController {
       if (renewalSource?.renewedLeague) {
         return res.status(409).json({ message: 'This league already has a next season.' });
       }
+      if (renewalSource) assertCanCreateNextSeason(renewalSource);
 
       const billableGolfers = getLeagueBillableGolfers(players);
       const invalidPlayerIndex = Array.isArray(players)
@@ -648,12 +654,20 @@ class LeagueController {
         if (renewalSourceId) {
           const availableSource = await tx.league.findFirst({
             where: { id: renewalSourceId, adminId, deletedAt: null },
-            select: { renewedLeague: { select: { id: true } } },
+            select: {
+              endDate: true,
+              events: {
+                where: { deletedAt: null },
+                select: { status: true, type: true },
+              },
+              renewedLeague: { select: { id: true } },
+            },
           });
           if (!availableSource) throw new Error('The previous league season was not found.');
           if (availableSource.renewedLeague) {
             throw new Error('This league already has a next season.');
           }
+          assertCanCreateNextSeason(availableSource);
         }
         const pendingLeagueBypassCodeId = getPendingLeagueBypassCodeId(lockedAdmin.metadata);
         let lockedEntitlement = await tx.league_season_entitlement.findUnique({
@@ -889,7 +903,9 @@ class LeagueController {
       const paymentRequired = message.toLowerCase().includes('payment is required');
       const status = paymentRequired
         ? 402
-        : errorCode === 'P2002' || message.includes('already has a next season')
+        : error instanceof LeagueSeasonRenewalError ||
+            errorCode === 'P2002' ||
+            message.includes('already has a next season')
           ? 409
         : message.includes('League type') ||
         message.includes('League hole format') ||

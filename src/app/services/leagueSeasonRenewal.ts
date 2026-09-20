@@ -1,5 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma';
+import { getLeagueRoundProgress, type LeagueRoundProgressEvent } from '../utils/league-round-progress';
+import { isLeagueSeasonExpired } from './leagueLifecycle';
 
 export class LeagueSeasonRenewalError extends Error {
   constructor(
@@ -30,6 +32,28 @@ export const getRenewedLeagueName = (name: string, sourceYear: number, nextYear:
     : `${name} ${nextYear}`;
 };
 
+export const canCreateNextSeason = (
+  source: { endDate: Date; events?: readonly LeagueRoundProgressEvent[] },
+  now = new Date(),
+) => {
+  if (isLeagueSeasonExpired({ type: 'season', endDate: source.endDate }, now)) return true;
+
+  const progress = getLeagueRoundProgress(source.events);
+  return progress.roundCount > 0 && progress.completedRoundCount === progress.roundCount;
+};
+
+export const assertCanCreateNextSeason = (
+  source: { endDate: Date; events?: readonly LeagueRoundProgressEvent[] },
+  now = new Date(),
+) => {
+  if (!canCreateNextSeason(source, now)) {
+    throw new LeagueSeasonRenewalError(
+      'The next season can be created after this season ends or when all scheduled events are complete.',
+      409,
+    );
+  }
+};
+
 const renewalTemplateInclude = {
   entitlement: { select: { requiredGolfers: true } },
   players: {
@@ -48,6 +72,10 @@ const renewalTemplateInclude = {
   },
   scoringPeriods: {
     orderBy: { position: 'asc' },
+  },
+  events: {
+    where: { deletedAt: null },
+    select: { status: true, type: true },
   },
   renewedLeague: {
     select: { id: true, name: true, startDate: true, endDate: true },
@@ -78,6 +106,7 @@ export const prepareLeagueRenewalTemplate = async (
       source.renewedLeague,
     );
   }
+  assertCanCreateNextSeason(source);
 
   const startDate = shiftSeasonDate(source.startDate);
   const endDate = shiftSeasonDate(source.endDate);

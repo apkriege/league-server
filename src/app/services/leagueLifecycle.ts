@@ -23,7 +23,7 @@ export const getLeagueMutationBlock = (league: {
   }
   if (
     league.seasonStatus === 'archived' ||
-    (league.seasonStatus === 'active' && isLeagueSeasonExpired(league))
+    isLeagueSeasonExpired(league)
   ) {
     return {
       status: 409,

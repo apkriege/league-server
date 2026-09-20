@@ -41,12 +41,24 @@ describe('deployment configuration', () => {
       '20260901030000_add_competition_handicap_results',
       '20260901040000_remove_course_handicaps',
       '20260904000000_app_audit_integrity',
+      '20260920000000_remove_reopened_season_status',
     ]);
     for (const migrationDirectory of migrationDirectories) {
       expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(
         true,
       );
     }
+
+    const statusMigration = fs.readFileSync(
+      path.join(
+        migrationsRoot,
+        '20260920000000_remove_reopened_season_status',
+        'migration.sql',
+      ),
+      'utf8',
+    );
+    expect(statusMigration).toContain('DROP CONSTRAINT IF EXISTS "league_season_status_valid"');
+    expect(statusMigration).not.toContain('ADD CONSTRAINT "league_season_status_valid"');
   });
 
   it('pins Node 24 and runs repository-owned CI verification', () => {

@@ -12,40 +12,6 @@ import { writeAuditLog } from '../utils/audit';
 import { leagueEntitlementStateSelect } from '../services/seasonEntitlement';
 
 class AdminController {
-  static updateLeagueLifecycle = async (req: Request, res: Response) => {
-    const leagueId = Number(req.params.id);
-    const requestedStatus = String(req.body?.status || '').toLowerCase();
-    if (!Number.isInteger(leagueId) || leagueId <= 0) {
-      return res.status(400).json({ message: 'Invalid league ID.' });
-    }
-    if (!['archived', 'reopened'].includes(requestedStatus)) {
-      return res.status(400).json({ message: 'Status must be archived or reopened.' });
-    }
-    const league = await prisma.league.findFirst({
-      where: { id: leagueId, deletedAt: null },
-      select: { id: true, name: true, seasonStatus: true },
-    });
-    if (!league) return res.status(404).json({ message: 'League not found.' });
-
-    const updated = await prisma.league.update({
-      where: { id: league.id },
-      data: {
-        seasonStatus: requestedStatus,
-        archivedAt: requestedStatus === 'archived' ? new Date() : null,
-      },
-    });
-    await writeAuditLog({
-      userId: req.session.userId ?? null,
-      leagueId,
-      entity: 'league',
-      entityId: leagueId,
-      action: `lifecycle_${requestedStatus}`,
-      summary: `${requestedStatus === 'archived' ? 'Archived' : 'Reopened'} ${league.name}.`,
-      metadata: { previousStatus: league.seasonStatus, nextStatus: requestedStatus },
-    });
-    return res.json(updated);
-  };
-
   static correctLeagueRenewalLink = async (req: Request, res: Response) => {
     const leagueId = Number(req.params.id);
     if (!Number.isInteger(leagueId) || leagueId <= 0) {

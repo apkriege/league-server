@@ -22,6 +22,7 @@ import {
   SEASON_ENTITLEMENT_STATUSES,
 } from '../services/seasonEntitlement';
 import { getLeagueMutationBlock } from '../services/leagueLifecycle';
+import { canCreateNextSeason } from '../services/leagueSeasonRenewal';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
@@ -536,7 +537,16 @@ class PaymentController {
       if (purpose === 'league_season' && renewedFromLeagueId > 0) {
         const source = await prisma.league.findFirst({
           where: { id: renewedFromLeagueId, adminId: user.id, deletedAt: null },
-          select: { id: true, type: true, renewedLeague: { select: { id: true } } },
+          select: {
+            id: true,
+            type: true,
+            endDate: true,
+            events: {
+              where: { deletedAt: null },
+              select: { status: true, type: true },
+            },
+            renewedLeague: { select: { id: true } },
+          },
         });
         if (!source) return res.status(404).json({ message: 'Previous league season not found.' });
         if (source.type !== 'season') {
@@ -544,6 +554,12 @@ class PaymentController {
         }
         if (source.renewedLeague) {
           return res.status(409).json({ message: 'This league already has a next season.' });
+        }
+        if (!canCreateNextSeason(source)) {
+          return res.status(409).json({
+            message:
+              'The next season can be created after this season ends or when all scheduled events are complete.',
+          });
         }
       }
 

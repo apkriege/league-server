@@ -729,16 +729,6 @@ describe('API integration', () => {
 
     const superAgent = request.agent(app);
     await login(superAgent, 'super@test.com');
-    const reopen = await superAgent
-      .patch(`/api/admin/leagues/${sourceId}/lifecycle`)
-      .send({ status: 'reopened' });
-    expect(reopen.status).toBe(200);
-    expect(reopen.body.seasonStatus).toBe('reopened');
-    const rearchive = await superAgent
-      .patch(`/api/admin/leagues/${sourceId}/lifecycle`)
-      .send({ status: 'archived' });
-    expect(rearchive.status).toBe(200);
-
     const correction = await superAgent.delete(`/api/admin/leagues/${renewedId}/renewal-link`);
     expect(correction.status).toBe(200);
     await expect(

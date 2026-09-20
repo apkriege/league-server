@@ -117,7 +117,6 @@ adminRoutes.get('/billing', Admin.getBilling);
 adminRoutes.get('/payment-bypass-codes', Admin.getPaymentBypassCodes);
 adminRoutes.post('/payment-bypass-codes', Admin.createPaymentBypassCode);
 adminRoutes.delete('/payment-bypass-codes/:id', Admin.revokePaymentBypassCode);
-adminRoutes.patch('/leagues/:id/lifecycle', Admin.updateLeagueLifecycle);
 adminRoutes.delete('/leagues/:id/renewal-link', Admin.correctLeagueRenewalLink);
 router.use('/admin', superAdmin, adminRoutes);
 

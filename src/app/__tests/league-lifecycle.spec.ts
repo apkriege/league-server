@@ -23,8 +23,11 @@ describe('league season lifecycle', () => {
     });
   });
 
-  it('allows an audited super-admin reopen but still locks payment-due seasons', () => {
-    expect(getLeagueMutationBlock({ ...endedSeason, seasonStatus: 'reopened' })).toBeNull();
+  it('locks ended seasons regardless of a legacy lifecycle value', () => {
+    expect(getLeagueMutationBlock({ ...endedSeason, seasonStatus: 'reopened' })).toMatchObject({
+      status: 409,
+      code: 'LEAGUE_ARCHIVED',
+    });
     expect(
       getLeagueMutationBlock({
         ...endedSeason,

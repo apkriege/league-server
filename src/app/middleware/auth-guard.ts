@@ -20,12 +20,12 @@ const allowLeagueMutation = async (
 ) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return true;
   const requestPath = String(req.path || '');
-  if (requestPath.endsWith('/owner') || requestPath.endsWith('/lifecycle')) return true;
+  if (requestPath.endsWith('/owner')) return true;
   const blocked = getLeagueMutationBlock(league);
   if (!blocked) return true;
   if (league.seasonStatus !== 'archived' && isLeagueSeasonExpired(league)) {
     await prisma.league.updateMany({
-      where: { id: league.id, seasonStatus: 'active' },
+      where: { id: league.id, seasonStatus: { not: 'archived' } },
       data: { seasonStatus: 'archived', archivedAt: new Date() },
     });
   }
