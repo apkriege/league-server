@@ -18,6 +18,7 @@ import Team from './controllers/team';
 import League from './controllers/league';
 import Club from './controllers/club';
 import Course from './controllers/course';
+import UsgaRatingController from './controllers/usgaRating';
 import Event from './controllers/event';
 import Player from './controllers/player';
 import Score from './controllers/round';
@@ -48,6 +49,11 @@ const supportRateLimiter = createRateLimiter({
   keyPrefix: 'support',
   windowMs: 60 * 60 * 1000,
   max: 5,
+});
+const usgaLookupRateLimiter = createRateLimiter({
+  keyPrefix: 'usga-lookup',
+  windowMs: 15 * 60 * 1000,
+  max: 30,
 });
 
 router.get('/health', HealthController.getHealth);
@@ -143,6 +149,12 @@ router.get('/courses', Course.getCourses);
 router.get('/courses/import/search', admin, Course.searchCourseDirectory);
 router.get('/courses/import/state', superAdmin, Course.searchStateCourseDirectory);
 router.get('/courses/import/:externalId', admin, Course.importCourse);
+router.get(
+  '/courses/usga/:courseId/ratings',
+  superAdmin,
+  usgaLookupRateLimiter,
+  UsgaRatingController.getCourseRatings,
+);
 router.post('/courses/requests', admin, uploadCourseScorecard, Course.requestCourse);
 router.post('/courses/requests/manual', admin, uploadCourseScorecard, Course.requestManualCourse);
 router.get('/courses/requests/pending', superAdmin, Course.getCourseRequests);

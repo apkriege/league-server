@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import app from '../../app';
 import { prisma } from '../../prisma';
 import bcrypt from 'bcryptjs';
@@ -1514,5 +1514,30 @@ describe('API integration', () => {
     await login(agent, 'admin@test.com');
     expect((await agent.post('/api/auth/logout')).status).toBe(200);
     expect((await agent.get('/api/auth/me')).status).toBe(401);
+  });
+
+  it('loads CourseID ratings only for super admins', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    expect((await admin.get('/api/courses/usga/9970/ratings')).status).toBe(403);
+
+    const superAdmin = request.agent(app);
+    await login(superAdmin, 'super@test.com');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(`
+      <table><tr><th>Tee Name</th><th>Gender</th><th>Par</th><th>Course Rating</th><th>Slope Rating</th></tr>
+      <tr><td>Blue</td><td>M</td><td>72</td><td>71.6</td><td>126</td></tr></table>
+    `, { status: 200 })));
+    try {
+      const ratings = await superAdmin.get('/api/courses/usga/9970/ratings');
+      expect(ratings.status).toBe(200);
+      expect(ratings.body).toMatchObject({
+        courseId: 9970,
+        sourceUrl: 'https://ncrdb.usga.org/courseTeeInfo?CourseID=9970',
+        tableText: expect.stringContaining('Blue\tM\t72\t71.6\t126'),
+      });
+      expect((await superAdmin.get('/api/courses/usga/not-an-id/ratings')).status).toBe(400);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
