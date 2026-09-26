@@ -74,10 +74,10 @@ export const calculateMatchPlayPair = ({
   let leftMatchPoints = 0;
   let rightMatchPoints = 0;
   if (pointsPerMatch > 0 && playedHoles > 0) {
-    if (left.net === right.net) {
+    if (leftHolesWon === rightHolesWon) {
       leftMatchPoints = pointsPerMatch / 2;
       rightMatchPoints = pointsPerMatch / 2;
-    } else if (left.net < right.net) {
+    } else if (leftHolesWon > rightHolesWon) {
       leftMatchPoints = pointsPerMatch;
     } else {
       rightMatchPoints = pointsPerMatch;

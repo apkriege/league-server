@@ -7,6 +7,7 @@ const validationMessagePatterns = [
   /^Unable /i,
   /^Team /i,
   /^Player /i,
+  /^Players /i,
   /^League /i,
   /^Event /i,
   /^Flight /i,

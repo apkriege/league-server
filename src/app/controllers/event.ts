@@ -42,6 +42,7 @@ import {
   validateScoringMode,
   type CompetitionModel,
 } from '../scoring';
+import { getRequiredTeamPlayers, resolveTeamEventLineups } from '../services/teamLineups';
 
 const resolveEventScoring = ({
   format,
@@ -394,10 +395,28 @@ class EventController {
         const startsAt = localEventTimeToUtc(e.date, e.startTime, timeZone);
         const leagueForFlights =
           createdLeagueTeams.length > 0 ? { ...league, teams: createdLeagueTeams } : league;
+        const teamPlayersPerEvent = forcedFormat === 'team'
+          ? getRequiredTeamPlayers({
+              requested: e.teamPlayersPerEvent,
+              leagueDefault: league.teamPlayersPerEvent,
+              scoringMode: scoring.scoringMode,
+            })
+          : null;
+        const lineupLeague = teamPlayersPerEvent == null
+          ? leagueForFlights
+          : {
+              ...leagueForFlights,
+              teams: resolveTeamEventLineups({
+                league: leagueForFlights,
+                flights,
+                lineups: e.teamLineups,
+                requiredPlayers: teamPlayersPerEvent,
+              }).teams,
+            };
         validateTeeForEventParticipants(
           roundConfig,
           normalizedEventData,
-          leagueForFlights,
+          lineupLeague,
           forcedFormat,
         );
 
@@ -417,6 +436,7 @@ class EventController {
             scoringConfig: scoring.scoringConfig,
             routeSnapshot: buildEventRouteSnapshot(roundConfig.routeSegments),
             pointsEnabled,
+            teamPlayersPerEvent,
             ptsPerHole: normalizeEventPointValue(e.ptsPerHole, 'Points per hole'),
             ptsPerMatch: normalizeEventPointValue(e.ptsPerMatch, 'Points per match'),
             ptsPerTeamWin: normalizeEventPointValue(e.ptsPerTeamWin, 'Points per team win'),
@@ -441,7 +461,7 @@ class EventController {
         });
 
         const flightGen = new FlightGen(
-          leagueForFlights,
+          lineupLeague,
           {
             ...normalizedEventData,
             startsAt,
@@ -613,7 +633,6 @@ class EventController {
           });
           const scoringFamily = scoring.scoringFamily;
           const pointsEnabled = eventData?.pointsEnabled !== false;
-          validateTeeForEventParticipants(roundConfig, eventData, league, forcedFormat);
           const normalizedStrokePoints = scoring.scoringMode === 'stableford'
             ? null
             : normalizeStrokePoints(
@@ -632,6 +651,25 @@ class EventController {
             strokePoints: normalizedStrokePoints,
           };
           const startsAt = localEventTimeToUtc(e.date, e.startTime, timeZone);
+          const teamPlayersPerEvent = forcedFormat === 'team'
+            ? getRequiredTeamPlayers({
+                requested: e.teamPlayersPerEvent,
+                leagueDefault: league.teamPlayersPerEvent,
+                scoringMode: scoring.scoringMode,
+              })
+            : null;
+          const lineupLeague = teamPlayersPerEvent == null
+            ? league
+            : {
+                ...league,
+                teams: resolveTeamEventLineups({
+                  league,
+                  flights: eventData.flights,
+                  lineups: eventData.teamLineups,
+                  requiredPlayers: teamPlayersPerEvent,
+                }).teams,
+              };
+          validateTeeForEventParticipants(roundConfig, eventData, lineupLeague, forcedFormat);
 
           const createdEvent = await tx.event.create({
             data: {
@@ -649,6 +687,7 @@ class EventController {
               scoringConfig: scoring.scoringConfig,
               routeSnapshot: buildEventRouteSnapshot(roundConfig.routeSegments),
               pointsEnabled,
+              teamPlayersPerEvent,
               ptsPerHole: normalizeEventPointValue(e.ptsPerHole, 'Points per hole'),
               ptsPerMatch: normalizeEventPointValue(e.ptsPerMatch, 'Points per match'),
               ptsPerTeamWin: normalizeEventPointValue(e.ptsPerTeamWin, 'Points per team win'),
@@ -666,7 +705,7 @@ class EventController {
           });
 
           const flightGen = new FlightGen(
-            league,
+            lineupLeague,
             {
               ...eventData,
               startsAt,
@@ -733,6 +772,7 @@ class EventController {
           status: true,
           scoringMode: true,
           scoringConfig: true,
+          teamPlayersPerEvent: true,
           _count: { select: { rounds: true, teamRounds: true } },
         },
       });
@@ -851,7 +891,6 @@ class EventController {
         });
         const scoringFamily = scoring.scoringFamily;
         const pointsEnabled = eventData?.pointsEnabled !== false;
-        validateTeeForEventParticipants(roundConfig, eventData, league, forcedFormat);
         const normalizedStrokePoints = scoring.scoringMode === 'stableford'
           ? null
           : normalizeStrokePoints(
@@ -866,6 +905,13 @@ class EventController {
         eventData.scoringConfig = scoring.scoringConfig;
         eventData.pointsEnabled = pointsEnabled;
         eventData.strokePoints = normalizedStrokePoints;
+        const teamPlayersPerEvent = forcedFormat === 'team'
+          ? getRequiredTeamPlayers({
+              requested: eventData?.teamPlayersPerEvent ?? existingEvent.teamPlayersPerEvent,
+              leagueDefault: league.teamPlayersPerEvent,
+              scoringMode: scoring.scoringMode,
+            })
+          : null;
 
         await tx.event.update({
           where: { id: eventId },
@@ -884,6 +930,7 @@ class EventController {
             scoringConfig: scoring.scoringConfig,
             routeSnapshot: buildEventRouteSnapshot(roundConfig.routeSegments),
             pointsEnabled,
+            teamPlayersPerEvent,
             ptsPerHole: normalizeEventPointValue(eventData.ptsPerHole, 'Points per hole'),
             ptsPerMatch: normalizeEventPointValue(eventData.ptsPerMatch, 'Points per match'),
             ptsPerTeamWin: normalizeEventPointValue(eventData.ptsPerTeamWin, 'Points per team win'),
@@ -914,8 +961,21 @@ class EventController {
             ].map((team: any) => [Number(team.id), team]),
           ).values(),
         );
+        const leagueForFlights = { ...league, teams: teamsForFlights };
+        const lineupLeague = teamPlayersPerEvent == null
+          ? leagueForFlights
+          : {
+              ...leagueForFlights,
+              teams: resolveTeamEventLineups({
+                league: leagueForFlights,
+                flights: eventData.flights,
+                lineups: eventData.teamLineups,
+                requiredPlayers: teamPlayersPerEvent,
+              }).teams,
+            };
+        validateTeeForEventParticipants(roundConfig, eventData, lineupLeague, forcedFormat);
         const flightGen = new FlightGen(
-          { ...league, teams: teamsForFlights },
+          lineupLeague,
           { ...eventData, startsAt },
           eventId,
           tx,
@@ -1391,6 +1451,7 @@ const createEventTeamsAndRemapFlights = async (
 
   const tempToLeagueTeamId = new Map<string, number>();
   const createdLeagueTeams: any[] = [];
+  const assignedPlayerIds = new Set<number>();
 
   for (const incomingTeam of incomingTeams) {
     const incomingTeamId = extractTeamId(incomingTeam);
@@ -1399,6 +1460,13 @@ const createEventTeamsAndRemapFlights = async (
     }
 
     const incomingRoster = normalizeIds(incomingTeam?.players || []);
+    if (incomingRoster.length > Number(league.teamRosterSize || 4)) {
+      throw new Error(`Teams may have at most ${Number(league.teamRosterSize || 4)} players.`);
+    }
+    if (incomingRoster.some((playerId) => assignedPlayerIds.has(playerId))) {
+      throw new Error('A player cannot belong to more than one team.');
+    }
+    incomingRoster.forEach((playerId) => assignedPlayerIds.add(playerId));
 
     const createdTeam = await tx.team.create({
       data: {
@@ -1449,11 +1517,19 @@ const createEventTeamsAndRemapFlights = async (
 
     return [left, right];
   });
+  const remappedLineups = Array.isArray(eventData?.teamLineups)
+    ? eventData.teamLineups.map((lineup: any) => {
+        const mappedTeamId = tempToLeagueTeamId.get(String(Number(lineup?.teamId)));
+        if (!mappedTeamId) throw new Error('Unable to map a team lineup to its created team.');
+        return { ...lineup, teamId: mappedTeamId };
+      })
+    : eventData?.teamLineups;
 
   return {
     normalizedEventData: {
       ...eventData,
       flights: remappedFlights,
+      teamLineups: remappedLineups,
     },
     createdLeagueTeams,
   };

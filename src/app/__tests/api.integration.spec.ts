@@ -675,6 +675,25 @@ describe('API integration', () => {
     expect(deleteHistoricalSeason.status).toBe(409);
     expect(deleteHistoricalSeason.body.message).toContain('archived and read-only');
 
+    const completedEventTemplate = await prisma.event.findFirstOrThrow();
+    const completedRenewalEvent = await prisma.event.create({
+      data: {
+        leagueId: renewedId,
+        courseId: completedEventTemplate.courseId,
+        teeId: completedEventTemplate.teeId,
+        name: 'Completed Renewal Round',
+        format: 'individual',
+        type: 'regular',
+        holes: completedEventTemplate.holes,
+        startSide: completedEventTemplate.startSide,
+        startsAt: new Date('2026-06-01T17:30:00.000Z'),
+        timeZone: completedEventTemplate.timeZone,
+        interval: 10,
+        scoringMode: 'stroke-play',
+        status: 'completed',
+      },
+    });
+
     const nextTemplate = await agent.get(`/api/leagues/${renewedId}/renewal-template`);
     expect(nextTemplate.status).toBe(200);
     expect(nextTemplate.body.league.name).toBe('Renewal League 2027');
@@ -683,6 +702,7 @@ describe('API integration', () => {
       billingDraftKey: 'integration-unpaid-season-2027',
     });
     expect(unpaidNextSeason.status).toBe(402);
+    await prisma.event.delete({ where: { id: completedRenewalEvent.id } });
 
     const billingState = await agent.get('/api/payments/stripe-state');
     expect(billingState.status).toBe(200);
@@ -1366,6 +1386,127 @@ describe('API integration', () => {
       .post('/api/auth/login')
       .send({ email, password: newPassword });
     expect(loginResponse.status).toBe(200);
+  });
+
+  it('persists an admin-selected team lineup without changing the permanent roster', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: 'Seeded Thursday Night League' },
+      include: {
+        teams: {
+          where: { deletedAt: null },
+          include: { players: { where: { deletedAt: null }, orderBy: { id: 'asc' } } },
+          orderBy: { id: 'asc' },
+          take: 2,
+        },
+        events: {
+          where: { holes: 9, deletedAt: null },
+          orderBy: { id: 'asc' },
+          take: 1,
+        },
+      },
+    });
+    const [left, right] = league.teams;
+    const sourceEvent = league.events[0];
+    expect(left.players.length).toBeGreaterThanOrEqual(2);
+    expect(right.players.length).toBeGreaterThanOrEqual(2);
+    const extraRosterPlayer = await prisma.player.create({
+      data: {
+        firstName: 'Roster', lastName: 'Three', handicap: 14, startingHandicap: 14,
+        seasonPoints: 0, type: 'player', leagueId: league.id, teamId: left.id,
+      },
+    });
+    const substitute = await prisma.player.create({
+      data: {
+        firstName: 'Weekly', lastName: 'Sub', handicap: 12, startingHandicap: 12,
+        seasonPoints: 0, type: 'substitute', leagueId: league.id,
+      },
+    });
+
+    const response = await admin.post(`/api/leagues/${league.id}/event`).send({
+      name: 'Selected Lineup Integration', type: 'regular', date: '2027-03-15',
+      startTime: '17:30', interval: 10, courseId: sourceEvent.courseId,
+      teeId: sourceEvent.teeId, startSide: 'front', holes: 9, format: 'team',
+      scoringMode: 'stroke-play', scoringConfig: { handicapAllowance: 1 },
+      pointsEnabled: true, strokePoints: '10,8,6', teamPlayersPerEvent: 2,
+      teams: [], flights: [[left.id, right.id]],
+      teamLineups: [
+        { teamId: left.id, playerIds: [left.players[0].id, substitute.id] },
+        { teamId: right.id, playerIds: right.players.slice(0, 2).map((player) => player.id) },
+      ],
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const event = await prisma.event.findUniqueOrThrow({
+      where: { id: Number(response.body.id) },
+      include: { flights: { include: { players: true } } },
+    });
+    expect(event.teamPlayersPerEvent).toBe(2);
+    expect(event.flights[0].players.map((player) => player.playerId).sort()).toEqual(
+      [left.players[0].id, substitute.id, ...right.players.slice(0, 2).map((player) => player.id)].sort(),
+    );
+    expect(event.flights[0].players.some((player) => player.playerId === extraRosterPlayer.id)).toBe(false);
+    await expect(prisma.player.findUniqueOrThrow({ where: { id: substitute.id } })).resolves.toMatchObject({ teamId: null });
+  });
+
+  it('persists different lineups for separate events in a series', async () => {
+    const admin = request.agent(app);
+    await login(admin, 'admin@test.com');
+    const league = await prisma.league.findFirstOrThrow({
+      where: { name: '[SCORING LAB] All Formats' },
+      include: {
+        teams: {
+          where: { deletedAt: null },
+          include: { players: { where: { deletedAt: null }, orderBy: { id: 'asc' } } },
+          orderBy: { id: 'asc' },
+          take: 2,
+        },
+        events: { where: { holes: 9, deletedAt: null }, take: 1 },
+      },
+    });
+    const [left, right] = league.teams;
+    const substitute = await prisma.player.create({
+      data: {
+        firstName: 'Series', lastName: 'Sub', handicap: 12, startingHandicap: 12,
+        seasonPoints: 0, type: 'substitute', leagueId: league.id,
+      },
+    });
+    const base = {
+      type: 'regular', startTime: '17:30', interval: 10,
+      courseId: league.events[0].courseId, teeId: league.events[0].teeId,
+      startSide: 'front', holes: 9, format: 'team', scoringMode: 'best-ball',
+      scoringConfig: { handicapAllowance: 1 }, pointsEnabled: true,
+      strokePoints: '10,8,6', teamPlayersPerEvent: 2,
+      flights: [[left.id, right.id]],
+    };
+    const response = await admin.post(`/api/leagues/${league.id}/events`).send({
+      events: [
+        {
+          ...base, name: 'Series Lineup One', date: '2026-11-02',
+          teamLineups: [
+            { teamId: left.id, playerIds: left.players.slice(0, 2).map((player) => player.id) },
+            { teamId: right.id, playerIds: right.players.slice(0, 2).map((player) => player.id) },
+          ],
+        },
+        {
+          ...base, name: 'Series Lineup Two', date: '2026-11-09',
+          teamLineups: [
+            { teamId: left.id, playerIds: [left.players[0].id, substitute.id] },
+            { teamId: right.id, playerIds: right.players.slice(0, 2).map((player) => player.id) },
+          ],
+        },
+      ],
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const created = await prisma.event.findMany({
+      where: { leagueId: league.id, name: { in: ['Series Lineup One', 'Series Lineup Two'] } },
+      include: { flights: { include: { players: true } } },
+      orderBy: { name: 'asc' },
+    });
+    expect(created).toHaveLength(2);
+    expect(created[0].flights[0].players.some((player) => player.playerId === substitute.id)).toBe(false);
+    expect(created[1].flights[0].players.some((player) => player.playerId === substitute.id)).toBe(true);
+    expect((await prisma.player.findUniqueOrThrow({ where: { id: substitute.id } })).teamId).toBeNull();
   });
 
   it('destroys the server session on logout', async () => {

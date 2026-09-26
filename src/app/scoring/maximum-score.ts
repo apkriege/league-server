@@ -58,7 +58,7 @@ export const applyMaximumScore = ({
   const cappedGross = Math.min(gross, maximumGross);
   return {
     gross: cappedGross,
-    net: Math.max(0, cappedGross - pops),
+    net: cappedGross - pops,
     maximumGross,
     wasCapped: cappedGross !== gross,
   };

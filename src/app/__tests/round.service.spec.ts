@@ -71,6 +71,16 @@ describe('Round service', () => {
     expect(db.round.update).not.toHaveBeenCalled();
   });
 
+  it('preserves a negative net hole score when strokes exceed gross', async () => {
+    db.player.findFirst.mockResolvedValue({ id: 1, handicap: 19, gender: 'male', deletedAt: null });
+    const lowScore = { ...scores, 1: 1 };
+
+    await new Round(99, { playerId: 1, scores: lowScore }, undefined, db).process();
+
+    const createdScores = db.score.createMany.mock.calls[0][0].data;
+    expect(createdScores.find((score: { hole: number }) => score.hole === 1).net).toBe(-2);
+  });
+
   it('does not halve a stored 9-hole handicap for a 9-hole league', async () => {
     db.event.findFirst.mockResolvedValue({
       ...event,

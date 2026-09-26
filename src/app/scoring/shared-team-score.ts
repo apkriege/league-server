@@ -36,7 +36,6 @@ export const calculateSharedTeamScore = (
       !Number.isFinite(score.gross) ||
       score.gross <= 0 ||
       !Number.isFinite(score.net) ||
-      score.net < 0 ||
       seenHoles.has(score.hole)
     ) {
       throw new Error('Shared-team scoring requires one valid score per hole.');

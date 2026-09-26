@@ -42,6 +42,8 @@ describe('deployment configuration', () => {
       '20260901040000_remove_course_handicaps',
       '20260904000000_app_audit_integrity',
       '20260920000000_remove_reopened_season_status',
+      '20260921000000_add_team_lineup_settings',
+      '20260926000000_add_course_requests',
     ]);
     for (const migrationDirectory of migrationDirectories) {
       expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(

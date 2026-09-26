@@ -86,7 +86,7 @@ export default class FlightController {
       }
       const validPlayers = await prisma.player.findMany({
         where: { id: { in: playerIds }, leagueId: flight.event.leagueId, deletedAt: null },
-        select: { id: true, gender: true },
+        select: { id: true, gender: true, teamId: true, type: true },
       });
       if (validPlayers.length !== playerIds.length) {
         return res.status(400).json({ message: 'All flight players must belong to the event league' });
@@ -131,6 +131,19 @@ export default class FlightController {
         const assignedTeamIds = new Set(flight.teams.map((team) => Number(team.teamId)));
         if (teamIds.some((teamId) => !assignedTeamIds.has(teamId))) {
           return res.status(400).json({ message: 'Flight players must stay on a team assigned to this flight' });
+        }
+        const validPlayerById = new Map(validPlayers.map((player) => [Number(player.id), player]));
+        const invalidTeamPlayer = players.find((entry: any) => {
+          const player = validPlayerById.get(Number(entry.playerId));
+          const assignedTeamId = Number(entry.teamId);
+          const type = String(player?.type || '').toLowerCase();
+          const isSubstitute = type === 'sub' || type === 'substitute';
+          return !player || (!isSubstitute && Number(player.teamId) !== assignedTeamId);
+        });
+        if (invalidTeamPlayer) {
+          return res.status(400).json({
+            message: 'Team-event replacements must belong to that team or be league substitutes',
+          });
         }
       }
 

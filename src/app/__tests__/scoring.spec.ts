@@ -117,7 +117,7 @@ describe('scoring calculators', () => {
     expect({ hole: right.pointsEarned, match: right.matchPoints }).toEqual({ hole: 0, match: 0 });
   });
 
-  it('keeps hole points head-to-head and awards the player match bonus by net total', () => {
+  it('awards the player match bonus by holes won even when the opponent has the lower net total', () => {
     const matchHoles = [1, 2, 3].map((num) => ({ num, par: 4, hcp: num }));
     const left = buildMultiHoleRound({
       playerId: 1,
@@ -136,11 +136,11 @@ describe('scoring calculators', () => {
       rounds: [left, right],
     });
 
-    expect({ holes: left.pointsEarned, match: left.matchPoints }).toEqual({ holes: 2, match: 0 });
-    expect({ holes: right.pointsEarned, match: right.matchPoints }).toEqual({ holes: 1, match: 2 });
+    expect({ holes: left.pointsEarned, match: left.matchPoints }).toEqual({ holes: 2, match: 2 });
+    expect({ holes: right.pointsEarned, match: right.matchPoints }).toEqual({ holes: 1, match: 0 });
   });
 
-  it('adds player match points and awards the team medal by combined net', () => {
+  it('keeps player match results separate from the combined-net team medal', () => {
     const rounds = [
       buildRound({ playerId: 1, teamId: 100, opponentId: 3, gross: 35, net: 35 }),
       buildRound({ playerId: 2, teamId: 100, opponentId: 4, gross: 38, net: 38 }),
@@ -161,7 +161,7 @@ describe('scoring calculators', () => {
     });
 
     expect(rounds.map((round) => round.pointsEarned)).toEqual([1, 1, 0, 0]);
-    expect(rounds.map((round) => round.matchPoints)).toEqual([0, 0, 2, 2]);
+    expect(rounds.map((round) => round.matchPoints)).toEqual([2, 2, 0, 0]);
     expect(teamPoints.get('100:10')?.points ?? 0).toBe(0);
     expect(teamPoints.get('200:10')?.points).toBe(4);
   });
@@ -289,6 +289,14 @@ describe('scoring calculators', () => {
         rule: { type: 'net-double-bogey' },
       }),
     ).toMatchObject({ gross: 5, net: 6, maximumGross: 5, wasCapped: true });
+    expect(
+      applyMaximumScore({
+        gross: 1,
+        par: 4,
+        pops: 2,
+        rule: { type: 'net-double-bogey' },
+      }),
+    ).toMatchObject({ gross: 1, net: -1, wasCapped: false });
   });
 
   it('ranks aggregate team placement points across the entire event', () => {
@@ -392,6 +400,9 @@ describe('scoring calculators', () => {
         { hole: 2, par: 5, gross: 5, net: 5 },
       ]),
     ).toEqual({ holesPlayed: 2, gross: 9, net: 8, stablefordPoints: 5, cappedHoles: 0 });
+    expect(calculateScrambleTeamScore([
+      { hole: 1, par: 4, gross: 1, net: -1, pops: 2 },
+    ])).toMatchObject({ gross: 1, net: -1 });
 
     expect(() =>
       calculateScrambleTeamScore([
@@ -474,6 +485,15 @@ describe('scoring calculators', () => {
 
     expect(result).toMatchObject({ holesPlayed: 2, gross: 15, adjusted: 11, net: 10 });
     expect(result.scores[0]).toMatchObject({ gross: 10, adjusted: 6, net: 5, popsReceived: 1 });
+    const negativeNet = modelSharedTeamRound({
+      mode: 'scramble',
+      holes: [{ num: 1, par: 4, hcp: 1 }],
+      rawScores: { 1: 1 },
+      playingHandicap: 2,
+      configuration,
+    });
+    expect(negativeNet).toMatchObject({ gross: 1, net: -1 });
+    expect(negativeNet.scores[0]).toMatchObject({ net: -1, popsReceived: 2 });
     expect(() =>
       modelSharedTeamRound({
         mode: 'scramble',

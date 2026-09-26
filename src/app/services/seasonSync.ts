@@ -208,7 +208,7 @@ const buildModeledScores = ({
         par: hole.par,
         gross,
         adjusted: Math.min(gross, hole.par + 2 + popCount),
-        net: Math.max(0, gross - popCount),
+        net: gross - popCount,
         pops: popCount,
       } satisfies ScoredHole;
     })

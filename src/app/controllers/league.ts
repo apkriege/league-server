@@ -32,6 +32,7 @@ import {
 } from '../services/seasonEntitlement';
 import { sendLeagueInvitationEmail } from '../services/leagueInvitationEmail';
 import { getScoringFamilyForMode } from '../scoring';
+import { normalizeTeamCount } from '../services/teamLineups';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
@@ -94,12 +95,24 @@ class LeagueController {
       throw new Error('League player capacity must be a positive whole number.');
     }
 
+    const teamRosterSize = normalizeTeamCount(payload?.teamRosterSize, 4, 'Team roster size');
+    const teamPlayersPerEvent = normalizeTeamCount(
+      payload?.teamPlayersPerEvent,
+      2,
+      'Players per team event',
+    );
+    if (teamPlayersPerEvent > teamRosterSize) {
+      throw new Error('Players per team event cannot exceed the team roster size.');
+    }
+
     return {
       name: String(payload.name).trim(),
       description: payload.description ? String(payload.description).trim() : null,
       type: normalizedType,
       holeFormat,
       format: normalizedType === 'season' ? normalizedFormat : null,
+      teamRosterSize,
+      teamPlayersPerEvent,
       numPlayers,
       startDate: new Date(payload.startDate),
       endDate: new Date(payload.endDate),
@@ -594,6 +607,12 @@ class LeagueController {
           if (!String(team?.name || '').trim()) {
             return res.status(400).json({ message: 'Every team must have a name.' });
           }
+          const teamPlayerIds = Array.isArray(team?.players) ? team.players : [];
+          if (teamPlayerIds.length > normalizedLeagueData.teamRosterSize) {
+            return res.status(400).json({
+              message: `Teams may have at most ${normalizedLeagueData.teamRosterSize} players.`,
+            });
+          }
           for (const rawPlayerId of team?.players || []) {
             const playerId = Number(rawPlayerId);
             if (!playerIds.has(playerId)) {
@@ -716,6 +735,8 @@ class LeagueController {
             type: normalizedLeagueData.type,
             holeFormat: normalizedLeagueData.holeFormat,
             format: normalizedLeagueData.format,
+            teamRosterSize: normalizedLeagueData.teamRosterSize,
+            teamPlayersPerEvent: normalizedLeagueData.teamPlayersPerEvent,
             startDate: normalizedLeagueData.startDate,
             endDate: normalizedLeagueData.endDate,
             contactFirstName: normalizedLeagueData.contactFirstName,
@@ -912,6 +933,8 @@ class LeagueController {
         message.includes('Season leagues require format') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
+        message.includes('Team roster') ||
+        message.includes('Players per team') ||
         message.includes('League dates are invalid') ||
         message.includes('calendar year') ||
         message.includes('End date')
@@ -952,9 +975,12 @@ class LeagueController {
       }
       LeagueController.validateLeagueDates(league, { enforceSeasonLength: false });
 
-      const [activePlayerCount, activeTeamCount, activeEvents, recordedRoundCount] = await Promise.all([
+      const [activePlayerCount, activeTeams, activeEvents, recordedRoundCount] = await Promise.all([
         prisma.player.count({ where: { leagueId: id, type: 'player', deletedAt: null } }),
-        prisma.team.count({ where: { leagueId: id, deletedAt: null } }),
+        prisma.team.findMany({
+          where: { leagueId: id, deletedAt: null },
+          select: { id: true, name: true, _count: { select: { players: { where: { deletedAt: null } } } } },
+        }),
         prisma.event.findMany({
           where: { leagueId: id, deletedAt: null },
           select: { id: true, startsAt: true, timeZone: true },
@@ -973,6 +999,14 @@ class LeagueController {
           message: `Player capacity cannot be below the ${activePlayerCount} active players in this league.`,
         });
       }
+      const oversizedTeam = activeTeams.find(
+        (team) => team._count.players > league.teamRosterSize,
+      );
+      if (oversizedTeam) {
+        return res.status(409).json({
+          message: `${oversizedTeam.name} has ${oversizedTeam._count.players} players. Adjust its roster before lowering the team limit.`,
+        });
+      }
 
       const structureChanged =
         league.type !== existingLeague.type ||
@@ -983,7 +1017,7 @@ class LeagueController {
           message: 'League type, season format, and holes and handicap settings cannot change after scores have been recorded.',
         });
       }
-      if (structureChanged && activeTeamCount > 0 && league.format !== 'team') {
+      if (structureChanged && activeTeams.length > 0 && league.format !== 'team') {
         return res.status(409).json({
           message: 'Remove active teams before changing away from a team league.',
         });
@@ -1039,6 +1073,8 @@ class LeagueController {
             type: league.type,
             holeFormat: league.holeFormat,
             format: league.format,
+            teamRosterSize: league.teamRosterSize,
+            teamPlayersPerEvent: league.teamPlayersPerEvent,
             contactFirstName: league.contactFirstName,
             contactLastName: league.contactLastName,
             contactEmail: league.contactEmail,
@@ -1064,6 +1100,8 @@ class LeagueController {
         message.includes('Season leagues require format') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
+        message.includes('Team roster') ||
+        message.includes('Players per team') ||
         message.includes('League dates are invalid') ||
         message.includes('calendar year') ||
         message.includes('End date')

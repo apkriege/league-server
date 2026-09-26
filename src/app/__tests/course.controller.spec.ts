@@ -8,6 +8,11 @@ const { loadCourseMock, searchCourseMock, searchStateMock, sendAppEmailMock } = 
 }));
 
 const mockPrisma: any = {
+  course_request: {
+    create: vi.fn(),
+    findMany: vi.fn(),
+    update: vi.fn(),
+  },
   course: {
     update: vi.fn(),
     findUnique: vi.fn(),

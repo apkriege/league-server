@@ -222,7 +222,7 @@ export class Round {
 
     for (const [hole, score] of Object.entries(scores)) {
       const popAllowance = pops.get(Number(hole)) || 0;
-      netScores[Number(hole)] = Math.max(0, (score as number) - popAllowance); // Ensure no negative scores
+      netScores[Number(hole)] = (score as number) - popAllowance;
     }
 
     return netScores;

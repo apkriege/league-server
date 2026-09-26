@@ -116,6 +116,33 @@ const buildCourseData = (course: any) => {
 };
 
 class CourseController {
+  static getCourseRequests = async (_req: Request, res: Response) => {
+    const requests = await prisma.course_request.findMany({
+      where: { status: 'pending' },
+      include: {
+        requester: { select: { id: true, firstName: true, lastName: true, email: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return res.status(200).json(requests);
+  };
+
+  static resolveCourseRequest = async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({ message: 'A valid course request ID is required.' });
+    }
+    try {
+      const request = await prisma.course_request.update({
+        where: { id },
+        data: { status: 'resolved', resolvedAt: new Date() },
+      });
+      return res.status(200).json(request);
+    } catch {
+      return res.status(404).json({ message: 'Course request not found.' });
+    }
+  };
+
   static searchCourseDirectory = async (req: Request, res: Response) => {
     const name = String(req.query.name || '').trim();
     const state = String(req.query.state || '').trim().toUpperCase();
@@ -213,6 +240,17 @@ class CourseController {
         throw new Error(`Verified course request email failed: ${result.reason}`);
       }
 
+      await prisma.course_request.create({
+        data: {
+          requesterId: requester.id,
+          requestType: 'directory',
+          courseName: importedCourse.course.name,
+          location: importedCourse.course.location || importedCourse.club.location || '',
+          externalId,
+          emailId: result.emailId,
+        },
+      });
+
       return res.status(200).json({ message: 'Course request sent.' });
     } catch (error) {
       console.error(error);
@@ -266,6 +304,16 @@ class CourseController {
       if (result.status === 'failed') {
         throw new Error(`Manual course request email failed: ${result.reason}`);
       }
+
+      await prisma.course_request.create({
+        data: {
+          requesterId: requester.id,
+          requestType: 'manual',
+          courseName,
+          location: `${city}, ${state}`,
+          emailId: result.emailId,
+        },
+      });
 
       return res.status(200).json({ message: 'Manual course request sent.' });
     } catch (error) {

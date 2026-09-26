@@ -224,11 +224,14 @@ class TeamController {
       const team = await prisma.$transaction(async (tx) => {
         const league = await tx.league.findFirst({
           where: { id: numericLeagueId, deletedAt: null },
-          select: { id: true },
+          select: { id: true, teamRosterSize: true, teamPlayersPerEvent: true },
         });
 
         if (!league) {
           throw new Error('League not found');
+        }
+        if (playerIds.length > league.teamRosterSize) {
+          throw new Error(`Teams may have at most ${league.teamRosterSize} players`);
         }
 
         const duplicate = await tx.team.findFirst({
@@ -296,7 +299,8 @@ class TeamController {
       }
       if (
         message === 'Team name already exists' ||
-        message === 'One or more selected players are invalid'
+        message === 'One or more selected players are invalid' ||
+        message.includes('Teams may have at most')
       ) {
         return res.status(400).json({ message });
       }
@@ -352,6 +356,15 @@ class TeamController {
           payload.players !== undefined
             ? TeamController.normalizePlayerIds(payload.players)
             : existingTeam.players.map((player) => Number(player.id));
+
+        const league = await tx.league.findFirst({
+          where: { id: Number(existingTeam.leagueId), deletedAt: null },
+          select: { teamRosterSize: true, teamPlayersPerEvent: true },
+        });
+        if (!league) throw new Error('League not found');
+        if (playerIds.length > league.teamRosterSize) {
+          throw new Error(`Teams may have at most ${league.teamRosterSize} players`);
+        }
 
         if (playerIds.length > 0) {
           const players = await tx.player.findMany({
@@ -410,13 +423,14 @@ class TeamController {
     } catch (error: any) {
       console.error(error);
       const message = String(error?.message || 'Internal server error');
-      if (message === 'Team not found') {
+      if (message === 'Team not found' || message === 'League not found') {
         return res.status(404).json({ message });
       }
       if (
         message === 'Team name is required' ||
         message === 'Team name already exists' ||
-        message === 'One or more selected players are invalid'
+        message === 'One or more selected players are invalid' ||
+        message.includes('Teams may have at most')
       ) {
         return res.status(400).json({ message });
       }

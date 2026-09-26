@@ -86,9 +86,9 @@ export const modelSharedTeamRound = ({
         })
       : {
           gross: submittedGross,
-          net: Math.max(0, submittedGross - holePops),
+          net: submittedGross - holePops,
         };
-    const net = Math.max(0, capped.net);
+    const net = capped.net;
 
     return {
       hole: hole.num,

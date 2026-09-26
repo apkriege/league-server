@@ -129,6 +129,9 @@ export const validateFlightConfiguration = (league: any, event: any) => {
         if (scoringMode === 'match-play' && rosterSize < 2) {
           throw new Error(`Team ${teamId} requires at least two active players for match play.`);
         }
+        if (scoringMode === 'best-ball' && rosterSize < 2) {
+          throw new Error(`Team ${teamId} requires at least two active players for best ball.`);
+        }
         if (rosterSize < 1) {
           throw new Error(`Team ${teamId} does not have enough active players for this event.`);
         }

@@ -128,6 +128,8 @@ export const prepareLeagueRenewalTemplate = async (
       type: source.type,
       holeFormat: source.holeFormat,
       format: source.format,
+      teamRosterSize: source.teamRosterSize,
+      teamPlayersPerEvent: source.teamPlayersPerEvent,
       contactFirstName: source.contactFirstName,
       contactLastName: source.contactLastName,
       contactEmail: source.contactEmail,

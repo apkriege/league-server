@@ -90,7 +90,7 @@ describe('event flight validation', () => {
           flights: [[11, 13]],
         },
       ),
-    ).toThrow(/equal roster sizes/i);
+    ).toThrow(/at least two active players for best ball/i);
 
     expect(() =>
       validateFlightConfiguration(
