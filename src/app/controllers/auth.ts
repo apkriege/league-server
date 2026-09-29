@@ -8,6 +8,7 @@ import User from '../models/user';
 import { BILLING_CURRENCY, BILLING_MIN_GOLFERS, BILLING_PRICE_PER_GOLFER_CENTS } from '../utils/billing';
 import { logAuth, logAuthFailure } from '../middleware/logging';
 import { sendSignupNotification } from '../services/signupNotification';
+import { sendSignupSmsNotification } from '../services/signupSmsNotification';
 import { isProductionRuntime } from '../utils/runtime-config';
 import { sendPasswordResetEmail } from '../services/passwordResetEmail';
 import { sendEmailVerificationEmail } from '../services/emailVerificationEmail';
@@ -418,13 +419,31 @@ class AuthController {
         return res.status(400).json({ message: 'This verification link is invalid or expired' });
       }
 
-      if (!verification.pendingEmail) await sendSignupNotification({
-        id: verifiedUser.id,
-        firstName: verifiedUser.firstName,
-        lastName: verifiedUser.lastName,
-        email: verifiedUser.email,
-        role: verifiedUser.role,
-      });
+      if (!verification.pendingEmail) {
+        const signupUser = {
+          id: verifiedUser.id,
+          firstName: verifiedUser.firstName,
+          lastName: verifiedUser.lastName,
+          email: verifiedUser.email,
+          role: verifiedUser.role,
+        };
+        const notifications = await Promise.allSettled([
+          sendSignupNotification(signupUser),
+          sendSignupSmsNotification(signupUser),
+        ]);
+        notifications.forEach((result, index) => {
+          if (result.status === 'fulfilled' && result.value.status !== 'failed') return;
+          const reason = result.status === 'fulfilled' && result.value.status === 'failed'
+            ? result.value.reason
+            : 'Notification service error';
+          console.error(JSON.stringify({
+            level: 'error',
+            event: index === 0 ? 'signup-notification:email-failed' : 'signup-notification:sms-failed',
+            userId: verifiedUser.id,
+            reason,
+          }));
+        });
+      }
 
       req.session.regenerate((error) => {
         if (error) return res.status(500).json({ message: 'Unable to start your session' });

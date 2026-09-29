@@ -157,8 +157,10 @@ router.get(
 );
 router.post('/courses/requests', admin, uploadCourseScorecard, Course.requestCourse);
 router.post('/courses/requests/manual', admin, uploadCourseScorecard, Course.requestManualCourse);
+router.get('/courses/requests/mine', admin, Course.getMyCourseRequests);
 router.get('/courses/requests/pending', superAdmin, Course.getCourseRequests);
 router.patch('/courses/requests/:id/resolve', superAdmin, Course.resolveCourseRequest);
+router.post('/courses/requests/:id/retry-notification', superAdmin, Course.retryCourseRequestNotification);
 router.get('/courses/:id', Course.getCourse);
 router.post('/courses', superAdmin, Course.createCourse);
 router.put('/courses/:id', superAdmin, Course.updateCourse);

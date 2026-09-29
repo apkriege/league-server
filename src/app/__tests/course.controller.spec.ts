@@ -83,6 +83,8 @@ describe('CourseController tee removal', async () => {
     });
     sendAppEmailMock.mockResolvedValue({ status: 'sent', emailId: 'email_123' });
     mockPrisma.course.findMany.mockResolvedValue([]);
+    mockPrisma.course_request.create.mockResolvedValue({ id: 88 });
+    mockPrisma.course_request.update.mockResolvedValue({ id: 88 });
   });
 
   it('flags database duplicates in a course-name search by name and city', async () => {
@@ -227,11 +229,11 @@ describe('CourseController tee removal', async () => {
         text: expect.stringContaining('Directory ID: directory-course-12'),
       }),
     );
-    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.status).toHaveBeenCalledWith(201);
     expect(response.json).toHaveBeenCalledWith({ message: 'Course request sent.' });
   });
 
-  it('does not report success when course request email is not configured', async () => {
+  it('keeps the request queued when course request email is not configured', async () => {
     sendAppEmailMock.mockResolvedValue({
       status: 'skipped',
       reason: 'missing-configuration',
@@ -251,7 +253,9 @@ describe('CourseController tee removal', async () => {
       response,
     );
 
-    expect(response.status).toHaveBeenCalledWith(503);
+    expect(mockPrisma.course_request.create).toHaveBeenCalledTimes(1);
+    expect(response.status).toHaveBeenCalledWith(201);
+    expect(response.json).toHaveBeenCalledWith({ message: 'Course request saved for super admin review.' });
   });
 
   it('sends manually entered course name, city, and state for admin review', async () => {
@@ -279,7 +283,7 @@ describe('CourseController tee removal', async () => {
         subject: 'Manual course request: Missing Golf Course — Frankenmuth, Michigan',
       }),
     );
-    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.status).toHaveBeenCalledWith(201);
     expect(response.json).toHaveBeenCalledWith({ message: 'Manual course request sent.' });
   });
 
@@ -316,7 +320,7 @@ describe('CourseController tee removal', async () => {
         ],
       }),
     );
-    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.status).toHaveBeenCalledWith(201);
   });
 
   it('requires all manual course location fields', async () => {
@@ -339,12 +343,11 @@ describe('CourseController tee removal', async () => {
     expect(sendAppEmailMock).not.toHaveBeenCalled();
   });
 
-  it('logs the Resend provider reason when a manual request fails', async () => {
+  it('keeps a manual request queued when the email provider fails', async () => {
     sendAppEmailMock.mockResolvedValue({
       status: 'failed',
       reason: 'The sender domain is not verified',
     });
-    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const response = buildResponse();
 
     await CourseController.requestManualCourse(
@@ -364,12 +367,8 @@ describe('CourseController tee removal', async () => {
       response,
     );
 
-    expect(consoleError).toHaveBeenCalledWith(
-      expect.objectContaining({
-        message: 'Manual course request email failed: The sender domain is not verified',
-      }),
-    );
-    expect(response.status).toHaveBeenCalledWith(502);
-    consoleError.mockRestore();
+    expect(mockPrisma.course_request.create).toHaveBeenCalledTimes(1);
+    expect(response.status).toHaveBeenCalledWith(201);
+    expect(response.json).toHaveBeenCalledWith({ message: 'Course request saved for super admin review.' });
   });
 });

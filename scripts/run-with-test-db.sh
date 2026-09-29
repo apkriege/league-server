@@ -23,6 +23,7 @@ export CLIENT_URL="http://127.0.0.1:4173"
 export CLIENT_URLS="http://127.0.0.1:4173"
 export DEMO_SEED_PASSWORD="integration-test-password"
 export LOG_LEVEL=error
+export RESEND_API_KEY=
 
 docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" up -d --wait
 

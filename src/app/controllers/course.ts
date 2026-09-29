@@ -9,6 +9,7 @@ import {
 import {
   buildCourseRequestEmail,
   buildManualCourseRequestEmail,
+  buildCourseRequestOutcomeEmail,
 } from '../emailTemplates/courseRequest';
 import { sendAppEmail } from '../services/email';
 import { excludeExistingCourses, markExistingCourses } from '../services/courseDuplicate';
@@ -118,13 +119,45 @@ const buildCourseData = (course: any) => {
 class CourseController {
   static getCourseRequests = async (_req: Request, res: Response) => {
     const requests = await prisma.course_request.findMany({
-      where: { status: 'pending' },
+      where: { OR: [{ status: 'pending' }, { notificationStatus: { not: 'sent' } }] },
       include: {
         requester: { select: { id: true, firstName: true, lastName: true, email: true } },
+        fulfilledCourse: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
     return res.status(200).json(requests);
+  };
+
+  static getMyCourseRequests = async (req: Request, res: Response) => {
+    const requesterId = Number((req.user as { id?: number } | undefined)?.id);
+    if (!requesterId) return res.status(401).json({ message: 'Not authenticated.' });
+    const requests = await prisma.course_request.findMany({
+      where: { requesterId },
+      include: { fulfilledCourse: { select: { id: true, name: true, deletedAt: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+    return res.status(200).json(requests);
+  };
+
+  private static notifyCourseRequester = async (id: number) => {
+    const request = await prisma.course_request.findUniqueOrThrow({
+      where: { id },
+      include: {
+        requester: { select: { firstName: true, email: true } },
+        fulfilledCourse: { select: { id: true, name: true } },
+      },
+    });
+    if (request.status === 'pending' || request.notificationStatus === 'sent') return request;
+    const result = await sendAppEmail(buildCourseRequestOutcomeEmail(request));
+    return prisma.course_request.update({
+      where: { id },
+      data: { notificationStatus: result.status },
+      include: {
+        requester: { select: { id: true, firstName: true, lastName: true, email: true } },
+        fulfilledCourse: { select: { id: true, name: true } },
+      },
+    });
   };
 
   static resolveCourseRequest = async (req: Request, res: Response) => {
@@ -132,15 +165,50 @@ class CourseController {
     if (!Number.isInteger(id) || id < 1) {
       return res.status(400).json({ message: 'A valid course request ID is required.' });
     }
-    try {
-      const request = await prisma.course_request.update({
-        where: { id },
-        data: { status: 'resolved', resolvedAt: new Date() },
-      });
-      return res.status(200).json(request);
-    } catch {
-      return res.status(404).json({ message: 'Course request not found.' });
+    const courseId = Number(req.body?.courseId);
+    const reason = String(req.body?.reason || '').trim();
+    const action = req.body?.action;
+    if (action !== 'fulfill' && action !== 'unavailable') {
+      return res.status(400).json({ message: 'Choose fulfill or unavailable.' });
     }
+    if (action === 'fulfill' && (!Number.isInteger(courseId) || courseId < 1)) {
+      return res.status(400).json({ message: 'Choose an existing course to fulfill this request.' });
+    }
+    if (action === 'unavailable' && (reason.length < 5 || reason.length > 500)) {
+      return res.status(400).json({ message: 'Provide a reason (5–500 characters).' });
+    }
+    const request = await prisma.course_request.findUnique({ where: { id } });
+    if (!request) return res.status(404).json({ message: 'Course request not found.' });
+    if (request.status !== 'pending') return res.status(409).json({ message: 'This request has already been reviewed.' });
+    if (action === 'fulfill') {
+      const course = await prisma.course.findFirst({ where: { id: courseId, deletedAt: null } });
+      if (!course) return res.status(404).json({ message: 'Course not found.' });
+      if (request.externalId && request.externalId !== course.externalId) {
+        return res.status(409).json({ message: 'The selected course does not match the requested directory ID.' });
+      }
+    }
+    const updated = await prisma.course_request.updateMany({
+      where: { id, status: 'pending' },
+      data: {
+        status: action === 'fulfill' ? 'fulfilled' : 'unavailable',
+        fulfilledCourseId: action === 'fulfill' ? courseId : null,
+        resolutionNote: action === 'unavailable' ? reason : null,
+        resolvedById: Number((req.user as { id?: number } | undefined)?.id),
+        resolvedAt: new Date(),
+      },
+    });
+    if (!updated.count) return res.status(409).json({ message: 'This request has already been reviewed.' });
+    const notified = await CourseController.notifyCourseRequester(id);
+    return res.status(200).json(notified);
+  };
+
+  static retryCourseRequestNotification = async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ message: 'Invalid request ID.' });
+    const request = await prisma.course_request.findUnique({ where: { id } });
+    if (!request) return res.status(404).json({ message: 'Course request not found.' });
+    if (request.status === 'pending') return res.status(409).json({ message: 'Review this request first.' });
+    return res.status(200).json(await CourseController.notifyCourseRequester(id));
   };
 
   static searchCourseDirectory = async (req: Request, res: Response) => {
@@ -225,33 +293,25 @@ class CourseController {
 
     try {
       const importedCourse = await loadCourseFromDirectory(externalId);
-      const result = await sendAppEmail({
-        ...buildCourseRequestEmail({ externalId, requester, importedCourse }),
-        ...getScorecardAttachment(req.file),
-        from: process.env.COURSE_REQUEST_FROM,
-      });
-
-      if (result.status === 'skipped') {
-        return res.status(503).json({
-          message: 'Course request email is not configured. Please contact support.',
-        });
-      }
-      if (result.status === 'failed') {
-        throw new Error(`Verified course request email failed: ${result.reason}`);
-      }
-
-      await prisma.course_request.create({
+      const request = await prisma.course_request.create({
         data: {
           requesterId: requester.id,
           requestType: 'directory',
           courseName: importedCourse.course.name,
           location: importedCourse.course.location || importedCourse.club.location || '',
           externalId,
-          emailId: result.emailId,
         },
       });
+      const result = await sendAppEmail({
+        ...buildCourseRequestEmail({ externalId, requester, importedCourse }),
+        ...getScorecardAttachment(req.file),
+        from: process.env.COURSE_REQUEST_FROM,
+      });
 
-      return res.status(200).json({ message: 'Course request sent.' });
+      if (result.status === 'sent') {
+        await prisma.course_request.update({ where: { id: request.id }, data: { emailId: result.emailId } });
+      }
+      return res.status(201).json({ message: result.status === 'sent' ? 'Course request sent.' : 'Course request saved for super admin review.' });
     } catch (error) {
       console.error(error);
       return res.status(502).json({
@@ -290,32 +350,24 @@ class CourseController {
     }
 
     try {
+      const request = await prisma.course_request.create({
+        data: {
+          requesterId: requester.id,
+          requestType: 'manual',
+          courseName,
+          location: `${city}, ${state}`,
+        },
+      });
       const result = await sendAppEmail({
         ...buildManualCourseRequestEmail({ requester, courseName, city, state }),
         ...getScorecardAttachment(req.file),
         from: process.env.COURSE_REQUEST_FROM,
       });
 
-      if (result.status === 'skipped') {
-        return res.status(503).json({
-          message: 'Course request email is not configured. Please contact support.',
-        });
+      if (result.status === 'sent') {
+        await prisma.course_request.update({ where: { id: request.id }, data: { emailId: result.emailId } });
       }
-      if (result.status === 'failed') {
-        throw new Error(`Manual course request email failed: ${result.reason}`);
-      }
-
-      await prisma.course_request.create({
-        data: {
-          requesterId: requester.id,
-          requestType: 'manual',
-          courseName,
-          location: `${city}, ${state}`,
-          emailId: result.emailId,
-        },
-      });
-
-      return res.status(200).json({ message: 'Manual course request sent.' });
+      return res.status(201).json({ message: result.status === 'sent' ? 'Manual course request sent.' : 'Course request saved for super admin review.' });
     } catch (error) {
       console.error(error);
       return res.status(502).json({

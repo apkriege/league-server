@@ -28,6 +28,10 @@ vi.mock('../services/scoreHistory', () => ({
   recordScoreRevision: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../utils/audit', () => ({ writeAuditLog: vi.fn() }));
+vi.mock('../services/eventTrial', () => ({
+  reserveTrialScoredEvent: vi.fn(),
+  TrialEventLimitError: class TrialEventLimitError extends Error {},
+}));
 
 const eventFixture = {
   id: 99,

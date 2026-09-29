@@ -8,6 +8,7 @@ import { normalizeEventFormat } from '../utils/event-mode';
 import { writeAuditLog } from '../utils/audit';
 import { getPublicErrorResponse } from '../utils/error-response';
 import { resolveScoreSubmissionOpponents } from '../utils/score-opponents';
+import { reserveTrialScoredEvent, TrialEventLimitError } from '../services/eventTrial';
 import {
   getScoringFamilyForMode,
   getScoringMode,
@@ -209,6 +210,7 @@ export default class ScoreController {
 
       await prisma.$transaction(async (tx) => {
         const event = await lockScoringEvent(tx, leagueId, eventId, false);
+        await reserveTrialScoredEvent(tx, leagueId, eventId);
         const before = await readFlightScoreSnapshot(tx, eventId, flightId);
         const saveScores = async () => {
           const scoringMode = getScoringMode(event.scoringMode);
@@ -294,6 +296,9 @@ export default class ScoreController {
       return res.status(201).json({ message: 'Scores created successfully' });
     } catch (error) {
       console.error('Error parsing request data:', error);
+      if (error instanceof TrialEventLimitError) {
+        return res.status(402).json({ code: 'TRIAL_EVENT_LIMIT', message: error.message });
+      }
       const { status, message } = getPublicErrorResponse(error);
       return res.status(status).json({ message });
     }

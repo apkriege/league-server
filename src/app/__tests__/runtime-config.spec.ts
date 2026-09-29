@@ -18,6 +18,21 @@ describe('runtime configuration validation', () => {
     expect(() => validateRuntimeConfig(productionEnvironment)).not.toThrow();
   });
 
+  it('requires complete and valid configuration when SMS alerts are enabled', () => {
+    expect(() => validateRuntimeConfig({
+      ...productionEnvironment,
+      SIGNUP_SMS_TO: '+15551234567',
+    })).toThrow(/SMS notifications require/);
+
+    expect(() => validateRuntimeConfig({
+      ...productionEnvironment,
+      TWILIO_ACCOUNT_SID: `AC${'a'.repeat(32)}`,
+      TWILIO_AUTH_TOKEN: 'b'.repeat(32),
+      TWILIO_FROM_NUMBER: '+15557654321',
+      SIGNUP_SMS_TO: '+15551234567',
+    })).not.toThrow();
+  });
+
   it('requires infrastructure configuration in every environment', () => {
     expect(() => validateRuntimeConfig({ NODE_ENV: 'test' })).toThrow(
       'Missing required environment variables: DATABASE_URL, SESSION_SECRET',

@@ -23,6 +23,7 @@ import {
 } from '../services/seasonEntitlement';
 import { getLeagueMutationBlock } from '../services/leagueLifecycle';
 import { canCreateNextSeason } from '../services/leagueSeasonRenewal';
+import { isTrialEligible } from '../services/eventTrial';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
@@ -882,7 +883,7 @@ class PaymentController {
 
       let user = await prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, metadata: true },
+        select: { id: true, metadata: true, role: true, emailVerifiedAt: true },
       });
 
       const initialMetadata = user?.metadata && typeof user.metadata === 'object' ? user.metadata : {};
@@ -899,7 +900,12 @@ class PaymentController {
         const checkoutSession = await stripe.checkout.sessions.retrieve(lastCheckoutSessionId);
         const updatedUser = await applyCompletedCheckoutSession(checkoutSession);
         if (updatedUser && updatedUser.id === user?.id) {
-          user = { id: updatedUser.id, metadata: updatedUser.metadata };
+          user = {
+            id: updatedUser.id,
+            metadata: updatedUser.metadata,
+            role: updatedUser.role,
+            emailVerifiedAt: updatedUser.emailVerifiedAt,
+          };
         }
       }
 
@@ -921,7 +927,10 @@ class PaymentController {
       );
       const billingState = getBillingState(metadata, allocatedGolfers, { includedGolfers });
 
-      return res.status(200).json({ stripe: stripeState, billing: billingState });
+      return res.status(200).json({
+        stripe: stripeState,
+        billing: { ...billingState, trialEligible: user ? isTrialEligible(user) : false },
+      });
     } catch (error: any) {
       console.error('getStripeState error:', error);
       return res.status(500).json({ message: 'Failed to read Stripe state' });

@@ -38,6 +38,7 @@ model user {
   phone           String?
   metadata        Json?
   emailVerifiedAt DateTime? @default(now()) @map("email_verified_at") @db.Timestamptz(3)
+  trialClaimedAt   DateTime? @map("trial_claimed_at") @db.Timestamptz(3)
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   deletedAt       DateTime? @map("deleted_at") @db.Timestamptz(3)
@@ -55,7 +56,8 @@ model user {
   createdPaymentBypassCodes    payment_bypass_code[]           @relation("payment_bypass_code_created_by")
   redeemedPaymentBypassCodes   payment_bypass_code[]           @relation("payment_bypass_code_redeemed_by")
   seasonEntitlements           league_season_entitlement[]     @relation("league_season_entitlement_billing_owner")
-  courseRequests               course_request[]
+  courseRequests               course_request[] @relation("CourseRequestRequester")
+  resolvedCourseRequests       course_request[] @relation("CourseRequestResolver")
 
   @@index([email])
   @@index([deletedAt])
@@ -70,13 +72,20 @@ model course_request {
   externalId  String?   @map("external_id")
   status      String    @default("pending")
   emailId     String?   @map("email_id")
+  fulfilledCourseId Int? @map("fulfilled_course_id")
+  resolvedById Int? @map("resolved_by_id")
+  resolutionNote String? @map("resolution_note")
+  notificationStatus String @default("pending") @map("notification_status")
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   resolvedAt  DateTime? @map("resolved_at") @db.Timestamptz(3)
 
-  requester user @relation(fields: [requesterId], references: [id], onDelete: Restrict)
+  requester user @relation("CourseRequestRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  resolvedBy user? @relation("CourseRequestResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  fulfilledCourse course? @relation(fields: [fulfilledCourseId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([requesterId])
+  @@index([fulfilledCourseId])
 }
 
 model support_message {
@@ -158,17 +167,32 @@ model league_season_entitlement {
   paidGolfers         Int      @default(0) @map("paid_golfers")
   refundedGolfers     Int      @default(0) @map("refunded_golfers")
   status              String   @default("pending_payment")
+  trialEventLimit     Int      @default(0) @map("trial_event_limit")
+  trialEventCount     Int      @default(0) @map("trial_event_count")
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   billingOwner user                         @relation("league_season_entitlement_billing_owner", fields: [billingOwnerId], references: [id], onDelete: Restrict)
   league       league?
   checkouts    stripe_checkout_completion[]
+  trialEvents  trial_scored_event[]
 
   @@unique([billingOwnerId, draftKey])
   @@index([billingOwnerId])
   @@index([renewedFromLeagueId])
   @@index([status])
+}
+
+model trial_scored_event {
+  entitlementId Int @map("entitlement_id")
+  eventId       Int @map("event_id")
+  firstScoredAt DateTime @default(now()) @map("first_scored_at") @db.Timestamptz(3)
+
+  entitlement league_season_entitlement @relation(fields: [entitlementId], references: [id], onDelete: Restrict)
+  event event @relation(fields: [eventId], references: [id], onDelete: Restrict)
+
+  @@id([entitlementId, eventId])
+  @@index([eventId])
 }
 
 model payment_bypass_code {
@@ -239,6 +263,7 @@ model course {
   rounds             round[]
   teamRounds         team_round[]
   eventRouteSegments event_route_segment[]
+  fulfilledCourseRequests course_request[]
 
   @@unique([externalProvider, externalId])
   @@index([clubId])
@@ -456,6 +481,7 @@ model event {
   teamEventPoints team_event_points[]
   teamRounds      team_round[]
   routeSegments   event_route_segment[]
+  trialUsage      trial_scored_event[]
 
   @@index([leagueId])
   @@index([courseId])

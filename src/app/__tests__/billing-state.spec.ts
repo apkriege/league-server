@@ -63,7 +63,7 @@ describe('league billing', () => {
         where: {
           billingOwnerId: 7,
           league: { isNot: null },
-          status: { not: 'bypassed' },
+          status: { notIn: ['bypassed', 'trialing'] },
         },
       }),
     );

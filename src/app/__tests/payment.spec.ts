@@ -159,6 +159,29 @@ describe('Stripe checkout completion', async () => {
     });
   });
 
+  it('activates the same trial league when its roster is paid', async () => {
+    mockTx.stripe_checkout_completion.findUnique.mockResolvedValue(null);
+    mockTx.league_season_entitlement.findUnique.mockResolvedValue({
+      id: 31, billingOwnerId: 7, requiredGolfers: 8, paidGolfers: 0,
+      refundedGolfers: 0, status: 'trialing', league: { id: 4 },
+    });
+    await applyCompletedCheckoutSession({
+      ...session,
+      id: 'cs_trial_activation',
+      metadata: {
+        purpose: 'league_capacity', quantity: '8', targetGolfers: '8',
+        leagueId: '4', entitlementId: '31',
+      },
+    });
+    expect(mockTx.league_season_entitlement.update).toHaveBeenCalledWith({
+      where: { id: 31 },
+      data: { paidGolfers: { increment: 8 }, requiredGolfers: 8, status: 'consumed' },
+    });
+    expect(mockTx.stripe_checkout_completion.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ leagueId: 4, entitlementId: 31, quantity: 8 }),
+    });
+  });
+
   it('does not grant seats for a completed but unpaid checkout', async () => {
     await applyCompletedCheckoutSession({
       ...session,

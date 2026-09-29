@@ -123,3 +123,28 @@ export const buildManualCourseRequestEmail = ({
     tags: [{ name: 'category', value: 'manual-course-request' }],
   };
 };
+
+export const buildCourseRequestOutcomeEmail = (request: {
+  id: number;
+  courseName: string;
+  status: string;
+  resolutionNote: string | null;
+  requester: { firstName: string; email: string };
+  fulfilledCourse: { id: number; name: string } | null;
+}): SendAppEmailInput => {
+  const courseUrl = request.fulfilledCourse && process.env.CLIENT_URL
+    ? `${process.env.CLIENT_URL.replace(/\/$/, '')}/courses/${request.fulfilledCourse.id}`
+    : null;
+  const fulfilled = request.status === 'fulfilled';
+  const message = fulfilled
+    ? `Your requested course, ${request.fulfilledCourse?.name}, is now available.${courseUrl ? ` View it: ${courseUrl}` : ''}`
+    : `We could not add ${request.courseName} at this time. Reason: ${request.resolutionNote}`;
+  return {
+    to: [request.requester.email],
+    subject: fulfilled ? `Course ready: ${request.courseName}` : `Course request update: ${request.courseName}`,
+    text: `Hi ${request.requester.firstName || 'there'},\n\n${message}\n\nLeague Night Pro`,
+    html: `<p>Hi ${escapeEmailHtml(request.requester.firstName || 'there')},</p><p>${escapeEmailHtml(message)}</p>${courseUrl ? `<p><a href="${escapeEmailHtml(courseUrl)}">View course</a></p>` : ''}<p>League Night Pro</p>`,
+    idempotencyKey: `course-request-outcome-${request.id}`,
+    tags: [{ name: 'category', value: 'course-request-outcome' }],
+  };
+};

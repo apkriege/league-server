@@ -32,6 +32,7 @@ const extractEmailAddress = (value: string) => {
 };
 
 const isValidEmailAddress = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+const isE164Number = (value: string) => /^\+[1-9]\d{1,14}$/.test(value);
 
 export const validateRuntimeConfig = (env: RuntimeEnvironment = process.env) => {
   const missing = ['DATABASE_URL', 'SESSION_SECRET'].filter((name) => !hasValue(env, name));
@@ -47,6 +48,29 @@ export const validateRuntimeConfig = (env: RuntimeEnvironment = process.env) => 
 
   if (stripeProductTaxCode && !/^txcd_\d{8}$/.test(stripeProductTaxCode)) {
     throw new Error('STRIPE_PRODUCT_TAX_CODE must be a valid Stripe tax code');
+  }
+
+  const smsVariables = [
+    'TWILIO_ACCOUNT_SID',
+    'TWILIO_AUTH_TOKEN',
+    'TWILIO_FROM_NUMBER',
+    'SIGNUP_SMS_TO',
+  ];
+  if (smsVariables.some((name) => hasValue(env, name))) {
+    const missingSmsVariables = smsVariables.filter((name) => !hasValue(env, name));
+    if (missingSmsVariables.length > 0) {
+      throw new Error(`SMS notifications require: ${missingSmsVariables.join(', ')}`);
+    }
+    if (!/^AC[0-9a-fA-F]{32}$/.test(String(env.TWILIO_ACCOUNT_SID).trim())) {
+      throw new Error('TWILIO_ACCOUNT_SID must be a valid Twilio account SID');
+    }
+    if (!/^[0-9a-fA-F]{32}$/.test(String(env.TWILIO_AUTH_TOKEN).trim())) {
+      throw new Error('TWILIO_AUTH_TOKEN must be a valid Twilio auth token');
+    }
+    if (!isE164Number(String(env.TWILIO_FROM_NUMBER).trim()) ||
+        !isE164Number(String(env.SIGNUP_SMS_TO).trim())) {
+      throw new Error('TWILIO_FROM_NUMBER and SIGNUP_SMS_TO must be E.164 phone numbers');
+    }
   }
 
   if (isProductionRuntime(env)) {

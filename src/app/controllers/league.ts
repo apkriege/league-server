@@ -33,6 +33,7 @@ import {
 import { sendLeagueInvitationEmail } from '../services/leagueInvitationEmail';
 import { getScoringFamilyForMode } from '../scoring';
 import { normalizeTeamCount } from '../services/teamLineups';
+import { isTrialEligible, TRIAL_EVENT_LIMIT } from '../services/eventTrial';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
@@ -496,8 +497,10 @@ class LeagueController {
         scoringPeriods = [],
         renewedFromLeagueId,
         billingDraftKey: rawBillingDraftKey,
+        startTrial: requestedTrial = false,
         ...leagueData
       } = req.body;
+      const startTrial = requestedTrial === true;
       const adminId = req.session.userId;
       const billingDraftKey = normalizeBillingDraftKey(rawBillingDraftKey);
 
@@ -507,7 +510,7 @@ class LeagueController {
 
       const adminUser = await prisma.user.findUnique({
         where: { id: adminId },
-        select: { metadata: true },
+        select: { metadata: true, role: true, emailVerifiedAt: true },
       });
 
       if (!adminUser) {
@@ -544,6 +547,9 @@ class LeagueController {
         return res.status(409).json({ message: 'This league already has a next season.' });
       }
       if (renewalSource) assertCanCreateNextSeason(renewalSource);
+      if (startTrial && !isTrialEligible(adminUser)) {
+        return res.status(409).json({ message: 'A free trial requires a verified league admin account.' });
+      }
 
       const billableGolfers = getLeagueBillableGolfers(players);
       const invalidPlayerIndex = Array.isArray(players)
@@ -631,7 +637,10 @@ class LeagueController {
         include: { league: { select: { id: true, name: true } } },
       });
       const paidForDraft = preparedEntitlement ? getNetPaidGolfers(preparedEntitlement) : 0;
-      if (!hasPendingLeagueBypass && paidForDraft < billableGolfers) {
+      if (startTrial && preparedEntitlement) {
+        return res.status(409).json({ message: 'This saved draft already has a payment in progress. Finish that flow before creating the league.' });
+      }
+      if (!startTrial && !hasPendingLeagueBypass && paidForDraft < billableGolfers) {
         return res.status(402).json({
           message: `This league requires payment for ${billableGolfers} golfers.`,
           requiredGolfers: billableGolfers,
@@ -667,9 +676,12 @@ class LeagueController {
         await lockAdminBilling(tx, adminId);
         const lockedAdmin = await tx.user.findFirst({
           where: { id: adminId, deletedAt: null },
-          select: { metadata: true },
+          select: { metadata: true, role: true, emailVerifiedAt: true },
         });
         if (!lockedAdmin) throw new Error('User not found');
+        if (startTrial && !isTrialEligible(lockedAdmin)) {
+          throw new Error('A free trial requires a verified league admin account.');
+        }
         if (renewalSourceId) {
           const availableSource = await tx.league.findFirst({
             where: { id: renewalSourceId, adminId, deletedAt: null },
@@ -701,8 +713,11 @@ class LeagueController {
           });
         }
         const lockedPaidGolfers = lockedEntitlement ? getNetPaidGolfers(lockedEntitlement) : 0;
-        const useLeagueBypass = pendingLeagueBypassCodeId !== null && lockedPaidGolfers < billableGolfers;
-        if (!useLeagueBypass && lockedPaidGolfers < billableGolfers) {
+        const useLeagueBypass = !startTrial && pendingLeagueBypassCodeId !== null && lockedPaidGolfers < billableGolfers;
+        if (startTrial && lockedEntitlement) {
+          throw new Error('This saved draft already has a payment in progress.');
+        }
+        if (!startTrial && !useLeagueBypass && lockedPaidGolfers < billableGolfers) {
           throw new Error(`Payment is required for ${billableGolfers} golfers.`);
         }
         if (lockedEntitlement?.league) {
@@ -715,14 +730,15 @@ class LeagueController {
           throw new Error('This payment belongs to a different league season.');
         }
         if (!lockedEntitlement) {
-          if (!useLeagueBypass) throw new Error(`Payment is required for ${billableGolfers} golfers.`);
+          if (!useLeagueBypass && !startTrial) throw new Error(`Payment is required for ${billableGolfers} golfers.`);
           lockedEntitlement = await tx.league_season_entitlement.create({
             data: {
               billingOwnerId: adminId,
               draftKey: billingDraftKey,
               renewedFromLeagueId: renewalSourceId || null,
               requiredGolfers: billableGolfers,
-              status: SEASON_ENTITLEMENT_STATUSES.bypassed,
+              status: startTrial ? SEASON_ENTITLEMENT_STATUSES.trialing : SEASON_ENTITLEMENT_STATUSES.bypassed,
+              trialEventLimit: startTrial ? TRIAL_EVENT_LIMIT : 0,
             },
             include: { league: { select: { id: true, name: true } } },
           });
@@ -767,9 +783,11 @@ class LeagueController {
           where: { id: lockedEntitlement.id },
           data: {
             requiredGolfers: billableGolfers,
-            status: useLeagueBypass
-              ? SEASON_ENTITLEMENT_STATUSES.bypassed
-              : SEASON_ENTITLEMENT_STATUSES.consumed,
+            status: startTrial
+              ? SEASON_ENTITLEMENT_STATUSES.trialing
+              : useLeagueBypass
+                ? SEASON_ENTITLEMENT_STATUSES.bypassed
+                : SEASON_ENTITLEMENT_STATUSES.consumed,
           },
         });
         await tx.stripe_checkout_completion.updateMany({
@@ -926,7 +944,9 @@ class LeagueController {
         ? 402
         : error instanceof LeagueSeasonRenewalError ||
             errorCode === 'P2002' ||
-            message.includes('already has a next season')
+            message.includes('already has a next season') ||
+            message.includes('free trial is available') ||
+            message.includes('already has a payment or access code')
           ? 409
         : message.includes('League type') ||
         message.includes('League hole format') ||
@@ -1038,7 +1058,8 @@ class LeagueController {
       const billableGolfers = Math.max(BILLING_MIN_GOLFERS, nextNumPlayers);
       const paidGolfers = getNetPaidGolfers(existingLeague.entitlement);
       const paymentBypassed = existingLeague.entitlement.status === SEASON_ENTITLEMENT_STATUSES.bypassed;
-      if (!paymentBypassed && paidGolfers < billableGolfers) {
+      const isTrial = existingLeague.entitlement.status === SEASON_ENTITLEMENT_STATUSES.trialing;
+      if (!paymentBypassed && !isTrial && paidGolfers < billableGolfers) {
         return res.status(402).json({
           message: `This change requires payment for ${billableGolfers} golfers in this league.`,
           requiredGolfers: billableGolfers,
@@ -1055,7 +1076,10 @@ class LeagueController {
           where: { id: existingLeague.entitlementId },
         });
         const lockedPaidGolfers = getNetPaidGolfers(lockedEntitlement);
-        if (!paymentBypassed && lockedPaidGolfers < billableGolfers) {
+        const lockedFreeAccess =
+          lockedEntitlement.status === SEASON_ENTITLEMENT_STATUSES.bypassed ||
+          lockedEntitlement.status === SEASON_ENTITLEMENT_STATUSES.trialing;
+        if (!lockedFreeAccess && lockedPaidGolfers < billableGolfers) {
           throw new Error('Payment is required for this capacity change.');
         }
         if (billableGolfers !== lockedEntitlement.requiredGolfers) {

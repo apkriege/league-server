@@ -8,6 +8,7 @@ export const SEASON_ENTITLEMENT_STATUSES = {
   partiallyRefunded: 'partially_refunded',
   refunded: 'refunded',
   bypassed: 'bypassed',
+  trialing: 'trialing',
 } as const;
 
 export const leagueEntitlementStateSelect = {
@@ -15,6 +16,8 @@ export const leagueEntitlementStateSelect = {
   paidGolfers: true,
   refundedGolfers: true,
   status: true,
+  trialEventLimit: true,
+  trialEventCount: true,
 } as const;
 
 export const normalizeBillingDraftKey = (value: unknown) => {
@@ -32,6 +35,8 @@ export type LeagueEntitlementState = {
   paidGolfers: number;
   refundedGolfers: number;
   status: string;
+  trialEventLimit?: number;
+  trialEventCount?: number;
 };
 
 export const getLeagueCapacity = (league: { entitlement?: LeagueEntitlementState | null }) =>
@@ -48,6 +53,7 @@ export const getLeagueBillingStatus = (league: {
 }) => {
   if (!league.entitlement) return 'payment_due' as const;
   if (isLeagueBillingExempt(league)) return 'exempt' as const;
+  if (league.entitlement.status === SEASON_ENTITLEMENT_STATUSES.trialing) return 'trial' as const;
   return getLeaguePaidGolfers(league) >= getLeagueCapacity(league)
     ? ('active' as const)
     : ('payment_due' as const);

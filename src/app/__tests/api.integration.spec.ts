@@ -757,6 +757,19 @@ describe('API integration', () => {
     await expect(
       prisma.league.findUniqueOrThrow({ where: { id: sourceId }, include: { renewedLeague: true } }),
     ).resolves.toMatchObject({ renewedLeague: null });
+
+    const trialRenewalTemplate = await agent.get(`/api/leagues/${sourceId}/renewal-template`);
+    expect(trialRenewalTemplate.status).toBe(200);
+    const trialRenewal = await agent.post('/api/leagues').send({
+      ...trialRenewalTemplate.body.league,
+      billingDraftKey: 'integration-trial-renewal-season-2026',
+      startTrial: true,
+    });
+    expect(trialRenewal.status, JSON.stringify(trialRenewal.body)).toBe(201);
+    expect(trialRenewal.body).toMatchObject({
+      renewedFromLeagueId: sourceId,
+      entitlement: expect.objectContaining({ status: 'trialing', trialEventLimit: 3, trialEventCount: 0 }),
+    });
   });
 
   it('allows super admins to inspect all leagues and users', async () => {
@@ -1539,5 +1552,99 @@ describe('API integration', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('starts a separate trial for every new league without charging or allocating paid seats', async () => {
+    const email = 'trial-commissioner@test.com';
+    await prisma.user.create({
+      data: {
+        firstName: 'Trial', lastName: 'Commissioner', email, username: email,
+        password: await bcrypt.hash(password, 10), role: 'ADMIN', trialClaimedAt: new Date(),
+      },
+    });
+    const agent = request.agent(app);
+    await login(agent, email);
+    const billingBefore = await agent.get('/api/payments/stripe-state');
+    expect(billingBefore.body.billing.trialEligible).toBe(true);
+    const players = Array.from({ length: 8 }, (_, index) => ({
+      id: index + 1, firstName: `Trial${index + 1}`, lastName: 'Golfer',
+      email: `trial-golfer-${index + 1}@test.com`, gender: 'male', type: 'player', handicap: 10,
+    }));
+    const payload = {
+      billingDraftKey: 'integration-trial-league-2026', startTrial: true,
+      name: 'Trial League', description: '', type: 'season', holeFormat: '18', format: 'individual',
+      contactFirstName: 'Trial', contactLastName: 'Commissioner', contactEmail: email, contactPhone: '',
+      startDate: '2026-01-01', endDate: '2027-01-01', players, teams: [], scoringPeriods: [],
+    };
+    const created = await agent.post('/api/leagues').send(payload);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.entitlement).toMatchObject({ status: 'trialing', trialEventLimit: 3, trialEventCount: 0 });
+    const tee = await prisma.tee.findFirstOrThrow({ where: { deletedAt: null } });
+    const trialEvent = await prisma.event.create({
+      data: {
+        leagueId: created.body.id, courseId: tee.courseId, teeId: tee.id,
+        name: 'Trial Event', format: 'individual', type: 'regular', holes: 9, startSide: 'front',
+        startsAt: new Date('2026-09-28T12:00:00Z'), timeZone: 'America/Indiana/Indianapolis',
+        interval: 10, status: 'upcoming',
+      },
+    });
+    const invalidScore = await agent.post(`/api/leagues/${created.body.id}/events/${trialEvent.id}/scores`)
+      .send({ flightId: 999999, players: [] });
+    expect(invalidScore.status).toBe(400);
+    expect((await prisma.league_season_entitlement.findUniqueOrThrow({ where: { id: created.body.entitlementId } })).trialEventCount).toBe(0);
+    await prisma.league_season_entitlement.update({ where: { id: created.body.entitlementId }, data: { trialEventCount: 3 } });
+    const fourthScore = await agent.post(`/api/leagues/${created.body.id}/events/${trialEvent.id}/scores`)
+      .send({ flightId: 999999, players: [] });
+    expect(fourthScore.status).toBe(402);
+    expect(fourthScore.body.code).toBe('TRIAL_EVENT_LIMIT');
+    const billingAfter = await agent.get('/api/payments/stripe-state');
+    expect(billingAfter.body.billing).toMatchObject({ trialEligible: true, allocatedGolfers: 0 });
+    await prisma.user.update({
+      where: { email },
+      data: { metadata: { billing: { pendingLeagueBypassCodeId: 12345 } } },
+    });
+    const second = await agent.post('/api/leagues').send({
+      ...payload, name: 'Second Trial League', billingDraftKey: 'integration-second-trial-2026',
+    });
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    expect(second.body.entitlement).toMatchObject({ status: 'trialing', trialEventLimit: 3, trialEventCount: 0 });
+    expect(second.body.entitlementId).not.toBe(created.body.entitlementId);
+    expect((await prisma.user.findUniqueOrThrow({ where: { email } })).metadata).toMatchObject({
+      billing: { pendingLeagueBypassCodeId: 12345 },
+    });
+  });
+
+  it('requires a real course before fulfillment and exposes request outcomes to the requester', async () => {
+    const admin = request.agent(app);
+    const superAdmin = request.agent(app);
+    const requester = await login(admin, 'admin@test.com');
+    await login(superAdmin, 'super@test.com');
+    const submitted = await admin.post('/api/courses/requests/manual')
+      .field('courseName', 'Pending Course')
+      .field('city', 'Indianapolis')
+      .field('state', 'Indiana');
+    expect(submitted.status).toBe(201);
+    expect((await admin.get('/api/courses/requests/mine')).body).toEqual(
+      expect.arrayContaining([expect.objectContaining({ courseName: 'Pending Course', status: 'pending' })]),
+    );
+    const course = await prisma.course.findFirstOrThrow({ where: { deletedAt: null } });
+    const requestRow = await prisma.course_request.create({
+      data: { requesterId: requester.id, requestType: 'manual', courseName: course.name, location: course.location || '' },
+    });
+    expect((await admin.patch(`/api/courses/requests/${requestRow.id}/resolve`).send({ action: 'fulfill', courseId: course.id })).status).toBe(403);
+    expect((await superAdmin.patch(`/api/courses/requests/${requestRow.id}/resolve`).send({ action: 'fulfill', courseId: 999999999 })).status).toBe(404);
+    const fulfilled = await superAdmin.patch(`/api/courses/requests/${requestRow.id}/resolve`).send({ action: 'fulfill', courseId: course.id });
+    expect(fulfilled.status, JSON.stringify(fulfilled.body)).toBe(200);
+    expect(fulfilled.body).toMatchObject({ status: 'fulfilled', fulfilledCourseId: course.id });
+    if (fulfilled.body.notificationStatus !== 'sent') {
+      const needsAttention = await superAdmin.get('/api/courses/requests/pending');
+      expect(needsAttention.body).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: requestRow.id, status: 'fulfilled' }),
+      ]));
+    }
+    const mine = await admin.get('/api/courses/requests/mine');
+    expect(mine.status).toBe(200);
+    expect(mine.body).toEqual(expect.arrayContaining([expect.objectContaining({ id: requestRow.id, status: 'fulfilled' })]));
+    expect((await superAdmin.patch(`/api/courses/requests/${requestRow.id}/resolve`).send({ action: 'unavailable', reason: 'Duplicate request.' })).status).toBe(409);
   });
 });
