@@ -45,4 +45,25 @@ describe('onboarding API contracts', () => {
     const stillUnclaimed = await prisma.player.findUniqueOrThrow({ where: { id: player.id } });
     expect(stillUnclaimed.userId).toBeNull();
   });
+  it('creates a trial from a partial roster and preserves imported stored handicaps', async () => {
+    const admin = request.agent(app);
+    expect((await admin.post('/api/auth/login').send({ email: 'admin@test.com', password: 'integration-test-password' })).status).toBe(200);
+    const payload = {
+      name: 'Onboarding Partial Roster', description: '', type: 'season', format: 'individual', holeFormat: '18',
+      startDate: '2026-01-01T00:00:00.000Z', endDate: '2027-01-01T00:00:00.000Z', numPlayers: 1,
+      contactFirstName: 'Test', contactLastName: 'Admin', contactEmail: 'admin@test.com', contactPhone: '',
+      startTrial: true, billingDraftKey: 'onboarding-partial-roster', teams: [],
+      players: [{ id: 1, firstName: 'Imported', lastName: 'Golfer', gender: 'female', handicap: -1.4, type: 'player', email: '' }],
+    };
+    const invalid = await admin.post('/api/leagues').send({ ...payload, players: [{ ...payload.players[0], handicap: 55 }] });
+    expect(invalid.status).toBe(400);
+    const created = await admin.post('/api/leagues').send(payload);
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const player = await prisma.player.findFirstOrThrow({ where: { leagueId: created.body.id } });
+    expect(player.handicap).toBe(-1.4);
+    expect(player.startingHandicap).toBe(-1.4);
+    const entitlement = await prisma.league_season_entitlement.findFirstOrThrow({ where: { league: { id: created.body.id } } });
+    expect(entitlement?.status).toBe('trialing');
+  });
+
 });
