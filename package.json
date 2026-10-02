@@ -23,8 +23,7 @@
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down -v",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "verify": "npm run typecheck && npm test && npm run build",
-    "test:onboarding:typecheck": "tsc -p tsconfig.onboarding-tests.json"
+    "verify": "npm run typecheck && npm test && npm run build"
   },
   "keywords": [],
   "author": "",

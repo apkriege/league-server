@@ -1,6 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": true },
-  "include": ["src/app/__tests/onboarding.integration.spec.ts", "src/app/__tests/onboarding-invitation-email.spec.ts", "src/**/*.d.ts"],
-  "exclude": ["node_modules"]
-}

@@ -1,4 +1,3 @@
-import { lockLeagueCapacity } from '../services/billingLock';
 import { Request, Response } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../../prisma';
@@ -227,54 +226,43 @@ class OperationsController {
       return res.status(400).json({ message: 'Select at least one roster player with an email address.' });
     }
 
-    const created = await prisma.$transaction(async (tx) => {
-      await lockLeagueCapacity(tx, leagueId);
-      const created = [];
+    const created = [];
 
-      for (const target of inviteTargets) {
-        const existing = await tx.league_invitation.findFirst({
-          where: {
-            leagueId,
-            email: target.email,
-            status: 'pending',
-            deletedAt: null,
-          },
-        });
+    for (const target of inviteTargets) {
+      const existing = await prisma.league_invitation.findFirst({
+        where: {
+          leagueId,
+          email: target.email,
+          status: 'pending',
+          deletedAt: null,
+        },
+      });
 
-        if (existing && (!existing.expiresAt || existing.expiresAt > new Date())) {
-          const invite = req.body?.resend === true
-            ? await tx.league_invitation.update({ where: { id: existing.id }, data: { expiresAt: addDays(30) } })
-            : existing;
-          created.push(invite);
-          continue;
-        }
-        if (existing) {
-          await tx.league_invitation.update({ where: { id: existing.id }, data: { status: 'expired' } });
-        }
-
-        const invite = await tx.league_invitation.create({
-          data: {
-            leagueId,
-            playerId: target.playerId,
-            email: target.email,
-            token: createInviteToken(),
-            invitedById: userId,
-            expiresAt: addDays(30),
-          },
-        });
-
-        created.push(invite);
+      if (existing) {
+        created.push(existing);
+        continue;
       }
 
-      return created;
-    });
+      const invite = await prisma.league_invitation.create({
+        data: {
+          leagueId,
+          playerId: target.playerId,
+          email: target.email,
+          token: createInviteToken(),
+          invitedById: userId,
+          expiresAt: addDays(30),
+        },
+      });
+
+      created.push(invite);
+    }
 
     await writeAuditLog({
       userId,
       leagueId,
       entity: 'league_invitation',
       action: 'create',
-      summary: `${req.body?.resend === true ? 'Resent' : 'Created'} ${created.length} league invitation${created.length === 1 ? '' : 's'}.`,
+      summary: `Created ${created.length} league invitation${created.length === 1 ? '' : 's'}.`,
       metadata: { invitationIds: created.map((invite) => invite.id) },
     });
 
@@ -284,7 +272,6 @@ class OperationsController {
         email: invite.email,
         result: await sendLeagueInvitationEmail({
           invitationId: invite.id,
-          deliveryKey: req.body?.resend === true ? crypto.randomUUID() : undefined,
           token: invite.token,
           email: invite.email,
           playerName:

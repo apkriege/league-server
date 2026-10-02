@@ -3,7 +3,6 @@ import { getPrimaryClientOrigin } from '../utils/origins';
 
 type LeagueInvitationEmailInput = {
   invitationId: number;
-  deliveryKey?: string;
   token: string;
   email: string;
   playerName: string;
@@ -38,6 +37,6 @@ export const sendLeagueInvitationEmail = async (
     text,
     html,
     tags: [{ name: 'category', value: 'league-invitation' }],
-    idempotencyKey: `league-invitation-${input.invitationId}${input.deliveryKey ? `-${input.deliveryKey}` : ''}`,
+    idempotencyKey: `league-invitation-${input.invitationId}`,
   });
 };
