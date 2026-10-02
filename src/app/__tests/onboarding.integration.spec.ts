@@ -55,8 +55,10 @@ describe('onboarding API contracts', () => {
       startTrial: true, billingDraftKey: 'onboarding-partial-roster', teams: [],
       players: [{ id: 1, firstName: 'Imported', lastName: 'Golfer', gender: 'female', handicap: -1.4, type: 'player', email: '' }],
     };
-    const invalid = await admin.post('/api/leagues').send({ ...payload, players: [{ ...payload.players[0], handicap: 55 }] });
-    expect(invalid.status).toBe(400);
+    for (const handicap of [55, '', null, -10.1]) {
+      const invalid = await admin.post('/api/leagues').send({ ...payload, players: [{ ...payload.players[0], handicap }] });
+      expect(invalid.status).toBe(400);
+    }
     const created = await admin.post('/api/leagues').send(payload);
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     const player = await prisma.player.findFirstOrThrow({ where: { leagueId: created.body.id } });
