@@ -66,4 +66,31 @@ describe('onboarding API contracts', () => {
     expect(entitlement?.status).toBe('trialing');
   });
 
+  it('resends valid invitations without invalidating links and replaces expired invitations', async () => {
+    const admin = request.agent(app);
+    expect((await admin.post('/api/auth/login').send({ email: 'admin@test.com', password: 'integration-test-password' })).status).toBe(200);
+    const league = await prisma.league.findFirstOrThrow({ where: { name: 'Seeded Thursday Night League' } });
+    const player = await prisma.player.create({ data: { firstName: 'Resend', lastName: 'Golfer', email: 'onboarding-resend@test.com', handicap: 12, startingHandicap: 12, seasonPoints: 0, type: 'substitute', leagueId: league.id } });
+    const endpoint = `/api/leagues/${league.id}/invitations`;
+    const initial = await admin.post(endpoint).send({ playerIds: [player.id] });
+    expect(initial.status).toBe(201);
+    const original = initial.body.invitations[0];
+    const concurrent = await Promise.all([admin.post(endpoint).send({ playerIds: [player.id], resend: true }), admin.post(endpoint).send({ playerIds: [player.id], resend: true })]);
+    expect(concurrent.map(response => response.status)).toEqual([201, 201]);
+    const resend = concurrent[0];
+    expect(resend.status).toBe(201);
+    expect(resend.body.invitations[0].token).toBe(original.token);
+    expect(await prisma.league_invitation.count({ where: { playerId: player.id, status: 'pending' } })).toBe(1);
+    await prisma.league_invitation.update({ where: { id: original.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    const renewed = await admin.post(endpoint).send({ playerIds: [player.id], resend: true });
+    expect(renewed.status).toBe(201);
+    expect(renewed.body.invitations[0].token).not.toBe(original.token);
+    expect((await prisma.league_invitation.findUniqueOrThrow({ where: { id: original.id } })).status).toBe('expired');
+    expect((await request(app).get(`/api/invitations/${original.token}`)).status).toBe(404);
+    expect((await request(app).get(`/api/invitations/${renewed.body.invitations[0].token}`)).status).toBe(200);
+    const member = request.agent(app);
+    expect((await member.post('/api/auth/login').send({ email: 'user@test.com', password: 'integration-test-password' })).status).toBe(200);
+    expect((await member.post(endpoint).send({ playerIds: [player.id], resend: true })).status).toBe(403);
+  });
+
 });
