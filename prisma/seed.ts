@@ -1,571 +1,113 @@
-import { PrismaClient } from '@prisma/client';
+import 'dotenv/config';
+import { Prisma, PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import { seedLeagueScenarioMatrix } from './seeds/scenario-matrix';
 import { fortressMaroonHoles, seedMichiganGolfCourses } from './seeds/michigan-courses';
-import { dateOnlyInTimeZone } from '../src/app/utils/time-zone';
-import { seedScoringFormatLab } from './seeds/scoring-format-lab';
+import { Round } from '../src/app/services/round';
+import { SeasonSync } from '../src/app/services/seasonSync';
+import { prisma as scoringDb } from '../src/prisma';
 
 const prisma = new PrismaClient();
-
-const password = String(process.env.DEMO_SEED_PASSWORD || 'testing1');
-
-const holes = fortressMaroonHoles;
-
-const playerSeeds = [
-  ['Adam', 'Admin', 'admin@test.com', 6],
-  ['User', 'Player', 'user@test.com', 14],
-  ['Ben', 'Baker', 'ben@test.com', 8],
-  ['Chris', 'Carter', 'chris@test.com', 11],
-  ['Drew', 'Dalton', 'drew@test.com', 17],
-  ['Evan', 'Edwards', 'evan@test.com', 4],
-  ['Frank', 'Foster', 'frank@test.com', 19],
-  ['Grant', 'Gibson', 'grant@test.com', 9],
+const password = process.env.DEMO_SEED_PASSWORD || 'testing1';
+const timeZone = 'America/Detroit';
+const today = new Date();
+today.setUTCHours(21, 30, 0, 0);
+const date = (days: number) => new Date(today.getTime() + days * 86_400_000);
+const names = [
+  ['Adam', 'Admin'], ['Morgan', 'Reed'], ['Ben', 'Baker'], ['Chris', 'Carter'],
+  ['Drew', 'Dalton'], ['Evan', 'Edwards'], ['Frank', 'Foster'], ['Grant', 'Gibson'],
+  ['Jo', 'Parker'], ['Sam', 'Taylor'],
 ] as const;
 
-const primaryTeamNames = ['Red Foxes', 'Blue Herons', 'Golden Eagles', 'Black Bears'];
-
-async function hashPassword() {
-  return bcrypt.hash(password, 10);
-}
-
-async function clearData() {
-  await prisma.team_score.deleteMany();
-  await prisma.team_round.deleteMany();
-  await prisma.score.deleteMany();
-  await prisma.round.deleteMany();
-  await prisma.flight_player.deleteMany();
-  await prisma.flight_team.deleteMany();
-  await prisma.flight.deleteMany();
-  await prisma.team_event_points.deleteMany();
-  await prisma.league_invitation.deleteMany();
-  await prisma.league_announcement.deleteMany();
-  await prisma.audit_log.deleteMany();
-  await prisma.league_onboarding.deleteMany();
-  await prisma.player.deleteMany();
-  await prisma.team.deleteMany();
-  await prisma.event.deleteMany();
-  await prisma.league.deleteMany();
-  await prisma.tee.deleteMany();
-  await prisma.course.deleteMany();
-  await prisma.club.deleteMany();
-  await prisma.session.deleteMany();
-  await prisma.stripe_checkout_completion.deleteMany();
-  await prisma.user.deleteMany();
-}
-
-function scoreFor(playerIndex: number, holeIndex: number) {
-  const par = Number(holes[holeIndex].par);
-  const pattern = (playerIndex + holeIndex) % 6;
-  if (pattern === 0) return par - 1;
-  if (pattern === 1 || pattern === 2) return par;
-  if (pattern === 3 || pattern === 4) return par + 1;
-  return par + 2;
-}
-
-async function createRound({
-  eventId,
-  player,
-  courseId,
-  teeId,
-  eventDate,
-  playerIndex,
-  pointsEarned,
-  matchPoints = 0,
-}: {
-  eventId: number;
-  player: { id: number; handicap: number };
-  courseId: number;
-  teeId: number;
-  eventDate: Date;
-  playerIndex: number;
-  pointsEarned: number;
-  matchPoints?: number;
-}) {
-  const scoreRows = holes.map((hole, holeIndex) => {
-    const gross = scoreFor(playerIndex, holeIndex);
-    const popsReceived = Number(player.handicap) >= Number(hole.hcp) ? 1 : 0;
-    const net = gross - popsReceived;
-    return {
-      hole: hole.num,
-      par: hole.par,
-      gross,
-      net,
-      adjusted: gross,
-      putts: 2,
-      popsReceived,
-      points: Math.max(0, 3 - Math.max(0, net - hole.par)),
-    };
-  });
-
-  const gross = scoreRows.reduce((sum, score) => sum + score.gross, 0);
-  const net = scoreRows.reduce((sum, score) => sum + score.net, 0);
-  const adjusted = gross;
-  const differential = Number((((adjusted - 71.4) * 113) / 139).toFixed(2));
-
-  return prisma.round.create({
-    data: {
-      eventId,
-      playerId: player.id,
-      courseId,
-      teeId,
-      status: 'completed',
-      holesPlayed: 18,
-      gross,
-      net,
-      adjusted,
-      putts: 36,
-      courseRating: 71.4,
-      courseSlope: 139,
-      differential,
-      preHandicap: player.handicap,
-      postHandicap: Number((player.handicap + differential / 100).toFixed(2)),
-      pointsEarned,
-      matchPoints,
-      eagles: 0,
-      birdies: scoreRows.filter((score) => score.gross === score.par - 1).length,
-      pars: scoreRows.filter((score) => score.gross === score.par).length,
-      bogeys: scoreRows.filter((score) => score.gross === score.par + 1).length,
-      doubleBogeys: scoreRows.filter((score) => score.gross >= score.par + 2).length,
-      tripleBogeys: 0,
-      date: eventDate,
-      scores: {
-        create: scoreRows,
-      },
-    },
-  });
-}
-
 async function main() {
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('Demo seed is disabled in production. Use npm run db:provision:super instead.');
+  const databaseUrl = new URL(process.env.DATABASE_URL || '');
+  if (!['localhost', '127.0.0.1', '[::1]'].includes(databaseUrl.hostname) ||
+      process.env.NODE_ENV === 'production' || process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_ENVIRONMENT) {
+    throw new Error('Demo seeds may only rebuild a local development database.');
   }
-  if (password.length < 8) {
-    throw new Error('DEMO_SEED_PASSWORD must be at least 8 characters.');
-  }
+  if (password.length < 8) throw new Error('DEMO_SEED_PASSWORD must be at least 8 characters.');
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const tables = Prisma.dmmf.datamodel.models.map(model => `"${model.dbName || model.name}"`).join(', ');
+  await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
 
-  await clearData();
-  const hashedPassword = await hashPassword();
+  const createUser = (email: string, role: 'SUPER' | 'ADMIN' | 'USER', firstName: string) =>
+    prisma.user.create({ data: { email, username: email, role, firstName, lastName: 'Demo', password: hashedPassword } });
+  await createUser('super@test.com', 'SUPER', 'Super');
+  const admin = await createUser('admin@test.com', 'ADMIN', 'Adam');
+  const member = await createUser('user@test.com', 'USER', 'Morgan');
+  const { fortressCourse: course, fortressTees: tees } = await seedMichiganGolfCourses(prisma);
+  const tee = tees.find(item => item.name === 'Maroon');
+  if (!tee) throw new Error('The Fortress Maroon tee is required.');
 
-  await prisma.user.create({
-    data: {
-      firstName: 'Super',
-      lastName: 'Admin',
-      email: 'super@test.com',
-      username: 'super@test.com',
-      password: hashedPassword,
-      role: 'SUPER',
-    },
-  });
+  const scenarios = [
+    { key: 'new', name: 'New League · Start Here', trial: true, roster: 0, archived: false },
+    { key: 'trial', name: 'Trial League · One Event Used', trial: true, roster: 4, archived: false },
+    { key: 'paid', name: 'Thursday League · Paid Capacity', trial: false, roster: 10, archived: false },
+    { key: 'archive', name: 'Previous Season · Results', trial: false, roster: 8, archived: true },
+  ] as const;
 
-  const adminUser = await prisma.user.create({
-    data: {
-      firstName: 'Adam',
-      lastName: 'Admin',
-      email: 'admin@test.com',
-      username: 'admin@test.com',
-      password: hashedPassword,
-      role: 'ADMIN',
-      metadata: {
-        stripe: {
-          customerId: 'cus_demo_admin',
-          lastCheckoutSessionId: 'cs_demo_registration',
-          lastCheckoutStatus: 'completed',
-          lastCheckoutPurpose: 'registration',
-          lastPaymentIntentId: 'pi_demo_registration',
-        },
-        billing: {
-          includedGolfers: 8,
-          minimumGolfers: 8,
-          pricePerGolferCents: 1000,
-          currency: 'usd',
-          registrationCompletedAt: new Date().toISOString(),
-        },
-      },
-    },
-  });
-
-  const seededEntitlement = await prisma.league_season_entitlement.create({
-    data: {
-      billingOwnerId: adminUser.id,
-      draftKey: 'seeded-thursday-night-league',
-      requiredGolfers: 8,
-      paidGolfers: 8,
-      status: 'paid',
-    },
-  });
-
-  const seededCheckout = await prisma.stripe_checkout_completion.create({
-    data: {
-      sessionId: 'cs_demo_registration',
-      paymentIntentId: 'pi_demo_registration',
-      userId: adminUser.id,
-      purpose: 'registration',
-      quantity: 8,
-      targetGolfers: 8,
-      entitlementId: seededEntitlement.id,
-    },
-  });
-
-  const regularUser = await prisma.user.create({
-    data: {
-      firstName: 'User',
-      lastName: 'Player',
-      email: 'user@test.com',
-      username: 'user@test.com',
-      password: hashedPassword,
-      role: 'USER',
-    },
-  });
-
-  const { fortressCourse: course, fortressTees: tees } =
-    await seedMichiganGolfCourses(prisma);
-
-  const tee = tees.find((seededTee) => seededTee.name === 'Maroon') ?? tees[0];
-  if (!tee) {
-    throw new Error('No Fortress tees were created.');
-  }
-
-  const league = await prisma.league.create({
-    data: {
-      name: 'Seeded Thursday Night League',
-      description: 'Complete test league with players, teams, events, flights, and scores.',
-      type: 'season',
-      holeFormat: 'mixed',
-      viewerAccessCode: 'TESTCODE',
-      format: 'team',
-      adminId: adminUser.id,
-      entitlementId: seededEntitlement.id,
-      startDate: new Date('2026-05-01T00:00:00.000Z'),
-      endDate: new Date('2027-04-30T00:00:00.000Z'),
-      contactFirstName: 'Adam',
-      contactLastName: 'Admin',
-      contactEmail: 'admin@test.com',
-      contactPhone: '555-0110',
-    },
-  });
-
-  await prisma.$transaction([
-    prisma.league_season_entitlement.update({
-      where: { id: seededEntitlement.id },
-      data: { status: 'consumed' },
-    }),
-    prisma.stripe_checkout_completion.update({
-      where: { id: seededCheckout.id },
-      data: { leagueId: league.id },
-    }),
-  ]);
-
-  await prisma.league_onboarding.create({
-    data: {
-      leagueId: league.id,
-      playersReviewedAt: new Date(),
-      teamsReviewedAt: new Date(),
-      firstEventCreatedAt: new Date(),
-      scorecardsPrintedAt: new Date(),
-      firstScoresEnteredAt: new Date(),
-    },
-  });
-
-  const players = [];
-  for (const [index, [firstName, lastName, email, handicap]] of playerSeeds.entries()) {
-    const player = await prisma.player.create({
-      data: {
-        firstName,
-        lastName,
-        email,
-        phone: `555-02${String(index).padStart(2, '0')}`,
-        gender: index % 4 === 3 ? 'female' : 'male',
-        handicap,
-        startingHandicap: handicap,
-        seasonPoints: 0,
-        type: index === 0 ? 'captain' : 'player',
-        leagueId: league.id,
-        userId:
-          email === adminUser.email
-            ? adminUser.id
-            : email === regularUser.email
-              ? regularUser.id
-              : null,
-      },
-    });
-    players.push(player);
-  }
-
-  const teams = [];
-  for (let teamIndex = 0; teamIndex < 4; teamIndex += 1) {
-    const team = await prisma.team.create({
-      data: {
-        name: primaryTeamNames[teamIndex],
-        leagueId: league.id,
-        seasonPoints: 0,
-      },
-    });
-    teams.push(team);
-
-    await prisma.player.updateMany({
-      where: {
-        id: {
-          in: players.slice(teamIndex * 2, teamIndex * 2 + 2).map((player) => player.id),
-        },
-      },
-      data: { teamId: team.id },
-    });
-  }
-
-  const refreshedTeams = await prisma.team.findMany({
-    where: { leagueId: league.id },
-    include: { players: true },
-    orderBy: { id: 'asc' },
-  });
-
-  const eventOne = await prisma.event.create({
-    data: {
-      leagueId: league.id,
-      courseId: course.id,
-      teeId: tee.id,
-      name: 'Week 1 - Team Stroke',
-      format: 'team',
-      type: 'regular',
-      holes: 18,
-      startSide: 'front',
-      startsAt: new Date('2026-05-07T21:30:00.000Z'),
-      timeZone: 'America/Detroit',
-      interval: 10,
-      scoringMode: 'stroke-play',
-      scoringConfig: { handicapAllowance: 1 },
-      ptsPerHole: 1,
-      ptsPerMatch: 0,
-      ptsPerTeamWin: 2,
-      strokePoints: [10, 8, 6, 4, 2, 1],
-      status: 'completed',
-    },
-  });
-
-  const eventTwo = await prisma.event.create({
-    data: {
-      leagueId: league.id,
-      courseId: course.id,
-      teeId: tee.id,
-      name: 'Week 2 - Team Match',
-      format: 'team',
-      type: 'regular',
-      holes: 18,
-      startSide: 'front',
-      startsAt: new Date('2026-05-14T21:30:00.000Z'),
-      timeZone: 'America/Detroit',
-      interval: 10,
-      scoringMode: 'match-play',
-      scoringConfig: { handicapAllowance: 1 },
-      ptsPerHole: 1,
-      ptsPerMatch: 2,
-      ptsPerTeamWin: 2,
-      status: 'active',
-    },
-  });
-
-  const eventThree = await prisma.event.create({
-    data: {
-      leagueId: league.id,
-      courseId: course.id,
-      teeId: tee.id,
-      name: 'Week 3 - Individual Stroke',
-      format: 'individual',
-      type: 'regular',
-      holes: 9,
-      startSide: 'back',
-      startsAt: new Date('2026-05-21T21:30:00.000Z'),
-      timeZone: 'America/Detroit',
-      interval: 10,
-      scoringMode: 'stroke-play',
-      scoringConfig: { handicapAllowance: 1 },
-      ptsPerHole: 0,
-      ptsPerMatch: 0,
-      ptsPerTeamWin: 0,
-      strokePoints: [10, 8, 6, 4, 2, 1],
-      status: 'upcoming',
-    },
-  });
-
-  const teamMatchups = [
-    [refreshedTeams[0], refreshedTeams[1]],
-    [refreshedTeams[2], refreshedTeams[3]],
-  ];
-
-  for (const [flightIndex, [teamA, teamB]] of teamMatchups.entries()) {
-    const flight = await prisma.flight.create({
-      data: {
-        eventId: eventOne.id,
-        startsAt: new Date(eventOne.startsAt.getTime() + flightIndex * 10 * 60_000),
-        status: 'completed',
-      },
-    });
-
-    await prisma.flight_team.createMany({
-      data: [
-        { flightId: flight.id, teamId: teamA.id, opponentId: teamB.id },
-        { flightId: flight.id, teamId: teamB.id, opponentId: teamA.id },
-      ],
-    });
-
-    await prisma.flight_player.createMany({
-      data: [
-        ...teamA.players.map((player) => ({
-          flightId: flight.id,
-          teamId: teamA.id,
-          playerId: player.id,
-        })),
-        ...teamB.players.map((player) => ({
-          flightId: flight.id,
-          teamId: teamB.id,
-          playerId: player.id,
-        })),
-      ],
-    });
-  }
-
-  for (const [flightIndex, [teamA, teamB]] of teamMatchups.entries()) {
-    const flight = await prisma.flight.create({
-      data: {
-        eventId: eventTwo.id,
-        startsAt: new Date(eventTwo.startsAt.getTime() + flightIndex * 10 * 60_000),
-        status: 'not_started',
-      },
-    });
-
-    await prisma.flight_team.createMany({
-      data: [
-        { flightId: flight.id, teamId: teamA.id, opponentId: teamB.id },
-        { flightId: flight.id, teamId: teamB.id, opponentId: teamA.id },
-      ],
-    });
-
-    await prisma.flight_player.createMany({
-      data: [
-        ...teamA.players.map((player, index) => ({
-          flightId: flight.id,
-          teamId: teamA.id,
-          playerId: player.id,
-          opponentId: teamB.players[index]?.id ?? null,
-        })),
-        ...teamB.players.map((player, index) => ({
-          flightId: flight.id,
-          teamId: teamB.id,
-          playerId: player.id,
-          opponentId: teamA.players[index]?.id ?? null,
-        })),
-      ],
-    });
-  }
-
-  for (let flightIndex = 0; flightIndex < 3; flightIndex += 1) {
-    const flight = await prisma.flight.create({
-      data: {
-        eventId: eventThree.id,
-        startsAt: new Date(eventThree.startsAt.getTime() + flightIndex * 10 * 60_000),
-        status: 'not_started',
-      },
-    });
-
-    await prisma.flight_player.createMany({
-      data: players.slice(flightIndex * 3, flightIndex * 3 + 3).map((player) => ({
-        flightId: flight.id,
-        playerId: player.id,
-        teamId: player.teamId,
-      })),
-    });
-  }
-
-  const pointsByPlayer = new Map<number, number>();
-  for (const [index, player] of players.entries()) {
-    const pointsEarned = Math.max(1, 12 - index);
-    pointsByPlayer.set(player.id, pointsEarned);
-    await createRound({
-      eventId: eventOne.id,
-      player,
-      courseId: course.id,
-      teeId: tee.id,
-      eventDate: dateOnlyInTimeZone(eventOne.startsAt, eventOne.timeZone),
-      playerIndex: index,
-      pointsEarned,
-    });
-  }
-
-  for (const team of refreshedTeams) {
-    const points = team.players.reduce(
-      (sum, player) => sum + Number(pointsByPlayer.get(player.id) || 0),
-      0,
-    );
-
-    await prisma.team.update({
-      where: { id: team.id },
-      data: { seasonPoints: points },
-    });
-
-    await prisma.team_event_points.create({
-      data: {
-        leagueId: league.id,
-        eventId: eventOne.id,
-        teamId: team.id,
-        points,
-      },
-    });
-  }
-
-  for (const player of players) {
-    await prisma.player.update({
-      where: { id: player.id },
-      data: { seasonPoints: Number(pointsByPlayer.get(player.id) || 0) },
-    });
-  }
-
-  await prisma.audit_log.create({
-    data: {
-      userId: adminUser.id,
-      leagueId: league.id,
-      entity: 'league',
-      entityId: league.id,
-      action: 'seed',
-      summary: 'Created full seeded league test data.',
-    },
-  });
-
-  const scenarioMatrix = await seedLeagueScenarioMatrix({
-    prisma,
-    adminId: adminUser.id,
-    courseId: course.id,
-    teeId: tee.id,
-  });
-  const scoringLab = await seedScoringFormatLab({
-    prisma,
-    adminId: adminUser.id,
-    courseId: course.id,
-    teeId: tee.id,
-  });
-
-  console.log('Seed complete.');
-  console.log('Users:');
-  console.log(`  SUPER: super@test.com / ${password}`);
-  console.log(`  ADMIN: admin@test.com / ${password}`);
-  console.log(`  USER:  user@test.com / ${password}`);
-  console.log(`League: ${league.name} (${league.id})`);
-  console.log('Scenario matrix:');
-  for (const scenario of scenarioMatrix) {
-    console.log(`  ${scenario.league}`);
-    for (const eventName of scenario.events) {
-      console.log(`    - ${eventName}`);
+  for (const [scenarioIndex, scenario] of scenarios.entries()) {
+    const entitlement = await prisma.league_season_entitlement.create({ data: {
+      billingOwnerId: admin.id, draftKey: `demo-${scenario.key}`, requiredGolfers: 8,
+      paidGolfers: scenario.trial ? 0 : 8, status: scenario.trial ? 'trialing' : 'consumed',
+      trialEventLimit: scenario.trial ? 3 : 0,
+    } });
+    const league = await prisma.league.create({ data: {
+      name: scenario.name, description: 'Local demo fixture for the current league workflow.',
+      type: 'season', format: 'individual', holeFormat: '9', adminId: admin.id,
+      entitlementId: entitlement.id, viewerAccessCode: `DEMO${scenarioIndex + 1}`,
+      startDate: date(scenario.archived ? -120 : -21), endDate: date(scenario.archived ? -30 : 90),
+      contactFirstName: 'Adam', contactLastName: 'Admin', contactEmail: admin.email,
+    } });
+    const players = [];
+    for (let index = 0; index < scenario.roster; index += 1) {
+      const [firstName, lastName] = names[index];
+      players.push(await prisma.player.create({ data: {
+        firstName, lastName, leagueId: league.id, type: index >= 8 ? 'substitute' : 'player',
+        gender: index % 3 === 1 ? 'female' : 'male', handicap: 4 + index, startingHandicap: 4 + index,
+        seasonPoints: 0, userId: index === 0 ? admin.id : index === 1 ? member.id : null,
+      } }));
     }
+    if (scenario.roster === 0) {
+      console.log(`${league.name}: no players or events; trial remaining 3`);
+      continue;
+    }
+    const regularPlayers = players.filter(player => player.type === 'player');
+    const eventStates = scenario.archived ? ['completed', 'completed'] : ['completed', 'active', 'upcoming'];
+    for (const [eventIndex, status] of eventStates.entries()) {
+      const startsAt = date(scenario.archived ? -100 + eventIndex * 7 : -7 + eventIndex * 7);
+      const event = await prisma.event.create({ data: {
+        leagueId: league.id, courseId: course.id, teeId: tee.id, name: `Week ${eventIndex + 1}`,
+        type: 'regular', format: 'individual', holes: 9, startSide: 'front', startsAt, timeZone,
+        interval: 10, scoringMode: 'stroke-play', scoringConfig: { handicapAllowance: 1 },
+        pointsEnabled: true, strokePoints: [10, 8, 6, 4, 2, 1], status,
+      } });
+      for (let offset = 0; offset < regularPlayers.length; offset += 4) {
+        const flight = await prisma.flight.create({ data: {
+          eventId: event.id, startsAt: new Date(startsAt.getTime() + offset / 4 * 10 * 60_000),
+          status: status === 'completed' ? 'completed' : 'not_started',
+        } });
+        await prisma.flight_player.createMany({ data: regularPlayers.slice(offset, offset + 4)
+          .map(player => ({ flightId: flight.id, playerId: player.id })) });
+      }
+      if (status === 'completed') {
+        for (const [playerIndex, player] of regularPlayers.entries()) {
+          const scores = Object.fromEntries(fortressMaroonHoles.slice(0, 9).map((hole, holeIndex) =>
+            [hole.num, Math.max(1, hole.par + (playerIndex + holeIndex + eventIndex) % 3)]));
+          await new Round(event.id, { playerId: player.id, scores, points: 0, matchPoints: 0 }, undefined, prisma).process();
+        }
+        if (scenario.trial) {
+          await prisma.trial_scored_event.create({ data: { entitlementId: entitlement.id, eventId: event.id } });
+          await prisma.league_season_entitlement.update({ where: { id: entitlement.id }, data: { trialEventCount: { increment: 1 } } });
+        }
+      }
+    }
+    await SeasonSync.recalculateLeague(league.id);
+    if (scenario.archived) await prisma.league.update({ where: { id: league.id }, data: { seasonStatus: 'archived' } });
+    console.log(`${league.name}: ${regularPlayers.length} players, ${players.length - regularPlayers.length} subs`);
   }
-  console.log(`Scoring lab: ${scoringLab.league} (${scoringLab.leagueId})`);
-  for (const eventName of scoringLab.events) {
-    console.log(`  - ${eventName}`);
-  }
+  console.log('Local seed complete. Accounts: admin@test.com, user@test.com, super@test.com.');
+  console.log('Password: DEMO_SEED_PASSWORD, or testing1 when unset.');
 }
 
-main()
-  .catch((error) => {
-    console.error('Seeding failed:', error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+main().catch(error => { console.error('Seeding failed:', error); process.exitCode = 1; })
+  .finally(async () => { await prisma.$disconnect(); await scoringDb.$disconnect(); });

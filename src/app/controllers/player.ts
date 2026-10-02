@@ -258,7 +258,7 @@ export default class PlayerController {
         return res.status(400).json({ message: 'Handicap must be between -10 and 54' });
       }
       const playerType = String(payload.type || 'player').trim().toLowerCase();
-      if (!['player', 'substitute', 'captain'].includes(playerType)) {
+      if (!['player', 'substitute'].includes(playerType)) {
         return res.status(400).json({ message: 'Player type is invalid' });
       }
       const teamId = payload.teamId != null ? Number(payload.teamId) : null;
@@ -372,7 +372,7 @@ export default class PlayerController {
         }
         const rawType = String(payload.type || 'player').trim().toLowerCase();
         const type = rawType === 'sub' ? 'substitute' : rawType;
-        if (!['player', 'substitute', 'captain'].includes(type)) {
+        if (!['player', 'substitute'].includes(type)) {
           throw new Error(`Player ${index + 1} type is invalid`);
         }
         return {
@@ -500,7 +500,7 @@ export default class PlayerController {
         return res.status(400).json({ message: 'Handicap must be between -10 and 54' });
       }
       const playerType = String(payload.type || 'player').trim().toLowerCase();
-      if (!['player', 'substitute', 'captain'].includes(playerType)) {
+      if (!['player', 'substitute'].includes(playerType)) {
         return res.status(400).json({ message: 'Player type is invalid' });
       }
 

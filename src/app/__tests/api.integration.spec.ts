@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { localDateKey, localTimeKey } from '../utils/time-zone';
 import { lockAdminBilling, lockLeagueCapacity } from '../services/billingLock';
+import { applyCompletedCheckoutSession } from '../controllers/payment';
 
 const password = 'integration-test-password';
 
@@ -1563,7 +1564,7 @@ describe('API integration', () => {
       },
     });
     const agent = request.agent(app);
-    await login(agent, email);
+    const commissioner = await login(agent, email);
     const billingBefore = await agent.get('/api/payments/stripe-state');
     expect(billingBefore.body.billing.trialEligible).toBe(true);
     const players = Array.from({ length: 8 }, (_, index) => ({
@@ -1580,25 +1581,75 @@ describe('API integration', () => {
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(created.body.entitlement).toMatchObject({ status: 'trialing', trialEventLimit: 3, trialEventCount: 0 });
     const tee = await prisma.tee.findFirstOrThrow({ where: { deletedAt: null } });
-    const trialEvent = await prisma.event.create({
-      data: {
-        leagueId: created.body.id, courseId: tee.courseId, teeId: tee.id,
-        name: 'Trial Event', format: 'individual', type: 'regular', holes: 9, startSide: 'front',
-        startsAt: new Date('2026-09-28T12:00:00Z'), timeZone: 'America/Indiana/Indianapolis',
-        interval: 10, status: 'upcoming',
-      },
+    const leaguePlayers = await prisma.player.findMany({
+      where: { leagueId: created.body.id }, orderBy: { id: 'asc' }, take: 2,
     });
-    const invalidScore = await agent.post(`/api/leagues/${created.body.id}/events/${trialEvent.id}/scores`)
+    const makeTrialEvent = async (name: string) => {
+      const event = await prisma.event.create({
+        data: {
+          leagueId: created.body.id, courseId: tee.courseId, teeId: tee.id,
+          name, format: 'individual', type: 'regular', holes: 9, startSide: 'front',
+          startsAt: new Date('2026-09-28T12:00:00Z'), timeZone: 'America/Indiana/Indianapolis',
+          interval: 10, status: 'upcoming',
+        },
+      });
+      const flight = await prisma.flight.create({
+        data: {
+          eventId: event.id, startsAt: event.startsAt,
+          players: { create: leaguePlayers.map((player) => ({ playerId: player.id })) },
+        },
+      });
+      return { event, flight };
+    };
+    const trialEvents = await Promise.all(
+      Array.from({ length: 4 }, (_, index) => makeTrialEvent(`Trial Event ${index + 1}`)),
+    );
+    const invalidScore = await agent.post(`/api/leagues/${created.body.id}/events/${trialEvents[0].event.id}/scores`)
       .send({ flightId: 999999, players: [] });
     expect(invalidScore.status).toBe(400);
     expect((await prisma.league_season_entitlement.findUniqueOrThrow({ where: { id: created.body.entitlementId } })).trialEventCount).toBe(0);
-    await prisma.league_season_entitlement.update({ where: { id: created.body.entitlementId }, data: { trialEventCount: 3 } });
-    const fourthScore = await agent.post(`/api/leagues/${created.body.id}/events/${trialEvent.id}/scores`)
-      .send({ flightId: 999999, players: [] });
+    const scores = Object.fromEntries(Array.from({ length: 9 }, (_, index) => [index + 1, 5]));
+    const scorePayload = (flightId: number) => ({
+      flightId,
+      players: leaguePlayers.map((player) => ({
+        playerId: player.id, scores, putts: [], gross: 45, net: 45, points: 0, matchPoints: 0,
+      })),
+    });
+    for (const [index, { event, flight }] of trialEvents.slice(0, 3).entries()) {
+      const response = await agent.post(`/api/leagues/${created.body.id}/events/${event.id}/scores`)
+        .send(scorePayload(flight.id));
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      expect((await prisma.league_season_entitlement.findUniqueOrThrow({ where: { id: created.body.entitlementId } })).trialEventCount).toBe(index + 1);
+    }
+    const correction = await agent.put(`/api/leagues/${created.body.id}/events/${trialEvents[0].event.id}/scores`)
+      .send(scorePayload(trialEvents[0].flight.id));
+    expect(correction.status, JSON.stringify(correction.body)).toBe(200);
+    expect((await prisma.league_season_entitlement.findUniqueOrThrow({ where: { id: created.body.entitlementId } })).trialEventCount).toBe(3);
+    const fourthScore = await agent.post(`/api/leagues/${created.body.id}/events/${trialEvents[3].event.id}/scores`)
+      .send(scorePayload(trialEvents[3].flight.id));
     expect(fourthScore.status).toBe(402);
     expect(fourthScore.body.code).toBe('TRIAL_EVENT_LIMIT');
+    const billingBeforeActivation = await agent.get('/api/payments/stripe-state');
+    expect(billingBeforeActivation.body.billing).toMatchObject({ trialEligible: true, allocatedGolfers: 0 });
+    const paidSession = {
+      id: 'cs_integration_trial_activation', client_reference_id: String(commissioner.id),
+      payment_status: 'paid', customer: 'cus_integration_trial', payment_intent: 'pi_integration_trial',
+      metadata: {
+        purpose: 'league_capacity', quantity: '8', targetGolfers: '8',
+        leagueId: String(created.body.id), entitlementId: String(created.body.entitlementId),
+      },
+    } as Parameters<typeof applyCompletedCheckoutSession>[0];
+    await applyCompletedCheckoutSession(paidSession);
+    await applyCompletedCheckoutSession(paidSession);
+    expect(await prisma.stripe_checkout_completion.count({ where: { sessionId: paidSession.id } })).toBe(1);
+    expect(await prisma.league_season_entitlement.findUniqueOrThrow({
+      where: { id: created.body.entitlementId }, select: { status: true, paidGolfers: true },
+    })).toMatchObject({ status: 'consumed', paidGolfers: 8 });
+    const afterActivation = await agent.post(`/api/leagues/${created.body.id}/events/${trialEvents[3].event.id}/scores`)
+      .send(scorePayload(trialEvents[3].flight.id));
+    expect(afterActivation.status, JSON.stringify(afterActivation.body)).toBe(201);
     const billingAfter = await agent.get('/api/payments/stripe-state');
-    expect(billingAfter.body.billing).toMatchObject({ trialEligible: true, allocatedGolfers: 0 });
+    expect(billingAfter.body.billing).toMatchObject({ trialEligible: true, allocatedGolfers: 8 });
     await prisma.user.update({
       where: { email },
       data: { metadata: { billing: { pendingLeagueBypassCodeId: 12345 } } },

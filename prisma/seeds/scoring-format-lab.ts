@@ -177,7 +177,7 @@ const createPlayers = async (prisma: PrismaClient, leagueId: number) => {
         handicap: 4 + index * 3,
         startingHandicap: 4 + index * 3,
         seasonPoints: 0,
-        type: index % 2 === 0 ? 'captain' : 'player',
+        type: 'player',
         leagueId,
       },
     });

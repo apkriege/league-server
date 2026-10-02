@@ -387,7 +387,7 @@ model player {
   startingHandicap Float     @map("starting_handicap")
   seasonPoints     Float     @map("season_points")
   seasonRank       Int?      @map("season_rank")
-  type             String    @default("player") @map("type") // player, substitute, captain
+  type             String    @default("player") @map("type") // player, substitute
   leagueId         Int?      @map("league_id")
   teamId           Int?      @map("team_id")
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)

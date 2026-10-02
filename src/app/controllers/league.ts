@@ -50,7 +50,7 @@ const getMissingRequiredPlayerFields = (player: any) => {
     missing.push('gender');
   }
   const type = String(player?.type || 'player').trim().toLowerCase();
-  if (!['player', 'sub', 'substitute', 'captain'].includes(type)) missing.push('type');
+  if (!['player', 'sub', 'substitute'].includes(type)) missing.push('type');
   if (!Number.isFinite(handicap) || handicap < -10 || handicap > 54) missing.push('handicap');
 
   return missing;

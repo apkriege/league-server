@@ -35,7 +35,6 @@ describe('league billing', () => {
         ...regularPlayers,
         { type: 'sub' },
         { type: 'substitute' },
-        { type: 'captain' },
       ]),
     ).toBe(10);
   });
