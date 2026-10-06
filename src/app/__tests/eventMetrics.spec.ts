@@ -80,6 +80,18 @@ describe('event metrics', () => {
     expect(metrics.scoreDistribution).toMatchObject({
       thisEvent: { birdies: 2, pars: 2 },
       seasonAvg: { birdies: 4, pars: 10 },
+      seasonTotals: { birdies: 8, pars: 20, doubleBogeys: 2, tripleBogeys: 0 },
+    });
+  });
+
+  it('preserves exact season counts and normalizes missing counts for percentage comparisons', async () => {
+    mocks.aggregate.mockResolvedValue({ _sum: {
+      eagles: null, birdies: 1, pars: 7, bogeys: 2, doubleBogeys: 1, tripleBogeys: 3,
+    } });
+    mocks.groupBy.mockResolvedValue([{ eventId: 10 }, { eventId: 11 }, { eventId: 12 }]);
+    const metrics = await new EventMetrics(10, 3).processEvent();
+    expect(metrics.scoreDistribution.seasonTotals).toEqual({
+      eagles: 0, birdies: 1, pars: 7, bogeys: 2, doubleBogeys: 1, tripleBogeys: 3,
     });
   });
 });

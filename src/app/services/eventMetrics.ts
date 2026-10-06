@@ -327,6 +327,9 @@ export class EventMetrics {
     return {
       thisEvent: eventTotals,
       seasonAvg: seasonAverages,
+      seasonTotals: Object.fromEntries(
+        DISTRIBUTION_KEYS.map((key) => [key, seasonTotals[key] ?? 0]),
+      ) as Record<DistributionKey, number>,
     };
   }
 
