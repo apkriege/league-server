@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  calculateExpectedNineHoleDifferential,
   calculateRoundDifferential,
   type RoundTee,
 } from '../utils/tee-rating';
@@ -26,8 +25,8 @@ describe('nine-hole handicap differentials', () => {
     expect(calculateRoundDifferential(36, nineHoleTee, 12, 9)).toBe(0);
   });
 
-  it('adds an expected nine-hole differential for an 18-hole index', () => {
-    expect(calculateExpectedNineHoleDifferential(12)).toBe(7.5);
-    expect(calculateRoundDifferential(36, nineHoleTee, 12, 18)).toBe(7.5);
+  it('normalizes an actual nine-hole differential to an eighteen-hole league', () => {
+    expect(calculateRoundDifferential(36, nineHoleTee, 12, 18)).toBe(0);
+    expect(calculateRoundDifferential(40, nineHoleTee, 30, 18)).toBe(8);
   });
 });

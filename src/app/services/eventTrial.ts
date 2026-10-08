@@ -5,6 +5,13 @@ export const TRIAL_EVENT_LIMIT = 3;
 
 export class TrialEventLimitError extends Error {}
 
+export const getTrialScoringBlock = (entitlement: {
+  status: string; trialEventCount: number; trialEventLimit: number;
+}, previouslyScored: boolean): string | null =>
+  entitlement.status === 'trialing' && !previouslyScored && entitlement.trialEventCount >= entitlement.trialEventLimit
+    ? `Your free trial includes ${entitlement.trialEventLimit} scored events. Activate this league to score another event.`
+    : null;
+
 export const isTrialEligible = (user: {
   role: string;
   emailVerifiedAt: Date | null;
@@ -33,9 +40,8 @@ export const reserveTrialScoredEvent = async (
     select: { eventId: true },
   });
   if (existing) return;
-  if (entitlement.trialEventCount >= entitlement.trialEventLimit) {
-    throw new TrialEventLimitError(`Your free trial includes ${entitlement.trialEventLimit} scored events. Activate this league to score another event.`);
-  }
+  const block = getTrialScoringBlock(entitlement, false);
+  if (block) throw new TrialEventLimitError(block);
 
   await tx.trial_scored_event.create({
     data: { entitlementId: league.entitlementId, eventId },

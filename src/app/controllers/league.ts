@@ -1,3 +1,4 @@
+import { backfillLeagueHandicaps } from '../services/handicapBackfill';
 import { Request, Response } from 'express';
 import crypto from 'node:crypto';
 import LeagueService from '../models/league';
@@ -12,7 +13,7 @@ import { writeAuditLog } from '../utils/audit';
 import { generateLeagueAccessCode } from './auth';
 import { localDateKey } from '../utils/time-zone';
 import { normalizeGender } from '../utils/tee-rating';
-import { lockAdminBilling, lockSeasonEntitlement } from '../services/billingLock';
+import { lockAdminBilling, lockLeagueCapacity, lockSeasonEntitlement } from '../services/billingLock';
 import { attachPendingPaymentBypassToLeague } from '../services/paymentBypassCode';
 import { normalizeLeagueHoleFormat } from '../utils/league-hole-format';
 import { calculateSeasonSkinLeaderboards } from '../utils/season-skins';
@@ -32,16 +33,12 @@ import {
 } from '../services/seasonEntitlement';
 import { sendLeagueInvitationEmail } from '../services/leagueInvitationEmail';
 import { getScoringFamilyForMode } from '../scoring';
+import { normalizeHandicapSettings, parseStartingHandicap } from '../utils/handicap-settings';
 import { normalizeTeamCount } from '../services/teamLineups';
 import { isTrialEligible, TRIAL_EVENT_LIMIT } from '../services/eventTrial';
 
 const getMissingRequiredPlayerFields = (player: any) => {
   const missing: string[] = [];
-  const handicap =
-    player?.handicap !== undefined && player?.handicap !== null && String(player.handicap).trim() !== ''
-      ? Number(player.handicap)
-      : NaN;
-
   if (!String(player?.firstName ?? '').trim()) missing.push('firstName');
   if (!String(player?.lastName ?? '').trim()) missing.push('lastName');
   try {
@@ -51,7 +48,7 @@ const getMissingRequiredPlayerFields = (player: any) => {
   }
   const type = String(player?.type || 'player').trim().toLowerCase();
   if (!['player', 'sub', 'substitute'].includes(type)) missing.push('type');
-  if (!Number.isFinite(handicap) || handicap < -10 || handicap > 54) missing.push('handicap');
+  try { parseStartingHandicap(player?.handicap); } catch { missing.push('handicap'); }
 
   return missing;
 };
@@ -111,6 +108,7 @@ class LeagueController {
       description: payload.description ? String(payload.description).trim() : null,
       type: normalizedType,
       holeFormat,
+      ...normalizeHandicapSettings({ ...payload, holeFormat }),
       format: normalizedType === 'season' ? normalizedFormat : null,
       teamRosterSize,
       teamPlayersPerEvent,
@@ -527,7 +525,7 @@ class LeagueController {
             include: {
               players: {
                 where: { deletedAt: null },
-                select: { id: true, userId: true },
+                select: { id: true, userId: true, handicap: true },
               },
               events: {
                 where: { deletedAt: null },
@@ -660,8 +658,8 @@ class LeagueController {
       }
 
       const viewerAccessCode = await LeagueController.createUniqueViewerAccessCode();
-      const renewalPlayerUsers = new Map(
-        (renewalSource?.players || []).map((player) => [player.id, player.userId]),
+      const renewalPlayers = new Map(
+        (renewalSource?.players || []).map((player) => [player.id, player]),
       );
       const submittedSourcePlayerIds = players
         .map((player: any) => Number(player?.sourcePlayerId || 0))
@@ -669,7 +667,7 @@ class LeagueController {
       if (new Set(submittedSourcePlayerIds).size !== submittedSourcePlayerIds.length) {
         return res.status(400).json({ message: 'A previous-season player can only be copied once.' });
       }
-      if (submittedSourcePlayerIds.some((playerId: number) => !renewalPlayerUsers.has(playerId))) {
+      if (submittedSourcePlayerIds.some((playerId: number) => !renewalPlayers.has(playerId))) {
         return res.status(400).json({ message: 'A copied player does not belong to the previous season.' });
       }
       const creationResult = await prisma.$transaction(async (tx) => {
@@ -682,11 +680,14 @@ class LeagueController {
         if (startTrial && !isTrialEligible(lockedAdmin)) {
           throw new Error('A free trial requires a verified league admin account.');
         }
+        let currentRenewalPlayers = renewalPlayers;
         if (renewalSourceId) {
+          await lockLeagueCapacity(tx, renewalSourceId);
           const availableSource = await tx.league.findFirst({
             where: { id: renewalSourceId, adminId, deletedAt: null },
             select: {
               endDate: true,
+              players: { where: { deletedAt: null }, select: { id: true, userId: true, handicap: true } },
               events: {
                 where: { deletedAt: null },
                 select: { status: true, type: true },
@@ -699,6 +700,10 @@ class LeagueController {
             throw new Error('This league already has a next season.');
           }
           assertCanCreateNextSeason(availableSource);
+          currentRenewalPlayers = new Map(availableSource.players.map((player) => [player.id, player]));
+          if (submittedSourcePlayerIds.some((playerId: number) => !currentRenewalPlayers.has(playerId))) {
+            throw new Error('Player does not belong to the previous season.');
+          }
         }
         const pendingLeagueBypassCodeId = getPendingLeagueBypassCodeId(lockedAdmin.metadata);
         let lockedEntitlement = await tx.league_season_entitlement.findUnique({
@@ -750,6 +755,7 @@ class LeagueController {
             description: normalizedLeagueData.description,
             type: normalizedLeagueData.type,
             holeFormat: normalizedLeagueData.holeFormat,
+            ...normalizeHandicapSettings(normalizedLeagueData),
             format: normalizedLeagueData.format,
             teamRosterSize: normalizedLeagueData.teamRosterSize,
             teamPlayersPerEvent: normalizedLeagueData.teamPlayersPerEvent,
@@ -814,9 +820,8 @@ class LeagueController {
 
           for (const player of players) {
             const sourcePlayerId = Number(player.sourcePlayerId || 0);
-            const linkedUserId = sourcePlayerId
-              ? renewalPlayerUsers.get(sourcePlayerId) ?? undefined
-              : undefined;
+            const sourcePlayer = currentRenewalPlayers.get(sourcePlayerId);
+            const linkedUserId = sourcePlayer?.userId ?? undefined;
             const createdPlayer = await tx.player.create({
               data: {
                 firstName: String(player.firstName).trim(),
@@ -828,14 +833,20 @@ class LeagueController {
                   String(player.type || 'player').trim().toLowerCase() === 'sub'
                     ? 'substitute'
                     : String(player.type || 'player').trim().toLowerCase(),
-                handicap: Number(player.handicap),
-                startingHandicap: Number(player.handicap),
+                handicap: parseStartingHandicap(player.handicap),
+                startingHandicap: parseStartingHandicap(player.handicap),
                 seasonPoints: 0,
                 seasonRank: null,
                 leagueId: createdLeague.id,
                 userId: linkedUserId,
+                renewedFromPlayerId: sourcePlayerId || null,
               },
             });
+            if (sourcePlayer && createdPlayer.handicap != null && createdPlayer.handicap !== (sourcePlayer.handicap == null ? null : Math.round(sourcePlayer.handicap * createdLeague.handicapHoleBasis / (renewalSource?.handicapHoleBasis ?? createdLeague.handicapHoleBasis) * 100) / 100)) {
+              await tx.player_handicap_adjustment.create({
+                data: { playerId: createdPlayer.id, handicap: createdPlayer.handicap, effectiveAt: createdLeague.startDate },
+              });
+            }
 
             if (player?.id !== undefined && player?.id !== null) {
               playerIdMap.set(Number(player.id), createdPlayer.id);
@@ -890,6 +901,8 @@ class LeagueController {
             }
           }
         }
+
+        if (renewalSourceId) await backfillLeagueHandicaps(tx, createdLeague.id, true);
 
         const createdLeagueWithEntitlement = await tx.league.findUniqueOrThrow({
           where: { id: createdLeague.id },
@@ -950,6 +963,7 @@ class LeagueController {
           ? 409
         : message.includes('League type') ||
         message.includes('League hole format') ||
+        /handicap/i.test(message) ||
         message.includes('Season leagues require format') ||
         message.includes('is required') ||
         message.includes('player capacity') ||
@@ -985,6 +999,10 @@ class LeagueController {
         ...req.body,
         numPlayers: nextNumPlayers,
       });
+      const immutableHandicapFields = ['handicapBestRounds', 'handicapWindow', 'handicapMultiplier', 'handicapHoleBasis', 'handicapHoleLimit'] as const;
+      if (immutableHandicapFields.some((field) => league[field] !== existingLeague[field]) || league.holeFormat !== existingLeague.holeFormat) {
+        return res.status(409).json({ message: 'Handicap settings and hole format are fixed for the season. Create a new season to change them.' });
+      }
       const datesChanged =
         league.startDate.getTime() !== existingLeague.startDate.getTime() ||
         league.endDate.getTime() !== existingLeague.endDate.getTime();
@@ -1121,6 +1139,7 @@ class LeagueController {
         ? 402
         : message.includes('League type') ||
         message.includes('League hole format') ||
+        /handicap/i.test(message) ||
         message.includes('Season leagues require format') ||
         message.includes('is required') ||
         message.includes('player capacity') ||

@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { transactionMock, txMock } = vi.hoisted(() => {
   const tx = {
     $queryRaw: vi.fn(),
-    league_season_entitlement: { findMany: vi.fn() },
+    league: { findFirst: vi.fn() },
+    league_season_entitlement: { findMany: vi.fn(), updateMany: vi.fn() },
     payment_bypass_code: {
       findUnique: vi.fn(),
       updateMany: vi.fn(),
@@ -119,6 +120,28 @@ describe('one-time payment access codes', () => {
 
     expect(txMock.payment_bypass_code.updateMany).toHaveBeenCalledTimes(1);
     expect(txMock.user.update).not.toHaveBeenCalled();
+  });
+
+  it('activates one existing trial league and records the redeemed league without exempting the account', async () => {
+    txMock.payment_bypass_code.findUnique.mockResolvedValue({id:12,redeemedAt:null,revokedAt:null,expiresAt:new Date(Date.now()+60000)});
+    txMock.user.findFirst.mockResolvedValue({id:7,metadata:{}});
+    txMock.league.findFirst.mockResolvedValue({id:42,type:'season',endDate:new Date('2099-01-01'),entitlement:{id:8,billingOwnerId:7,status:'trialing'}});
+    txMock.payment_bypass_code.updateMany.mockResolvedValue({count:1});
+    txMock.league_season_entitlement.updateMany.mockResolvedValue({count:1});
+    const billing = await redeemPaymentBypassCode(7,'COMP-AAAA-BBBB-CCCC',42);
+    expect(billing).toMatchObject({paymentExempt:false,hasPendingLeagueBypass:false});
+    expect(txMock.payment_bypass_code.updateMany).toHaveBeenCalledWith(expect.objectContaining({data:{redeemedById:7,redeemedAt:expect.any(Date),redeemedLeagueId:42}}));
+    expect(txMock.league_season_entitlement.updateMany).toHaveBeenCalledWith({where:{id:8,billingOwnerId:7,status:'trialing'},data:{status:'bypassed'}});
+    expect(txMock.user.update).not.toHaveBeenCalled();
+  });
+  it('does not consume the code for another owner or an ineligible league', async () => {
+    txMock.payment_bypass_code.findUnique.mockResolvedValue({id:12,redeemedAt:null,revokedAt:null,expiresAt:new Date(Date.now()+60000)});
+    txMock.user.findFirst.mockResolvedValue({id:7,metadata:{}});
+    for (const league of [null,{id:42,type:'season',endDate:new Date('2099-01-01'),entitlement:{id:8,billingOwnerId:9,status:'trialing'}},{id:42,type:'season',endDate:new Date('2099-01-01'),entitlement:{id:8,billingOwnerId:7,status:'paid'}},{id:42,type:'season',endDate:new Date('2000-01-01'),entitlement:{id:8,billingOwnerId:7,status:'trialing'}}]) {
+      txMock.league.findFirst.mockResolvedValue(league);
+      expect(await redeemPaymentBypassCode(7,'COMP-AAAA-BBBB-CCCC',42)).toBeNull();
+    }
+    expect(txMock.payment_bypass_code.updateMany).not.toHaveBeenCalled();
   });
 
   it('attaches the redeemed code to one league and clears the pending entitlement', async () => {

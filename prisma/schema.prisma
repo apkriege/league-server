@@ -314,6 +314,11 @@ model league {
   description           String?
   type                  String
   holeFormat            String    @default("18") @map("hole_format")
+  handicapBestRounds    Int       @default(6) @map("handicap_best_rounds")
+  handicapMultiplier    Float     @default(1) @map("handicap_multiplier")
+  handicapWindow        Int       @default(8) @map("handicap_window")
+  handicapHoleBasis     Int       @default(18) @map("handicap_hole_basis")
+  handicapHoleLimit     String    @default("handicap-adjusted") @map("handicap_hole_limit")
   viewerAccessCode      String?   @unique @map("viewer_access_code")
   format                String? // e.g. "individual", "team"
   teamRosterSize        Int       @default(4) @map("team_roster_size")
@@ -378,13 +383,14 @@ model league_scoring_period {
 model player {
   id               Int       @id @default(autoincrement())
   userId           Int?      @map("user_id")
+  renewedFromPlayerId Int?    @unique @map("renewed_from_player_id")
   firstName        String    @map("first_name")
   lastName         String    @map("last_name")
   email            String?
   phone            String?
   gender           Gender    @default(male)
-  handicap         Float
-  startingHandicap Float     @map("starting_handicap")
+  handicap         Float?
+  startingHandicap Float?    @map("starting_handicap")
   seasonPoints     Float     @map("season_points")
   seasonRank       Int?      @map("season_rank")
   type             String    @default("player") @map("type") // player, substitute
@@ -402,6 +408,8 @@ model player {
   user                user?                        @relation(fields: [userId], references: [id])
   invitations         league_invitation[]
   handicapAdjustments player_handicap_adjustment[]
+  renewedFromPlayer player? @relation("PlayerSeasonRenewal", fields: [renewedFromPlayerId], references: [id], onDelete: Restrict)
+  renewedPlayer player? @relation("PlayerSeasonRenewal")
 
   @@index([leagueId])
   @@index([teamId])
@@ -467,6 +475,7 @@ model event {
   ptsPerTeamWin       Int?      @map("pts_per_team_win")
   strokePoints        Json?     @map("stroke_points")
   pointsEnabled       Boolean   @default(true) @map("points_enabled")
+  legacyScoring       Boolean   @default(false) @map("legacy_scoring")
   teamPlayersPerEvent Int?      @map("team_players_per_event")
   status              String
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -584,6 +593,7 @@ model round {
   competitionNet   Int?      @map("competition_net")
   differential     Float?
   preHandicap      Float?    @map("pre_handicap")
+  scoringHandicap  Float?    @map("scoring_handicap")
   postHandicap     Float?    @map("post_handicap")
   pointsEarned     Float     @map("points_earned")
   matchPoints      Float     @default(0) @map("match_points")

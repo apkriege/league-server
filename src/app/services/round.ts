@@ -1,4 +1,5 @@
 import { prisma } from '../../prisma';
+import { adjustHandicapHole, normalizeHandicapSettings } from '../utils/handicap-settings';
 import { calculateStrokePops } from '../utils/tee-rating';
 import { modelEventTeeForRound } from '../utils/event-route';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
@@ -9,7 +10,7 @@ export class Round {
   private event: any;
   private tee: any;
   private player: any;
-  private playerHandicap = 0;
+  private playerHandicap: number | null = null;
   private isEdit = false;
   private round?: any;
   private db: any;
@@ -67,7 +68,7 @@ export class Round {
         putts: 0,
         courseRating: this.tee.rating,
         courseSlope: this.tee.slope,
-        playingHandicap: Math.round(this.playerHandicap),
+        playingHandicap: this.playerHandicap == null ? null : Math.round(this.playerHandicap),
         pointsEarned: this.playerRound.points || 0,
         matchPoints: this.playerRound.matchPoints || 0,
         eagles: stats.eagles,
@@ -125,7 +126,7 @@ export class Round {
         adjusted: stats.totalAdjusted,
         courseRating: this.tee.rating,
         courseSlope: this.tee.slope,
-        playingHandicap: Math.round(this.playerHandicap),
+        playingHandicap: this.playerHandicap == null ? null : Math.round(this.playerHandicap),
         pointsEarned: this.playerRound.points || 0,
         matchPoints: this.playerRound.matchPoints || 0,
         eagles: stats.eagles,
@@ -195,7 +196,7 @@ export class Round {
     if (hasInvalidScore || submittedEntries.length !== expectedHoleNumbers.size) {
       throw new Error('Scores must contain one valid stroke total for every hole.');
     }
-    const netScores = this.getNetScores(hcp, grossScores);
+    const netScores = this.getNetScores(hcp ?? 0, grossScores);
     const ecsScores = this.calculateEquitableStrokeControl(hcp, grossScores);
 
     return Object.entries(grossScores).map(([holeNum, score]) => {
@@ -228,15 +229,14 @@ export class Round {
     return netScores;
   }
 
-  private calculateEquitableStrokeControl(playerHcp: number, scores: any) {
+  private calculateEquitableStrokeControl(playerHcp: number | null, scores: any) {
     const adjustedHoles: Record<number, number> = {};
-    const pops = this.getPops(playerHcp);
+    const pops = this.getPops(playerHcp ?? 0);
+    const settings = normalizeHandicapSettings(this.event.league);
 
     for (const [hole, score] of Object.entries(scores)) {
       const par = this.tee.holes.find((h: any) => Number(h.num) === Number(hole))?.par || 0;
-      const maxAllowed = par + 2 + (pops.get(Number(hole)) || 0);
-
-      adjustedHoles[Number(hole)] = Math.min(score as number, maxAllowed);
+      adjustedHoles[Number(hole)] = adjustHandicapHole(Number(score), par, pops.get(Number(hole)) ?? 0, playerHcp, settings.handicapHoleLimit);
     }
 
     return adjustedHoles;
@@ -312,6 +312,7 @@ export class Round {
       include: {
         course: true,
         tee: true,
+        league: true,
         routeSegments: {
           orderBy: { position: 'asc' },
           include: { course: true, tee: true },
@@ -325,10 +326,9 @@ export class Round {
 
     this.event = event;
     this.tee = modelEventTeeForRound(event, this.player.gender);
-    this.playerHandicap = Number(
-      this.isEdit ? this.round?.preHandicap : this.player.handicap,
-    );
-    if (!Number.isFinite(this.playerHandicap)) {
+    const handicap = this.isEdit ? this.round?.preHandicap : this.player.handicap;
+    this.playerHandicap = handicap == null ? null : Number(handicap);
+    if (this.playerHandicap != null && !Number.isFinite(this.playerHandicap)) {
       throw new Error('Player handicap must be numeric.');
     }
   }

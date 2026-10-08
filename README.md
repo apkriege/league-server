@@ -1,5 +1,9 @@
 # Server test
 
+## Handicap documentation
+
+The configurable X/Y handicap is implemented. See [HANDICAP_PLAN.md](HANDICAP_PLAN.md) for the full specification and [HANDICAP_POLICY.md](HANDICAP_POLICY.md) for the calculation and saved-round rollout procedure. Production rollout has not been performed.
+
 ## Development
 
 Set `DATABASE_URL`, `SESSION_SECRET`, and at least one trusted client origin in `CLIENT_URL` or `CLIENT_URLS`.

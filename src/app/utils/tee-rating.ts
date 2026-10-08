@@ -1,3 +1,5 @@
+import { roundHandicap } from './usga-handicap';
+
 export type Gender = 'male' | 'female';
 export type RoundSide = 'front' | 'back';
 
@@ -201,10 +203,6 @@ export const modelTeeForRound = (
   };
 };
 
-const roundHalfUp = (value: number) => Math.round(value);
-
-const roundToOneDecimal = (value: number) => roundHalfUp(value * 10) / 10;
-
 export const calculateStrokePops = (playerHandicap: number, holes: TeeHole[]) => {
   const direction = playerHandicap < 0 ? -1 : 1;
   const sorted = [...holes].sort((left, right) =>
@@ -224,23 +222,16 @@ export const calculateStrokePops = (playerHandicap: number, holes: TeeHole[]) =>
   return pops;
 };
 
-// The USGA expected-score lookup is not published as a reusable table. Keep the
-// approximation centralized so every 9-hole entry is normalized identically.
-export const calculateExpectedNineHoleDifferential = (handicapIndex: number) =>
-  roundToOneDecimal(Number(handicapIndex) / 2 + 1.5);
-
 export const calculateRoundDifferential = (
   adjustedScore: number,
-  tee: RoundTee,
-  handicapIndex: number,
+  tee: Pick<RoundTee, 'rating' | 'slope' | 'holesPlayed'>,
+  _handicapIndex: number | null,
   handicapHoleBasis: 9 | 18 = 18,
 ) => {
+  if (!Number.isFinite(adjustedScore) || !Number.isFinite(tee.rating) || !Number.isFinite(tee.slope) || tee.slope <= 0) {
+    throw new Error('Valid adjusted score, tee rating and slope are required.');
+  }
   const playedDifferential = ((Number(adjustedScore) - tee.rating) * 113) / tee.slope;
-  const normalized =
-    handicapHoleBasis === 9 && tee.holesPlayed === 18
-      ? playedDifferential / 2
-      : tee.holesPlayed === 9 && handicapHoleBasis === 18
-      ? playedDifferential + calculateExpectedNineHoleDifferential(handicapIndex)
-      : playedDifferential;
-  return Number(normalized.toFixed(2));
+  const normalized = playedDifferential * handicapHoleBasis / tee.holesPlayed;
+  return roundHandicap(normalized);
 };

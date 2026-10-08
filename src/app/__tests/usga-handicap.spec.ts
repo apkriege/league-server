@@ -1,61 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
+import { calculateHandicapIndexFromDifferentials, getHandicapRule, roundHandicap } from '../utils/usga-handicap';
 
-describe('calculateHandicapIndexFromDifferentials', () => {
-  it('recalculates from the best available differential after every round', () => {
-    expect(calculateHandicapIndexFromDifferentials([14])).toBe(12);
-    expect(calculateHandicapIndexFromDifferentials([14, 18])).toBe(12);
+describe('actual differential selection', () => {
+  it('waits for three actual entries without inventing history', () => {
+    expect(calculateHandicapIndexFromDifferentials([])).toBeNull();
+    expect(calculateHandicapIndexFromDifferentials([4.79])).toBeNull();
+    expect(calculateHandicapIndexFromDifferentials([4.79, 11])).toBeNull();
+    expect(calculateHandicapIndexFromDifferentials([4.79, 11, 12])).toBe(2.79);
   });
-
-  it('uses the starting index as modeled history instead of replacing it after one round', () => {
-    expect(calculateHandicapIndexFromDifferentials([0], 12, 12)).toBe(10.5);
-    expect(calculateHandicapIndexFromDifferentials([0, 0], 10.5, 12)).toBe(9);
+  it.each([
+    [3, 1, -2], [4, 1, -1], [5, 1, 0], [6, 2, -1], [7, 2, 0], [8, 2, 0],
+    [9, 3, 0], [11, 3, 0], [12, 4, 0], [14, 4, 0], [15, 5, 0], [16, 5, 0],
+    [17, 6, 0], [18, 6, 0], [19, 7, 0], [20, 8, 0],
+  ])('selects the table rule for %i scores', (rounds, count, adjustment) => {
+    expect(getHandicapRule(rounds)).toEqual({ count, adjustment });
+    expect(getHandicapRule(rounds, 9)).toEqual({ count, adjustment: adjustment / 2 });
   });
-
-  it('moves an established index gradually as league rounds replace modeled history', () => {
-    const startingIndex = 12;
-    const differentials = [8, 8, 8];
-    let currentIndex = startingIndex;
-    const progression = differentials.map((_, index) => {
-      currentIndex =
-        calculateHandicapIndexFromDifferentials(
-          differentials.slice(0, index + 1),
-          currentIndex,
-          startingIndex,
-        ) ?? currentIndex;
-      return currentIndex;
-    });
-
-    expect(progression).toEqual([11.5, 11, 10.5]);
+  it('uses only the last twenty and preserves league precision', () => {
+    expect(calculateHandicapIndexFromDifferentials([-20, ...Array.from({ length: 20 }, (_, index) => index + 1)])).toBe(4.5);
+    expect(calculateHandicapIndexFromDifferentials([10.1, 10.2, 18, 19, 20, 21, 22])).toBe(10.15);
   });
-
-  it('does not raise an established index because of a single high differential', () => {
-    expect(calculateHandicapIndexFromDifferentials([24], 12, 12)).toBe(12);
+  it('rounds decimal half-strokes consistently instead of inheriting binary floating-point errors', () => {
+    expect(roundHandicap(10.075)).toBe(10.08);
+    expect(roundHandicap(-10.075)).toBe(-10.07);
+    expect(calculateHandicapIndexFromDifferentials([10.07, 10.08, 18, 19, 20, 21, 22])).toBe(10.08);
+    expect(() => calculateHandicapIndexFromDifferentials([12, 13, NaN, 14])).toThrow('Invalid');
   });
-
-  it('uses the early-round adjustment table', () => {
-    expect(calculateHandicapIndexFromDifferentials([12, 15, 18])).toBe(10);
-    expect(calculateHandicapIndexFromDifferentials([12, 15, 18, 20])).toBe(11);
-    expect(calculateHandicapIndexFromDifferentials([12, 15, 18, 20, 22])).toBe(12);
-    expect(calculateHandicapIndexFromDifferentials([10, 12, 18, 19, 20, 21])).toBe(10);
-  });
-
-  it('preserves handicap precision to the hundredths place', () => {
-    expect(calculateHandicapIndexFromDifferentials([10.1, 10.2, 18, 19, 20, 21, 22])).toBe(
-      10.15,
-    );
-  });
-
-  it('uses the lowest eight of the latest twenty differentials', () => {
-    const staleLowDifferential = -20;
-    const latestTwenty = Array.from({ length: 20 }, (_, index) => index + 1);
-
-    expect(
-      calculateHandicapIndexFromDifferentials([staleLowDifferential, ...latestTwenty]),
-    ).toBe(4.5);
-  });
-
-  it('applies the configured increase caps against the previous index', () => {
-    expect(calculateHandicapIndexFromDifferentials(Array(20).fill(30), 10)).toBe(15);
+  it('caps against an established low index only after twenty entries', () => {
+    expect(calculateHandicapIndexFromDifferentials(Array(19).fill(30), { lowIndex: 10 })).toBe(30);
+    expect(calculateHandicapIndexFromDifferentials(Array(20).fill(30), { lowIndex: 10 })).toBe(15);
+    expect(calculateHandicapIndexFromDifferentials(Array(20).fill(15), { basis: 9, lowIndex: 5 })).toBe(7.5);
   });
 });

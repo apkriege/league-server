@@ -1,3 +1,7 @@
+import { getTrialScoringBlock } from "../services/eventTrial";
+import { calculateLeagueHandicap } from '../utils/league-handicap';
+import { normalizeHandicapSettings } from '../utils/handicap-settings';
+import { loadPreviousHandicapHistory, toHandicapSourceRound } from '../services/playerHandicapHistory';
 import { lockScoringEvent } from '../services/scoringTransaction';
 import { removeUnscoredEvent } from '../services/unscoredEvent';
 import { prisma } from '../../prisma';
@@ -147,7 +151,8 @@ class EventController {
           where: { id: eventId, leagueId, deletedAt: null },
           include: {
             _count: { select: { rounds: true, teamRounds: true } },
-            league: { select: { holeFormat: true } },
+            trialUsage: { select: { entitlementId: true } },
+            league: { select: { entitlement: { select: { id: true, status: true, trialEventLimit: true, trialEventCount: true } }, holeFormat: true, handicapBestRounds: true, handicapWindow: true, handicapHoleBasis: true, handicapMultiplier: true, handicapHoleLimit: true } },
             course: true,
             tee: true,
             routeSegments: {
@@ -212,7 +217,10 @@ class EventController {
 
       const historicalHandicaps = await getHistoricalEventHandicaps(event);
 
+      const trialLimitMessage = canManageScores ? getTrialScoringBlock(event.league.entitlement,
+        event.trialUsage.some((usage) => usage.entitlementId === event.league.entitlement.id)) : null;
       const eventWithMetrics = {
+        trialLimitMessage,
         ...addEventRoundSetup(event, historicalHandicaps),
         ...(canManageScores
           ? buildEventScoreAccess(event)
@@ -1284,47 +1292,32 @@ const validateTeeForEventParticipants = (
   }
 };
 
-const getHistoricalEventHandicaps = async (event: any) => {
-  const playerIds = (event.flights || []).flatMap((flight: any) =>
-    (flight.players || []).map((entry: any) => Number(entry.playerId)),
-  );
-  const priorRounds = await prisma.round.findMany({
-    where: {
-      playerId: { in: playerIds },
-      status: 'completed',
-      deletedAt: null,
-      event: {
-        leagueId: Number(event.leagueId),
-        startsAt: { lt: event.startsAt },
-        deletedAt: null,
+const getHistoricalEventHandicaps = async (event: { leagueId: number; id: number; startsAt: Date }) => {
+  const league = await prisma.league.findUniqueOrThrow({ where: { id: event.leagueId } });
+  const settings = normalizeHandicapSettings(league);
+  const players = await prisma.player.findMany({
+    where: { leagueId: event.leagueId, deletedAt: null },
+    include: {
+      handicapAdjustments: { where: { effectiveAt: { lte: event.startsAt } }, orderBy: [{ effectiveAt: 'asc' }, { id: 'asc' }] },
+      rounds: {
+        where: { status: 'completed', deletedAt: null, event: { deletedAt: null, status: { not: 'canceled' },
+          OR: [{ startsAt: { lt: event.startsAt } }, { startsAt: event.startsAt, id: { lt: event.id } }] } },
+        include: { event: { select: { id: true, name: true, startsAt: true } }, scores: true },
       },
     },
-    select: { playerId: true, postHandicap: true, event: { select: { startsAt: true } } },
-    orderBy: [{ date: 'desc' }, { id: 'desc' }],
   });
-  const handicaps = new Map<number, number>();
-  const dates = new Map<number, number>();
-  for (const round of priorRounds) {
-    const handicap = Number(round.postHandicap);
-    if (round.postHandicap != null && !handicaps.has(round.playerId) && Number.isFinite(handicap)) {
-      handicaps.set(round.playerId, handicap);
-      dates.set(round.playerId, round.event.startsAt.getTime());
-    }
-  }
-  const adjustments = await prisma.player_handicap_adjustment.findMany({
-    where: { playerId: { in: playerIds }, effectiveAt: { lte: event.startsAt } },
-    orderBy: [{ effectiveAt: 'asc' }, { id: 'asc' }],
-  });
-  for (const adjustment of adjustments) {
-    if (adjustment.effectiveAt.getTime() >= (dates.get(adjustment.playerId) ?? -Infinity)) {
-      handicaps.set(adjustment.playerId, adjustment.handicap);
-      dates.set(adjustment.playerId, adjustment.effectiveAt.getTime());
-    }
+  const handicaps = new Map<number, number | null>();
+  for (const player of players) {
+    const previous = await loadPreviousHandicapHistory(prisma, league.renewedFromLeagueId, player, settings.handicapHoleBasis);
+    const rounds = [...previous.rounds, ...player.rounds.flatMap((round) => toHandicapSourceRound(round, settings.handicapHoleBasis))];
+    const adjustments = [...previous.adjustments, ...player.handicapAdjustments.map((adjustment) => ({ handicap: adjustment.handicap, effectiveAt: adjustment.effectiveAt.toISOString() }))];
+    handicaps.set(player.id, calculateLeagueHandicap(rounds, previous.startingHandicap ?? player.startingHandicap,
+      settings.handicapHoleBasis, adjustments, settings).index);
   }
   return handicaps;
 };
 
-const addEventRoundSetup = (event: any, historicalHandicaps = new Map<number, number>()) => {
+const addEventRoundSetup = (event: any, historicalHandicaps = new Map<number, number | null>()) => {
   const maleSelection = selectEventRouteHoles(event, 'male');
   const womenSelection = selectEventRouteHoles(event, 'female');
   const sharedSnapshotHandicaps = new Map<number, number>();
@@ -1357,16 +1350,19 @@ const addEventRoundSetup = (event: any, historicalHandicaps = new Map<number, nu
       players: (flight.players || []).map((entry: any) => {
         const player = entry.player;
         const existingRound = player?.rounds?.[0];
-        const handicapIndex = Number(
-          existingRound?.preHandicap ??
-            sharedSnapshotHandicaps.get(Number(entry.playerId)) ??
-            historicalHandicaps.get(Number(entry.playerId)) ??
-            player?.startingHandicap ??
-            player?.handicap,
-        );
+        const handicapIndex = existingRound?.scoringHandicap ?? existingRound?.preHandicap ??
+          sharedSnapshotHandicaps.get(Number(entry.playerId)) ??
+          (historicalHandicaps.has(Number(entry.playerId)) ? historicalHandicaps.get(Number(entry.playerId)) : player?.startingHandicap) ?? null;
+        const needsFirstRoundHandicap = existingRound ? existingRound.preHandicap == null : handicapIndex == null;
+        const firstRoundTee = needsFirstRoundHandicap ? modelEventTeeForRound(event, player?.gender) : null;
         return {
           ...entry,
           handicapIndex,
+          firstRoundHandicap: firstRoundTee ? {
+            ...normalizeHandicapSettings(event.league),
+            rating: firstRoundTee.rating,
+            slope: firstRoundTee.slope,
+          } : null,
         };
       }),
     })),

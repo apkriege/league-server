@@ -151,8 +151,8 @@ export const persistSharedTeamRounds = async ({
 
     const playerHandicaps = assignments.map((assignment) => {
       const playerHandicap = Number(assignment.player.handicap);
-      if (!Number.isFinite(playerHandicap)) {
-        throw new Error(`Player ${assignment.playerId} has an invalid handicap.`);
+      if (assignment.player.handicap == null || !Number.isFinite(playerHandicap)) {
+        throw new Error(`Player ${assignment.playerId} needs a starting handicap or a completed individual round before shared-team net scoring.`);
       }
       return {
         playerId: assignment.playerId,

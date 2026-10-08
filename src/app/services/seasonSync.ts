@@ -4,8 +4,10 @@ import { dateOnlyInTimeZone } from '../utils/time-zone';
 import { calculateRoundDifferential, calculateStrokePops } from '../utils/tee-rating';
 import { modelEventTeeForRound, selectEventRouteHoles } from '../utils/event-route';
 import { normalizeEventFormat } from '../utils/event-mode';
-import { calculateHandicapIndexFromDifferentials } from '../utils/usga-handicap';
-import { getHandicapHoleBasis, type HandicapHoleBasis } from '../utils/league-hole-format';
+import { calculateLeagueHandicap, type HandicapRound, type HandicapAdjustment } from '../utils/league-handicap';
+import { type HandicapHoleBasis } from '../utils/league-hole-format';
+import { adjustHandicapHole, normalizeHandicapSettings, type HandicapSettings } from '../utils/handicap-settings';
+import { loadPreviousHandicapHistory, toHandicapSourceRound } from './playerHandicapHistory';
 import {
   addTeamEventPoints,
   applyMaximumScore,
@@ -49,16 +51,17 @@ type ScoreStats = {
 
 type PlayerSeasonState = {
   id: number;
-  startingHandicap: number;
-  currentHandicap: number;
-  differentials: number[];
+  startingHandicap: number | null;
+  currentHandicap: number | null;
+  handicapRounds: HandicapRound[];
+  handicapAdjustments: HandicapAdjustment[];
   seasonPoints: number;
   roundsUpdated: number;
 };
 
 type RoundCalculation = ScoringRound & {
   round: any;
-  preHandicap: number;
+  preHandicap: number | null;
   postHandicap: number;
   differential: number;
   adjusted: number;
@@ -153,11 +156,19 @@ const calculateNextHandicap = ({
   adjustedScore,
   tee,
   handicapHoleBasis,
+  handicapSettings,
+  roundId,
+  eventId,
+  playedAt,
 }: {
   state: PlayerSeasonState;
   adjustedScore: number;
-  tee: any;
+  tee: ReturnType<typeof modelEventTeeForRound>;
   handicapHoleBasis: HandicapHoleBasis;
+  handicapSettings: HandicapSettings;
+  roundId: number;
+  eventId: number;
+  playedAt: string;
 }) => {
   const differential = calculateRoundDifferential(
     adjustedScore,
@@ -165,19 +176,16 @@ const calculateNextHandicap = ({
     state.currentHandicap,
     handicapHoleBasis,
   );
-  const previousDifferentials = state.differentials.slice(-19);
-  const differentials = [...previousDifferentials, differential];
-  const preHandicap = state.currentHandicap;
-  const nextHandicap =
-    calculateHandicapIndexFromDifferentials(
-      differentials,
-      preHandicap,
-      state.startingHandicap,
-    ) ?? preHandicap;
+  const handicapRound: HandicapRound = { id: roundId, eventId, differential, holes: tee.holesPlayed, playedAt };
+  const nextHandicap = calculateLeagueHandicap(
+    [...state.handicapRounds, handicapRound], state.startingHandicap, handicapHoleBasis,
+    state.handicapAdjustments.filter((adjustment) => Date.parse(adjustment.effectiveAt) <= Date.parse(playedAt)), handicapSettings,
+  ).index;
 
   return {
     differential,
     handicap: nextHandicap,
+    handicapRound,
   };
 };
 
@@ -185,13 +193,15 @@ const buildModeledScores = ({
   scoreRows,
   holes,
   handicap,
+  holeLimit,
 }: {
   scoreRows: any[];
   holes: ScoringHole[];
-  handicap: number;
+  handicap: number | null;
+  holeLimit: HandicapSettings['handicapHoleLimit'];
 }) => {
   const holeByNumber = new Map(holes.map((hole) => [hole.num, hole]));
-  const pops = calculateStrokeplayPops(handicap, holes);
+  const pops = calculateStrokeplayPops(handicap ?? 0, holes);
 
   return scoreRows
     .map((score: any) => {
@@ -207,7 +217,7 @@ const buildModeledScores = ({
         hole: holeNumber,
         par: hole.par,
         gross,
-        adjusted: Math.min(gross, hole.par + 2 + popCount),
+        adjusted: adjustHandicapHole(gross, hole.par, popCount, handicap, holeLimit),
         net: gross - popCount,
         pops: popCount,
       } satisfies ScoredHole;
@@ -217,13 +227,16 @@ const buildModeledScores = ({
 };
 
 const initializePlayerState = (player: any): PlayerSeasonState => {
-  const startingHandicap = toNumber(player?.startingHandicap, toNumber(player?.handicap, 0));
+  const startingHandicap = player.startingHandicap == null ? null : Number(player.startingHandicap);
 
   return {
     id: Number(player.id),
     startingHandicap,
     currentHandicap: startingHandicap,
-    differentials: [],
+    handicapRounds: [],
+    handicapAdjustments: (player.handicapAdjustments ?? []).map((adjustment: { handicap: number; effectiveAt: Date }) => ({
+      handicap: adjustment.handicap, effectiveAt: adjustment.effectiveAt.toISOString(),
+    })),
     seasonPoints: 0,
     roundsUpdated: 0,
   };
@@ -257,12 +270,14 @@ const recalculateEvent = async ({
   playerStates,
   teamPoints,
   handicapHoleBasis,
+  handicapSettings,
 }: {
   tx: PrismaTx;
   event: any;
   playerStates: Map<number, PlayerSeasonState>;
   teamPoints: TeamEventPointsAccumulator;
   handicapHoleBasis: HandicapHoleBasis;
+  handicapSettings: HandicapSettings;
 }) => {
   const holes = normalizeHoles(selectEventRouteHoles(event, 'male').holes);
   const flightPlayerLookup = getFlightPlayerLookup(event);
@@ -277,21 +292,38 @@ const recalculateEvent = async ({
     const preHandicap = playerState.currentHandicap;
     const tee = modelEventTeeForRound(event, round.player?.gender);
     const playerHoles = normalizeHoles(tee.holes);
-    const scores = buildModeledScores({
+    let scores = buildModeledScores({
       scoreRows,
       holes: playerHoles,
       handicap: preHandicap,
+      holeLimit: handicapSettings.handicapHoleLimit,
     });
 
-    if (scores.length === 0) continue;
+    if (scoreRows.length !== tee.holesPlayed || scores.length !== tee.holesPlayed || new Set(scores.map((score) => score.hole)).size !== tee.holesPlayed) {
+      throw new Error(`Round ${round.id} must have a complete, unique hole scorecard before recalculation.`);
+    }
+    if (scores.some((score) => !Number.isInteger(score.gross) || score.gross <= 0)) {
+      throw new Error(`Round ${round.id} contains an invalid gross score.`);
+    }
 
-    const stats = calculateStats(scores);
+    let stats = calculateStats(scores);
     const handicapData = calculateNextHandicap({
       state: playerState,
       adjustedScore: stats.totalAdjusted,
       tee,
       handicapHoleBasis,
+      handicapSettings,
+      roundId: Number(round.id),
+      eventId: Number(event.id),
+      playedAt: new Date(event.startsAt).toISOString(),
     });
+    const scoringHandicap = preHandicap ?? handicapData.handicap;
+    if (scoringHandicap == null || handicapData.handicap == null) throw new Error('A complete individual round must establish a handicap.');
+    if (preHandicap == null) {
+      const pops = calculateStrokeplayPops(scoringHandicap, playerHoles);
+      scores = scores.map((score) => ({ ...score, pops: pops.get(score.hole) ?? 0, net: score.gross - (pops.get(score.hole) ?? 0) }));
+      stats = calculateStats(scores);
+    }
     const flightPlayer = flightPlayerLookup.get(Number(round.playerId));
     const opponentId = toNumber(round.opponentId ?? flightPlayer?.opponentId, 0) || null;
     const teamId = toNumber(flightPlayer?.teamId ?? round.player?.teamId, 0) || null;
@@ -302,7 +334,7 @@ const recalculateEvent = async ({
       teamId,
       opponentId,
       preHandicap,
-      playerHandicap: preHandicap,
+      playerHandicap: scoringHandicap,
       postHandicap: handicapData.handicap,
       differential: handicapData.differential,
       gross: stats.totalGross,
@@ -320,7 +352,7 @@ const recalculateEvent = async ({
     calculationsByPlayerId.set(calculation.playerId, calculation);
 
     playerState.currentHandicap = handicapData.handicap;
-    playerState.differentials.push(handicapData.differential);
+    playerState.handicapRounds.push(handicapData.handicapRound);
     playerState.roundsUpdated += 1;
   }
 
@@ -451,7 +483,8 @@ const recalculateEvent = async ({
         competitionGross: calculation.competitionGross ?? calculation.gross,
         competitionNet: calculation.competitionNet ?? calculation.net,
         differential: calculation.differential,
-        preHandicap: roundToTwoDecimals(calculation.preHandicap),
+        preHandicap: calculation.preHandicap == null ? null : roundToTwoDecimals(calculation.preHandicap),
+        scoringHandicap: calculation.playerHandicap,
         postHandicap: calculation.postHandicap,
         pointsEarned: roundToOneDecimal(calculation.pointsEarned),
         matchPoints: roundToOneDecimal(calculation.matchPoints),
@@ -572,6 +605,7 @@ export class SeasonSync {
               include: {
                 course: true,
                 tee: true,
+                teamEventPoints: true,
                 routeSegments: {
                   orderBy: { position: 'asc' },
                   include: { course: true, tee: true },
@@ -622,7 +656,19 @@ export class SeasonSync {
         }
 
         const teamPoints: TeamEventPointsAccumulator = new Map();
-        const handicapHoleBasis = getHandicapHoleBasis(league.holeFormat);
+        const handicapSettings = normalizeHandicapSettings(league);
+        const handicapHoleBasis = handicapSettings.handicapHoleBasis;
+        for (const player of league.players) {
+          const state = playerStates.get(player.id);
+          if (!state) continue;
+          const previous = await loadPreviousHandicapHistory(tx, league.renewedFromLeagueId, player, handicapHoleBasis);
+          if (previous.startingHandicap != null || previous.rounds.length > 0) {
+            state.startingHandicap = previous.startingHandicap;
+            state.handicapRounds = previous.rounds;
+            state.handicapAdjustments = [...previous.adjustments, ...state.handicapAdjustments];
+            state.currentHandicap = calculateLeagueHandicap(previous.rounds, previous.startingHandicap, handicapHoleBasis, previous.adjustments, handicapSettings).index;
+          }
+        }
         const skippedEvents: SeasonSyncResult['skippedEvents'] = [];
 
         await tx.team_event_points.deleteMany({
@@ -658,6 +704,20 @@ export class SeasonSync {
 
         for (const event of league.events || []) {
           applyAdjustments(new Date(event.startsAt).getTime());
+          if (event.legacyScoring) {
+            for (const round of event.rounds) {
+              const state = playerStates.get(round.playerId);
+              if (!state) continue;
+              state.seasonPoints += round.pointsEarned + round.matchPoints;
+              if (round.status !== 'completed') continue;
+              state.handicapRounds.push(...toHandicapSourceRound({ ...round, event }, handicapHoleBasis));
+              state.currentHandicap = calculateLeagueHandicap(state.handicapRounds, state.startingHandicap, handicapHoleBasis,
+                state.handicapAdjustments.filter((adjustment) => Date.parse(adjustment.effectiveAt) <= event.startsAt.getTime()), handicapSettings).index;
+            }
+            for (const row of event.teamEventPoints) addTeamEventPoints(teamPoints, leagueId, event.id, row.teamId, row.points);
+            eventsProcessed += 1;
+            continue;
+          }
           if ((event.teamRounds || []).length > 0) {
             for (const flight of event.flights || []) {
               const flightTeamRounds = (event.teamRounds || []).filter(
@@ -670,7 +730,7 @@ export class SeasonSync {
                 if (!state) continue;
                 await tx.player.update({
                   where: { id: state.id },
-                  data: { handicap: roundToTwoDecimals(state.currentHandicap) },
+                  data: { handicap: state.currentHandicap == null ? null : roundToTwoDecimals(state.currentHandicap) },
                 });
               }
 
@@ -724,6 +784,7 @@ export class SeasonSync {
             playerStates,
             teamPoints,
             handicapHoleBasis,
+            handicapSettings,
           });
 
           if (eventResult.roundsUpdated === 0) {
@@ -786,7 +847,7 @@ export class SeasonSync {
           await tx.player.update({
             where: { id: state.id },
             data: {
-              handicap: roundToTwoDecimals(state.currentHandicap),
+              handicap: state.currentHandicap == null ? null : roundToTwoDecimals(state.currentHandicap),
               seasonPoints: roundToOneDecimal(state.seasonPoints),
               seasonRank: playerRanks.get(state.id) ?? null,
             },

@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../prisma';
-import { lockAdminBilling } from './billingLock';
+import { isLeagueSeasonExpired } from './leagueLifecycle';
+import { lockAdminBilling, lockSeasonEntitlement } from './billingLock';
 import {
   getAllocatedGolfersForAdmin,
   getBillingState,
@@ -119,7 +120,8 @@ export const attachPendingPaymentBypassToLeague = async (
   return true;
 };
 
-export const redeemPaymentBypassCode = async (userId: number, rawCode: unknown) => {
+export const redeemPaymentBypassCode = async (userId: number, rawCode: unknown, leagueId?: number) => {
+  if (leagueId !== undefined && (!Number.isInteger(leagueId) || leagueId <= 0)) return null;
   const normalizedCode = normalizePaymentBypassCode(rawCode);
   if (normalizedCode.length < 8 || normalizedCode.length > 128) return null;
   const codeHash = hashPaymentBypassCode(normalizedCode);
@@ -137,10 +139,15 @@ export const redeemPaymentBypassCode = async (userId: number, rawCode: unknown) 
             select: { id: true, metadata: true },
           });
           if (!user) throw new Error('User not found');
-          const allocatedGolfers = await getAllocatedGolfersForAdmin(user.id, undefined, tx);
-          // Each account can hold only one pending one-league bypass. Do not consume another code
-          // until the first entitlement has been attached to a newly created league.
-          if (getPendingLeagueBypassCodeId(user.metadata)) {
+          const league = leagueId === undefined ? null : await tx.league.findFirst({
+            where: { id: leagueId, adminId: userId, deletedAt: null, seasonStatus: 'active' },
+            select: { id: true, type: true, endDate: true, entitlement: { select: { id: true, billingOwnerId: true, status: true } } },
+          });
+          if (leagueId !== undefined && (!league || league.entitlement.billingOwnerId !== userId ||
+            league.entitlement.status !== 'trialing' || isLeagueSeasonExpired(league))) return null;
+          if (league) await lockSeasonEntitlement(tx, league.entitlement.id);
+          // The creation flow reserves only one pending one-league bypass per account.
+          if (!league && getPendingLeagueBypassCodeId(user.metadata)) {
             return null;
           }
 
@@ -152,9 +159,18 @@ export const redeemPaymentBypassCode = async (userId: number, rawCode: unknown) 
               revokedAt: null,
               OR: [{ expiresAt: null }, { expiresAt: { gt: redeemedAt } }],
             },
-            data: { redeemedById: userId, redeemedAt },
+            data: { redeemedById: userId, redeemedAt, ...(league ? { redeemedLeagueId: league.id } : {}) },
           });
           if (claimed.count !== 1) return null;
+
+          if (league) {
+            const activated = await tx.league_season_entitlement.updateMany({
+              where: { id: league.entitlement.id, billingOwnerId: userId, status: 'trialing' },
+              data: { status: 'bypassed' },
+            });
+            if (activated.count !== 1) throw new Error('League billing changed. Please try again.');
+            return getBillingState(user.metadata, await getAllocatedGolfersForAdmin(user.id, undefined, tx));
+          }
 
           const updatedUser = await tx.user.update({
             where: { id: user.id },
@@ -166,7 +182,7 @@ export const redeemPaymentBypassCode = async (userId: number, rawCode: unknown) 
             },
             select: { metadata: true },
           });
-          return getBillingState(updatedUser.metadata, allocatedGolfers);
+          return getBillingState(updatedUser.metadata, await getAllocatedGolfersForAdmin(user.id, undefined, tx));
         },
         { isolationLevel: 'Serializable' },
       );

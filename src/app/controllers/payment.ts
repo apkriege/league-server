@@ -790,15 +790,19 @@ class PaymentController {
       const userId = req.session.userId;
       if (!userId) return res.status(401).json({ message: 'Not authenticated' });
 
-      const billing = await redeemPaymentBypassCode(userId, req.body?.code);
+      const leagueId = req.body?.leagueId === undefined ? undefined : Number(req.body.leagueId);
+      if (leagueId !== undefined && (!Number.isInteger(leagueId) || leagueId <= 0)) {
+        return res.status(400).json({ message: 'A valid league ID is required.' });
+      }
+      const billing = await redeemPaymentBypassCode(userId, req.body?.code, leagueId);
       if (!billing) {
         return res.status(400).json({
-          message: 'That payment access code is invalid, expired, revoked, or already used.',
+          message: 'That code is invalid, expired, revoked, already used, or cannot be applied to this league.',
         });
       }
 
       return res.status(200).json({
-        message: 'Payment access code applied to your next league creation.',
+        message: leagueId === undefined ? 'Payment access code applied to your next league creation.' : 'Your league is activated for this season. No checkout is needed.',
         billing,
       });
     } catch (error) {

@@ -53,7 +53,7 @@ async function main() {
     } });
     const league = await prisma.league.create({ data: {
       name: scenario.name, description: 'Local demo fixture for the current league workflow.',
-      type: 'season', format: 'individual', holeFormat: '9', adminId: admin.id,
+      type: 'season', format: 'individual', holeFormat: '9', handicapHoleBasis: 9, adminId: admin.id,
       entitlementId: entitlement.id, viewerAccessCode: `DEMO${scenarioIndex + 1}`,
       startDate: date(scenario.archived ? -120 : -21), endDate: date(scenario.archived ? -30 : 90),
       contactFirstName: 'Adam', contactLastName: 'Admin', contactEmail: admin.email,

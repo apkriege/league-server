@@ -46,6 +46,9 @@ describe('deployment configuration', () => {
       '20260926000000_add_course_requests',
       '20260928000000_course_fulfillment_and_event_trial',
       '20261001000000_normalize_player_types',
+      '20261006000000_link_player_handicap_history',
+      '20261006010000_configurable_league_handicap',
+      '20261006020000_handicap_multiplier',
     ]);
     for (const migrationDirectory of migrationDirectories) {
       expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(

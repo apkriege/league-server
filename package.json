@@ -23,7 +23,8 @@
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down -v",
     "audit:prod": "npm audit --omit=dev --audit-level=high",
-    "verify": "npm run typecheck && npm test && npm run build"
+    "verify": "npm run typecheck && npm test && npm run build",
+    "handicap:backfill": "node dist/src/scripts/backfillHandicaps.js"
   },
   "keywords": [],
   "author": "",

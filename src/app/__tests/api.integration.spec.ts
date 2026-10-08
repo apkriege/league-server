@@ -1099,6 +1099,15 @@ describe('API integration', () => {
           ).gross;
       expect(savedGross, `${mode} persisted edit`).toBe(6);
     }
+    const leagueIds = [...new Set(events.map((event) => event.leagueId))];
+    const players = await prisma.player.findMany({ where: { leagueId: { in: leagueIds }, deletedAt: null }, select: { id: true, leagueId: true, handicap: true } });
+    for (const player of players) {
+      const stats = await admin.get(`/api/leagues/${player.leagueId}/players/${player.id}/stats`);
+      expect(stats.status).toBe(200);
+      expect(stats.body.handicapCalculation.index).toBe(player.handicap);
+      expect(stats.body.handicapCalculation.storedHandicap).toBe(player.handicap);
+      expect(stats.body.handicapCalculation.sourceRounds).toHaveLength(await prisma.round.count({ where: { playerId: player.id, deletedAt: null, status: 'completed' } }));
+    }
   }, 60_000);
 
   it('previews an event with each player handicap from the latest prior round', async () => {

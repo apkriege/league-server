@@ -30,7 +30,7 @@ type MetricRound = {
   player: {
     firstName: string;
     lastName: string;
-    handicap: number;
+    handicap: number | null;
   };
   scores: Array<{
     hole: number;

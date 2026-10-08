@@ -16,6 +16,7 @@ const event = {
   startsAt: new Date('2026-04-16T12:00:00.000Z'),
   timeZone: 'America/Detroit',
   course: { numHoles: 18 },
+  league: { holeFormat: '9' },
   scoringMode: 'match-play',
   deletedAt: null,
   tee: {

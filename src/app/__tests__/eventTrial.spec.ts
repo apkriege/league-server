@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isTrialEligible, reserveTrialScoredEvent, TrialEventLimitError } from '../services/eventTrial';
+import { getTrialScoringBlock, isTrialEligible, reserveTrialScoredEvent, TrialEventLimitError } from '../services/eventTrial';
 
 const makeTx = (count: number, existing = false) => ({
   $queryRaw: vi.fn().mockResolvedValue([]),
@@ -39,5 +39,18 @@ describe('scored-event trial', () => {
     const tx = makeTx(3);
     await expect(reserveTrialScoredEvent(tx as never, 4, 10)).rejects.toBeInstanceOf(TrialEventLimitError);
     expect(tx.trial_scored_event.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('trial score entry', () => {
+  const trial = {status:'trialing',trialEventLimit:3,trialEventCount:3};
+  it('blocks a new event when the free events are used', () => {
+    expect(getTrialScoringBlock(trial,false)).toContain('3 scored events');
+  });
+  it('allows existing trial events and leagues with remaining allowance or paid access', () => {
+    expect(getTrialScoringBlock(trial,true)).toBeNull();
+    expect(getTrialScoringBlock({...trial,trialEventCount:2},false)).toBeNull();
+    expect(getTrialScoringBlock({...trial,status:'paid'},false)).toBeNull();
+    expect(getTrialScoringBlock({...trial,status:'bypassed'},false)).toBeNull();
   });
 });

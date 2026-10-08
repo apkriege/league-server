@@ -212,6 +212,7 @@ export default class ScoreController {
         const event = await lockScoringEvent(tx, leagueId, eventId, false);
         await reserveTrialScoredEvent(tx, leagueId, eventId);
         const before = await readFlightScoreSnapshot(tx, eventId, flightId);
+        await tx.event.update({ where: { id: eventId }, data: { legacyScoring: false } });
         const saveScores = async () => {
           const scoringMode = getScoringMode(event.scoringMode);
           if (scoringMode.scoreInput === 'shared-team-score') {
@@ -328,6 +329,7 @@ export default class ScoreController {
       await prisma.$transaction(async (tx) => {
         const event = await lockScoringEvent(tx, leagueId, eventId, true);
         const before = await readFlightScoreSnapshot(tx, eventId, flightId);
+        await tx.event.update({ where: { id: eventId }, data: { legacyScoring: false } });
         const saveScores = async () => {
           const scoringMode = getScoringMode(event.scoringMode);
           if (scoringMode.scoreInput === 'shared-team-score') {

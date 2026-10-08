@@ -209,7 +209,7 @@ describe('round handicap calculations', () => {
     expect(calculateRoundDifferential(80, modeled, 5, 9)).toBe(5.14);
   });
 
-  it('normalizes a 9-hole differential to the 18-hole scale', () => {
+  it('normalizes a real nine-hole differential to the eighteen-hole basis', () => {
     const modeled = modelTeeForRound(
       { ...tee, ratingFrontMen: 35, slopeFrontMen: 113 },
       9,
@@ -217,7 +217,7 @@ describe('round handicap calculations', () => {
       { courseHoles: 18, gender: 'male' },
     );
 
-    expect(calculateRoundDifferential(42.2, modeled, 14)).toBe(15.7);
+    expect(calculateRoundDifferential(42.2, modeled, 14)).toBe(14.4);
   });
 
   it('keeps a 9-hole differential on the 9-hole scale for a 9-hole league', () => {

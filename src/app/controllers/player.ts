@@ -3,7 +3,9 @@ import { Prisma } from '@prisma/client';
 import PlayerService from '../models/player';
 import { prisma } from '../../prisma';
 import { writeAuditLog } from '../utils/audit';
-import { getHandicapHoleBasis } from '../utils/league-hole-format';
+import { normalizeHandicapSettings, parseStartingHandicap } from '../utils/handicap-settings';
+import { calculateLeagueHandicap } from '../utils/league-handicap';
+import { loadPreviousHandicapHistory, toHandicapSourceRound } from '../services/playerHandicapHistory';
 import { normalizeGender, type Gender } from '../utils/tee-rating';
 import { lockLeagueCapacity } from '../services/billingLock';
 import { buildTeamEventResults } from '../utils/team-event-results';
@@ -105,11 +107,6 @@ const getSeasonLeagueIds = (
 
 const getMissingRequiredPlayerFields = (payload: any) => {
   const missing: string[] = [];
-  const handicap =
-    payload.handicap !== undefined && payload.handicap !== null && String(payload.handicap).trim() !== ''
-      ? Number(payload.handicap)
-      : NaN;
-
   if (!String(payload.firstName ?? '').trim()) missing.push('firstName');
   if (!String(payload.lastName ?? '').trim()) missing.push('lastName');
   try {
@@ -117,7 +114,7 @@ const getMissingRequiredPlayerFields = (payload: any) => {
   } catch {
     missing.push('gender');
   }
-  if (!Number.isFinite(handicap)) missing.push('handicap');
+  try { parseStartingHandicap(payload.handicap); } catch { missing.push('handicap'); }
 
   return missing;
 };
@@ -129,8 +126,8 @@ type BatchPlayerData = {
   email: string | null;
   phone: string | null;
   gender: Gender;
-  handicap: number;
-  startingHandicap: number;
+  handicap: number | null;
+  startingHandicap: number | null;
   seasonPoints: number;
   seasonRank: null;
   type: string;
@@ -252,9 +249,9 @@ export default class PlayerController {
         });
       }
 
-      const handicap = Number(payload.handicap);
+      const handicap = parseStartingHandicap(payload.handicap);
       const gender = normalizeGender(payload.gender);
-      if (handicap < -10 || handicap > 54) {
+      if (handicap != null && (handicap < -10 || handicap > 54)) {
         return res.status(400).json({ message: 'Handicap must be between -10 and 54' });
       }
       const playerType = String(payload.type || 'player').trim().toLowerCase();
@@ -365,9 +362,9 @@ export default class PlayerController {
         if (missing.length > 0) {
           throw new Error(`Player ${index + 1} is missing required fields: ${missing.join(', ')}`);
         }
-        const handicap = Number(payload.handicap);
+        const handicap = parseStartingHandicap(payload.handicap);
         const gender = normalizeGender(payload.gender);
-        if (handicap < -10 || handicap > 54) {
+        if (handicap != null && (handicap < -10 || handicap > 54)) {
           throw new Error(`Player ${index + 1} handicap must be between -10 and 54`);
         }
         const rawType = String(payload.type || 'player').trim().toLowerCase();
@@ -494,9 +491,9 @@ export default class PlayerController {
         return res.status(404).json({ message: 'Player not found' });
       }
 
-      const handicap = Number(payload.handicap);
+      const handicap = parseStartingHandicap(payload.handicap);
       const gender = normalizeGender(payload.gender);
-      if (handicap < -10 || handicap > 54) {
+      if (handicap != null && (handicap < -10 || handicap > 54)) {
         return res.status(400).json({ message: 'Handicap must be between -10 and 54' });
       }
       const playerType = String(payload.type || 'player').trim().toLowerCase();
@@ -521,7 +518,7 @@ export default class PlayerController {
           : {}),
         gender,
         ...(payload.type != null ? { type: playerType } : {}),
-        ...(payload.handicap != null ? { handicap } : {}),
+        ...(handicap != null ? { handicap } : {}),
         ...(payload.teamId !== undefined
           ? { teamId }
           : {}),
@@ -578,7 +575,7 @@ export default class PlayerController {
         }
 
         const current = await tx.player.findUniqueOrThrow({ where: { id: Number(id) } });
-        if (handicap !== current.handicap) {
+        if (payload.handicap !== undefined && handicap !== current.handicap && handicap != null) {
           await tx.player_handicap_adjustment.create({
             data: { playerId: current.id, handicap },
           });
@@ -680,11 +677,16 @@ export default class PlayerController {
         where: { id: numericPlayerId, leagueId: numericLeagueId, deletedAt: null },
         include: {
           team: true,
+          handicapAdjustments: { orderBy: [{ effectiveAt: 'asc' }, { id: 'asc' }] },
           league: {
             select: {
               id: true,
               name: true,
               holeFormat: true,
+              handicapBestRounds: true,
+              handicapWindow: true,
+              handicapHoleBasis: true,
+              handicapMultiplier: true, handicapHoleLimit: true,
               adminId: true,
               startDate: true,
               renewedFromLeagueId: true,
@@ -705,7 +707,7 @@ export default class PlayerController {
           lastName: true,
           rounds: {
             where: {
-              event: { leagueId: numericLeagueId, deletedAt: null },
+              event: { leagueId: numericLeagueId, deletedAt: null, status: { not: 'canceled' } },
               status: 'completed',
               deletedAt: null,
             },
@@ -716,7 +718,17 @@ export default class PlayerController {
         orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
       });
       const rounds = leaguePlayers.find((entry) => entry.id === numericPlayerId)?.rounds ?? [];
-      const handicapHoleBasis = getHandicapHoleBasis(player.league?.holeFormat);
+      const handicapSettings = normalizeHandicapSettings(player.league);
+      const handicapHoleBasis = handicapSettings.handicapHoleBasis;
+      const previousHistory = await loadPreviousHandicapHistory(prisma, player.league.renewedFromLeagueId, player, handicapHoleBasis);
+      const handicapRounds = [...previousHistory.rounds, ...rounds.flatMap((round) => toHandicapSourceRound(round, handicapHoleBasis))];
+      const handicapCalculation = {
+        ...calculateLeagueHandicap(handicapRounds, previousHistory.startingHandicap ?? player.startingHandicap, handicapHoleBasis,
+          [...previousHistory.adjustments, ...player.handicapAdjustments.map((adjustment) => ({ handicap: adjustment.handicap, effectiveAt: adjustment.effectiveAt.toISOString() }))], handicapSettings),
+        sourceRounds: handicapRounds,
+        storedHandicap: player.handicap,
+        holeLimit: handicapSettings.handicapHoleLimit,
+      };
 
       const adminLeagues = await prisma.league.findMany({
         where: { adminId: player.league.adminId, deletedAt: null },
@@ -910,6 +922,7 @@ export default class PlayerController {
           stats: null,
           rounds: [],
           handicapHoleBasis,
+          handicapCalculation,
           intelligence,
         });
       }
@@ -1007,9 +1020,9 @@ export default class PlayerController {
         totalBogeys,
         totalDoubleBogeys,
         totalTripleBogeys,
-        startingHandicap: Number(player.startingHandicap),
-        currentHandicap: Number(player.handicap),
-          handicapChange: r(Number(player.handicap) - Number(player.startingHandicap)),
+        startingHandicap: player.startingHandicap,
+        currentHandicap: player.handicap,
+          handicapChange: player.handicap == null || player.startingHandicap == null ? null : r(player.handicap - player.startingHandicap),
       };
 
       return res.status(200).json({
@@ -1027,6 +1040,7 @@ export default class PlayerController {
         stats,
         rounds: roundSummaries,
         handicapHoleBasis,
+        handicapCalculation,
         intelligence,
       });
     } catch (error) {
