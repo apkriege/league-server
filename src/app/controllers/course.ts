@@ -499,7 +499,7 @@ class CourseController {
         if (removedTeeIds.length > 0) {
           const scheduledEvent = await tx.event.findFirst({
             where: {
-              teeId: { in: removedTeeIds },
+              OR: [{ menTeeId: { in: removedTeeIds } }, { womenTeeId: { in: removedTeeIds } }],
               deletedAt: null,
               status: { notIn: ['completed', 'canceled'] },
             },
@@ -507,7 +507,7 @@ class CourseController {
           });
           const scheduledRouteSegment = await tx.event_route_segment.findFirst({
             where: {
-              teeId: { in: removedTeeIds },
+              OR: [{ menTeeId: { in: removedTeeIds } }, { womenTeeId: { in: removedTeeIds } }],
               event: {
                 deletedAt: null,
                 status: { notIn: ['completed', 'canceled'] },

@@ -85,7 +85,7 @@ describe('resolveEventFlightTeams', () => {
       where: {
         id: { in: [13, 14, 11, 12] },
         deletedAt: null,
-        OR: [{ leagueId: 7 }, { eventId: 42 }],
+        OR: [{ leagueId: 7 }, { flightTeams: { some: { flight: { eventId: 42 } } } }],
       },
       include: {
         players: {

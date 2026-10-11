@@ -1,7 +1,7 @@
 import { prisma } from '../../prisma';
 import { adjustHandicapHole, normalizeHandicapSettings } from '../utils/handicap-settings';
 import { calculateStrokePops } from '../utils/tee-rating';
-import { modelEventTeeForRound } from '../utils/event-route';
+import { getEventTeeId, modelEventTeeForRound } from '../utils/event-route';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
 
 export class Round {
@@ -60,7 +60,7 @@ export class Round {
         playerId: pr.playerId,
         opponentId: pr.opponentId,
         courseId: this.event.courseId,
-        teeId: this.event.teeId,
+        teeId: getEventTeeId(this.event, this.player.gender),
         status: 'completed',
         gross: stats.totalGross,
         net: stats.totalNet,
@@ -311,11 +311,12 @@ export class Round {
       where: { id: this.eventId, deletedAt: null },
       include: {
         course: true,
-        tee: true,
+        menTee: true,
+        womenTee: true,
         league: true,
         routeSegments: {
           orderBy: { position: 'asc' },
-          include: { course: true, tee: true },
+          include: { course: true, menTee: true, womenTee: true },
         },
       },
     });

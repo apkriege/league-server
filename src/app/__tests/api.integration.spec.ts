@@ -85,7 +85,7 @@ describe('API integration', () => {
     const admin = request.agent(app);
     await login(admin, 'admin@test.com');
     const league = await prisma.league.findFirstOrThrow({
-      where: { name: 'Seeded Thursday Night League' },
+      where: { name: 'Integration Thursday League' },
       select: { id: true },
     });
     const player = await prisma.player.findFirstOrThrow({
@@ -248,7 +248,7 @@ describe('API integration', () => {
     expect(leagues.status).toBe(200);
     expect(leagues.body).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'Seeded Thursday Night League' }),
+        expect.objectContaining({ name: 'Integration Thursday League' }),
       ]),
     );
   });
@@ -257,7 +257,7 @@ describe('API integration', () => {
     const viewer = request.agent(app);
     const loginResponse = await viewer
       .post('/api/auth/league-code')
-      .send({ code: ' test-code ' });
+      .send({ code: ' testcode ' });
 
     expect(loginResponse.status).toBe(200);
     const leagueId = Number(loginResponse.body.leagueId);
@@ -282,7 +282,7 @@ describe('API integration', () => {
     await login(member, 'user@test.com');
 
     const league = await prisma.league.findFirstOrThrow({
-      where: { name: 'Seeded Thursday Night League' },
+      where: { name: 'Integration Thursday League' },
       include: {
         players: true,
         teams: true,
@@ -358,7 +358,7 @@ describe('API integration', () => {
     const admin = request.agent(app);
     await login(admin, 'admin@test.com');
     const league = await prisma.league.findFirstOrThrow({
-      where: { name: 'Seeded Thursday Night League' },
+      where: { name: 'Integration Thursday League' },
       include: { entitlement: true },
     });
 
@@ -382,7 +382,7 @@ describe('API integration', () => {
     });
 
     expect(update.status).toBe(409);
-    expect(update.body.message).toMatch(/cannot change after scores have been recorded/i);
+    expect(update.body.message).toMatch(/fixed for the season/i);
 
     const changedEndDate = new Date(league.endDate);
     changedEndDate.setUTCDate(changedEndDate.getUTCDate() - 1);
@@ -409,7 +409,7 @@ describe('API integration', () => {
     const admin = request.agent(app);
     await login(admin, 'admin@test.com');
     const league = await prisma.league.findFirstOrThrow({
-      where: { name: 'Seeded Thursday Night League' },
+      where: { name: 'Integration Thursday League' },
     });
     const completedEvent = await prisma.event.findFirstOrThrow({
       where: {
@@ -505,7 +505,7 @@ describe('API integration', () => {
     await verifyRegisteredUser(outsider, registration.body.user.id, '/leagues/create');
 
     const league = await prisma.league.findFirstOrThrow({
-      where: { name: 'Seeded Thursday Night League' },
+      where: { name: 'Integration Thursday League' },
       include: { events: true },
     });
     const [ownLeagues, foreignLeague, foreignUpdate] = await Promise.all([
@@ -681,7 +681,7 @@ describe('API integration', () => {
       data: {
         leagueId: renewedId,
         courseId: completedEventTemplate.courseId,
-        teeId: completedEventTemplate.teeId,
+        menTeeId: completedEventTemplate.menTeeId,
         name: 'Completed Renewal Round',
         format: 'individual',
         type: 'regular',
@@ -758,6 +758,14 @@ describe('API integration', () => {
     await expect(
       prisma.league.findUniqueOrThrow({ where: { id: sourceId }, include: { renewedLeague: true } }),
     ).resolves.toMatchObject({ renewedLeague: null });
+    const unlinkedPlayers = await prisma.player.findMany({ where: { leagueId: renewedId } });
+    expect(unlinkedPlayers).toHaveLength(8);
+    expect(unlinkedPlayers.every((player) => player.renewedFromPlayerId === null)).toBe(true);
+    await expect(
+      prisma.league.findUniqueOrThrow({ where: { id: renewedId }, include: { entitlement: true } }),
+    ).resolves.toMatchObject({
+      entitlement: { renewedFromLeagueId: null, billingOwnerId: nextOwner.id, paidGolfers: 8 },
+    });
 
     const trialRenewalTemplate = await agent.get(`/api/leagues/${sourceId}/renewal-template`);
     expect(trialRenewalTemplate.status).toBe(200);
@@ -771,6 +779,12 @@ describe('API integration', () => {
       renewedFromLeagueId: sourceId,
       entitlement: expect.objectContaining({ status: 'trialing', trialEventLimit: 3, trialEventCount: 0 }),
     });
+    const newRenewalPlayers = await prisma.player.findMany({ where: { leagueId: trialRenewal.body.id } });
+    expect(newRenewalPlayers).toHaveLength(8);
+    const sourcePlayers = await prisma.player.findMany({ where: { leagueId: sourceId } });
+    expect(newRenewalPlayers.map((player) => player.renewedFromPlayerId).sort()).toEqual(
+      sourcePlayers.map((player) => player.id).sort(),
+    );
   });
 
   it('allows super admins to inspect all leagues and users', async () => {
@@ -785,7 +799,7 @@ describe('API integration', () => {
     expect(leagues.status).toBe(200);
     expect(leagues.body).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'Seeded Thursday Night League' }),
+        expect.objectContaining({ name: 'Integration Thursday League' }),
       ]),
     );
     expect(users.status).toBe(200);
@@ -864,7 +878,7 @@ describe('API integration', () => {
         startTime: localTimeKey(event.startsAt, event.timeZone),
         interval: event.interval,
         courseId: event.courseId,
-        teeId: event.teeId,
+        menTeeId: event.menTeeId,
         startSide: event.startSide,
         holes: event.holes,
         format: event.format,
@@ -1234,11 +1248,13 @@ describe('API integration', () => {
     const admin = request.agent(app);
     const user = await login(admin, 'admin@test.com');
     const league = await prisma.league.findFirstOrThrow({
-      where: { adminId: user.id },
+      where: { adminId: user.id, name: 'Integration Thursday League' },
       include: {
         players: { orderBy: { id: 'asc' } },
         events: {
-          where: { format: 'individual' },
+          where: { status: 'upcoming', rounds: { none: {} } },
+          orderBy: { id: 'asc' },
+          take: 1,
           include: { flights: { include: { players: { orderBy: { id: 'asc' } } } } },
         },
       },
@@ -1292,7 +1308,7 @@ describe('API integration', () => {
     const admin = request.agent(app);
     await login(admin, 'admin@test.com');
     const league = await prisma.league.findFirstOrThrow({
-      where: { name: 'Seeded Thursday Night League' },
+      where: { name: 'Integration Thursday League' },
     });
     const oldCode = league.viewerAccessCode;
     const existingViewer = request.agent(app);
@@ -1323,7 +1339,7 @@ describe('API integration', () => {
     const admin = request.agent(app);
     await login(admin, 'admin@test.com');
     const league = await prisma.league.findFirstOrThrow({
-      where: { name: 'Seeded Thursday Night League' },
+      where: { name: 'Integration Thursday League' },
     });
     const email = 'invited-player@test.com';
     const player = await prisma.player.create({
@@ -1415,7 +1431,7 @@ describe('API integration', () => {
     const admin = request.agent(app);
     await login(admin, 'admin@test.com');
     const league = await prisma.league.findFirstOrThrow({
-      where: { name: 'Seeded Thursday Night League' },
+      where: { name: 'Integration Thursday League' },
       include: {
         teams: {
           where: { deletedAt: null },
@@ -1450,7 +1466,7 @@ describe('API integration', () => {
     const response = await admin.post(`/api/leagues/${league.id}/event`).send({
       name: 'Selected Lineup Integration', type: 'regular', date: '2027-03-15',
       startTime: '17:30', interval: 10, courseId: sourceEvent.courseId,
-      teeId: sourceEvent.teeId, startSide: 'front', holes: 9, format: 'team',
+      menTeeId: sourceEvent.menTeeId, startSide: 'front', holes: 9, format: 'team',
       scoringMode: 'stroke-play', scoringConfig: { handicapAllowance: 1 },
       pointsEnabled: true, strokePoints: '10,8,6', teamPlayersPerEvent: 2,
       teams: [], flights: [[left.id, right.id]],
@@ -1496,7 +1512,7 @@ describe('API integration', () => {
     });
     const base = {
       type: 'regular', startTime: '17:30', interval: 10,
-      courseId: league.events[0].courseId, teeId: league.events[0].teeId,
+      courseId: league.events[0].courseId, menTeeId: league.events[0].menTeeId,
       startSide: 'front', holes: 9, format: 'team', scoringMode: 'best-ball',
       scoringConfig: { handicapAllowance: 1 }, pointsEnabled: true,
       strokePoints: '10,8,6', teamPlayersPerEvent: 2,
@@ -1596,7 +1612,7 @@ describe('API integration', () => {
     const makeTrialEvent = async (name: string) => {
       const event = await prisma.event.create({
         data: {
-          leagueId: created.body.id, courseId: tee.courseId, teeId: tee.id,
+          leagueId: created.body.id, courseId: tee.courseId, menTeeId: tee.id,
           name, format: 'individual', type: 'regular', holes: 9, startSide: 'front',
           startsAt: new Date('2026-09-28T12:00:00Z'), timeZone: 'America/Indiana/Indianapolis',
           interval: 10, status: 'upcoming',

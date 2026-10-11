@@ -329,7 +329,7 @@ export async function seedLeagueScenarioMatrix({
         data: {
           leagueId: league.id,
           courseId,
-          teeId,
+          menTeeId: teeId,
           name: `[TEST] ${eventLabel(mode)} #${modeOccurrence}`,
           format: mode.format,
           type:

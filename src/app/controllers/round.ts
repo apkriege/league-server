@@ -133,10 +133,11 @@ export default class ScoreController {
         },
         include: {
           course: true,
-          tee: true,
+          menTee: true,
+          womenTee: true,
           routeSegments: {
             orderBy: { position: 'asc' },
-            include: { course: true, tee: true },
+            include: { course: true, menTee: true, womenTee: true },
           },
           flights: {
             where: { deletedAt: null },

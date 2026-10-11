@@ -76,7 +76,7 @@ async function main() {
     for (const [eventIndex, status] of eventStates.entries()) {
       const startsAt = date(scenario.archived ? -100 + eventIndex * 7 : -7 + eventIndex * 7);
       const event = await prisma.event.create({ data: {
-        leagueId: league.id, courseId: course.id, teeId: tee.id, name: `Week ${eventIndex + 1}`,
+        leagueId: league.id, courseId: course.id, menTeeId: tee.id, name: `Week ${eventIndex + 1}`,
         type: 'regular', format: 'individual', holes: 9, startSide: 'front', startsAt, timeZone,
         interval: 10, scoringMode: 'stroke-play', scoringConfig: { handicapAllowance: 1 },
         pointsEnabled: true, strokePoints: [10, 8, 6, 4, 2, 1], status,

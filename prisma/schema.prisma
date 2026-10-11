@@ -299,10 +299,12 @@ model tee {
   deletedAt        DateTime? @map("deleted_at") @db.Timestamptz(3)
 
   course             course?               @relation(fields: [courseId], references: [id])
-  events             event[]
+  menEvents          event[] @relation("EventMenTee")
+  womenEvents        event[] @relation("EventWomenTee")
   rounds             round[]
   teamRounds         team_round[]
-  eventRouteSegments event_route_segment[]
+  menRouteSegments   event_route_segment[] @relation("RouteMenTee")
+  womenRouteSegments event_route_segment[] @relation("RouteWomenTee")
 
   @@index([courseId])
   @@index([deletedAt])
@@ -441,24 +443,28 @@ model event_route_segment {
   id        Int      @id @default(autoincrement())
   eventId   Int      @map("event_id")
   courseId  Int      @map("course_id")
-  teeId     Int      @map("tee_id")
+  menTeeId   Int      @map("men_tee_id")
+  womenTeeId Int?     @map("women_tee_id")
   position  Int
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  event  event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  course course @relation(fields: [courseId], references: [id])
-  tee    tee    @relation(fields: [teeId], references: [id])
+  event    event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  course   course @relation(fields: [courseId], references: [id])
+  menTee   tee    @relation("RouteMenTee", fields: [menTeeId], references: [id])
+  womenTee tee?   @relation("RouteWomenTee", fields: [womenTeeId], references: [id])
 
   @@unique([eventId, position])
   @@index([courseId])
-  @@index([teeId])
+  @@index([menTeeId])
+  @@index([womenTeeId])
 }
 
 model event {
   id                  Int       @id @default(autoincrement())
   leagueId            Int       @map("league_id")
   courseId            Int       @map("course_id")
-  teeId               Int       @map("tee_id")
+  menTeeId            Int       @map("men_tee_id")
+  womenTeeId          Int?      @map("women_tee_id")
   name                String
   format              String    @map("format") // e.g. "individual", "team"
   type                String    @map("type") // e.g. "regular", "playoff", "tournament"
@@ -484,7 +490,8 @@ model event {
 
   league          league                @relation(fields: [leagueId], references: [id])
   course          course                @relation(fields: [courseId], references: [id])
-  tee             tee                   @relation(fields: [teeId], references: [id])
+  menTee          tee                   @relation("EventMenTee", fields: [menTeeId], references: [id])
+  womenTee        tee?                  @relation("EventWomenTee", fields: [womenTeeId], references: [id])
   flights         flight[]
   rounds          round[]
   teamEventPoints team_event_points[]
@@ -494,7 +501,8 @@ model event {
 
   @@index([leagueId])
   @@index([courseId])
-  @@index([teeId])
+  @@index([menTeeId])
+  @@index([womenTeeId])
   @@index([startsAt])
   @@index([status])
   @@index([deletedAt])

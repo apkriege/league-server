@@ -9,7 +9,11 @@ import {
 
 export type EventRouteSegmentSource = {
   courseId?: unknown;
+  menTeeId?: unknown;
+  menTee?: EventRouteSegmentSource['tee'];
   teeId?: unknown;
+  womenTeeId?: unknown;
+  womenTee?: EventRouteSegmentSource['tee'];
   position?: unknown;
   course?: { id?: unknown; name?: unknown; numHoles?: unknown; clubId?: unknown } | null;
   tee?: (TeeRatingSource & {
@@ -24,7 +28,11 @@ type EventRouteSource = {
   holes?: unknown;
   startSide?: unknown;
   courseId?: unknown;
+  menTeeId?: unknown;
+  menTee?: EventRouteSegmentSource['tee'];
   teeId?: unknown;
+  womenTeeId?: unknown;
+  womenTee?: EventRouteSegmentSource['tee'];
   course?: EventRouteSegmentSource['course'];
   tee?: EventRouteSegmentSource['tee'];
   routeSegments?: EventRouteSegmentSource[] | null;
@@ -51,6 +59,30 @@ const copyJsonArray = (value: unknown) =>
       )
     : [];
 
+const snapshotTee = (tee: NonNullable<EventRouteSegmentSource['tee']>) => ({
+  id: tee.id,
+  name: tee.name,
+  color: tee.color,
+  distance: tee.distance,
+  par: tee.par,
+  frontPar: tee.frontPar,
+  backPar: tee.backPar,
+  slopeMen: tee.slopeMen,
+  slopeFrontMen: tee.slopeFrontMen,
+  slopeBackMen: tee.slopeBackMen,
+  slopeWomen: tee.slopeWomen,
+  slopeFrontWomen: tee.slopeFrontWomen,
+  slopeBackWomen: tee.slopeBackWomen,
+  ratingMen: tee.ratingMen,
+  ratingFrontMen: tee.ratingFrontMen,
+  ratingBackMen: tee.ratingBackMen,
+  ratingWomen: tee.ratingWomen,
+  ratingFrontWomen: tee.ratingFrontWomen,
+  ratingBackWomen: tee.ratingBackWomen,
+  holes: copyJsonArray(tee.holes),
+  holesWomen: copyJsonArray(tee.holesWomen),
+});
+
 export const buildEventRouteSnapshot = (
   segments: EventRouteSegmentSource[],
 ): EventRouteSnapshot => ({
@@ -60,41 +92,23 @@ export const buildEventRouteSnapshot = (
     return {
       position,
       courseId: segment.courseId ?? course.id,
-      teeId: segment.teeId ?? tee.id,
+      menTeeId: segment.menTeeId ?? segment.teeId ?? tee.id,
+      ...(segment.womenTee ? {
+        womenTeeId: segment.womenTeeId ?? segment.womenTee.id,
+        womenTee: snapshotTee(segment.womenTee),
+      } : {}),
       course: {
         id: course.id,
         name: course.name,
         numHoles: course.numHoles,
         clubId: course.clubId,
       },
-      tee: {
-        id: tee.id,
-        name: tee.name,
-        color: tee.color,
-        distance: tee.distance,
-        par: tee.par,
-        frontPar: tee.frontPar,
-        backPar: tee.backPar,
-        slopeMen: tee.slopeMen,
-        slopeFrontMen: tee.slopeFrontMen,
-        slopeBackMen: tee.slopeBackMen,
-        slopeWomen: tee.slopeWomen,
-        slopeFrontWomen: tee.slopeFrontWomen,
-        slopeBackWomen: tee.slopeBackWomen,
-        ratingMen: tee.ratingMen,
-        ratingFrontMen: tee.ratingFrontMen,
-        ratingBackMen: tee.ratingBackMen,
-        ratingWomen: tee.ratingWomen,
-        ratingFrontWomen: tee.ratingFrontWomen,
-        ratingBackWomen: tee.ratingBackWomen,
-        holes: copyJsonArray(tee.holes),
-        holesWomen: copyJsonArray(tee.holesWomen),
-      },
+      menTee: snapshotTee(tee),
     };
   }),
 });
 
-export const getEventRouteSegments = (event: EventRouteSource): EventRouteSegmentSource[] => {
+const getStoredEventRouteSegments = (event: EventRouteSource): EventRouteSegmentSource[] => {
   if (isSnapshot(event.routeSnapshot)) {
     return [...event.routeSnapshot.segments].sort(
       (left, right) => Number(left.position ?? 0) - Number(right.position ?? 0),
@@ -107,6 +121,10 @@ export const getEventRouteSegments = (event: EventRouteSource): EventRouteSegmen
   }
   return [{
     courseId: event.courseId,
+    menTeeId: event.menTeeId,
+    menTee: event.menTee,
+    womenTeeId: event.womenTeeId,
+    womenTee: event.womenTee,
     teeId: event.teeId,
     position: 0,
     course: event.course,
@@ -114,17 +132,36 @@ export const getEventRouteSegments = (event: EventRouteSource): EventRouteSegmen
   }];
 };
 
+export const getEventRouteSegments = (
+  event: EventRouteSource,
+  rawGender?: unknown,
+): EventRouteSegmentSource[] => {
+  const segments = getStoredEventRouteSegments(event).map((segment) => ({
+    ...segment, teeId: segment.menTeeId ?? segment.teeId, tee: segment.menTee ?? segment.tee,
+  }));
+  if (rawGender == null || normalizeGender(rawGender) !== 'female') return segments;
+  return segments.map((segment) => segment.womenTee ? {
+    ...segment,
+    teeId: segment.womenTeeId ?? segment.womenTee.id,
+    tee: segment.womenTee,
+  } : segment);
+};
+
+export const getEventTeeId = (event: EventRouteSource, gender: unknown) =>
+  Number(getEventRouteSegments(event, gender)[0].teeId);
+
 const requireSegment = (segment: EventRouteSegmentSource, position: number) => {
-  if (!segment.course || !segment.tee) {
+  const tee = segment.tee ?? segment.menTee;
+  if (!segment.course || !tee) {
     throw new Error(`Event route segment ${position + 1} is missing course or tee data.`);
   }
-  return { course: segment.course, tee: segment.tee };
+  return { course: segment.course, tee };
 };
 
 export const selectEventRouteHoles = (event: EventRouteSource, rawGender: unknown) => {
   const gender = normalizeGender(rawGender);
   const holesPlayed = Number(event.holes);
-  const segments = getEventRouteSegments(event);
+  const segments = getEventRouteSegments(event, gender);
   if (segments.length === 1) {
     const { course, tee } = requireSegment(segments[0], 0);
     return selectRoundHoles(tee, course.numHoles, holesPlayed, event.startSide, gender);
@@ -159,7 +196,7 @@ export const modelEventTeeForRound = (
 ): RoundTee => {
   const gender: Gender = normalizeGender(rawGender);
   const holesPlayed = Number(event.holes);
-  const segments = getEventRouteSegments(event);
+  const segments = getEventRouteSegments(event, gender);
 
   if (segments.length === 1) {
     const { course, tee } = requireSegment(segments[0], 0);

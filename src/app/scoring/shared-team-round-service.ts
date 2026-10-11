@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
-import { modelEventTeeForRound } from '../utils/event-route';
+import { getEventTeeId, modelEventTeeForRound } from '../utils/event-route';
 import { normalizeScoringConfiguration } from './config';
 import { getScoringMode, type ScoringMode } from './modes';
 import { parsePlacementPoints, roundScoringPoints } from './numeric';
@@ -100,10 +100,11 @@ export const persistSharedTeamRounds = async ({
     where: { id: eventId },
     include: {
       course: true,
-      tee: true,
+      menTee: true,
+      womenTee: true,
       routeSegments: {
         orderBy: { position: 'asc' },
-        include: { course: true, tee: true },
+        include: { course: true, menTee: true, womenTee: true },
       },
       flights: {
         where: { id: flightId, deletedAt: null },
@@ -208,7 +209,7 @@ export const persistSharedTeamRounds = async ({
     const data = {
       flightId,
       courseId: event.courseId,
-      teeId: event.teeId,
+      teeId: getEventTeeId(event, modeled.scorecardGender),
       status: 'completed',
       holesPlayed: modeled.round.holesPlayed,
       gross: modeled.round.gross,

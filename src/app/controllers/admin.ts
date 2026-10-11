@@ -38,6 +38,10 @@ class AdminController {
     }
 
     await prisma.$transaction(async (tx) => {
+      await tx.player.updateMany({
+        where: { leagueId: league.id, renewedFromPlayerId: { not: null } },
+        data: { renewedFromPlayerId: null },
+      });
       await tx.league.update({
         where: { id: league.id },
         data: { renewedFromLeagueId: null },

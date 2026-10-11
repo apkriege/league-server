@@ -59,10 +59,12 @@ const resolveEventScoring = ({
 }) => {
   const mode = getScoringMode(scoringMode).id;
   validateScoringMode(mode, format);
+  const configuration = normalizeScoringConfiguration(scoringConfig, mode);
+  if (getScoringMode(mode).scoreInput === 'shared-team-score') configuration.sharedTeamScorecard = 'male';
   return {
     scoringMode: mode,
     scoringFamily: getScoringFamily(mode),
-    scoringConfig: normalizeScoringConfiguration(scoringConfig, mode),
+    scoringConfig: configuration,
   };
 };
 
@@ -91,9 +93,10 @@ class EventController {
           course: true,
           routeSegments: {
             orderBy: { position: 'asc' },
-            include: { course: true, tee: true },
+            include: { course: true, menTee: true, womenTee: true },
           },
-          tee: {
+          womenTee: { select: { id: true, name: true, distance: true } },
+          menTee: {
             select: {
               id: true,
               name: true,
@@ -154,10 +157,11 @@ class EventController {
             trialUsage: { select: { entitlementId: true } },
             league: { select: { entitlement: { select: { id: true, status: true, trialEventLimit: true, trialEventCount: true } }, holeFormat: true, handicapBestRounds: true, handicapWindow: true, handicapHoleBasis: true, handicapMultiplier: true, handicapHoleLimit: true } },
             course: true,
-            tee: true,
+            menTee: true,
+            womenTee: true,
             routeSegments: {
               orderBy: { position: 'asc' },
-              include: { course: true, tee: true },
+              include: { course: true, menTee: true, womenTee: true },
             },
             teamRounds: {
               where: { deletedAt: null },
@@ -263,10 +267,11 @@ class EventController {
         where: { id: eventId, leagueId, deletedAt: null },
         include: {
           course: true,
-          tee: true,
+          menTee: true,
+          womenTee: true,
           routeSegments: {
             orderBy: { position: 'asc' },
-            include: { course: true, tee: true },
+            include: { course: true, menTee: true, womenTee: true },
           },
           flights: {
             where: { eventId, deletedAt: null },
@@ -355,12 +360,14 @@ class EventController {
         const roundConfig = await validateCourseAndTee(
           tx,
           eventData?.courseId,
-          eventData?.teeId,
+          eventData?.menTeeId,
           eventHoles,
           eventData?.startSide,
           eventData?.secondCourseId,
-          eventData?.secondTeeId,
+          eventData?.secondMenTeeId,
           eventData?.repeatFirstNine,
+          usesWomenTees(eventData) ? eventData?.womenTeeId : undefined,
+          usesWomenTees(eventData) ? eventData?.secondWomenTeeId : undefined,
         );
         validateEventHolesForLeague(
           league.holeFormat,
@@ -433,7 +440,8 @@ class EventController {
             leagueId: leagueId,
             status: 'upcoming',
             courseId: Number(e.courseId),
-            teeId: Number(e.teeId),
+            menTeeId: Number(e.menTeeId),
+            womenTeeId: roundConfig.routeSegments[0].womenTeeId ?? null,
             name: String(e.name).trim(),
             startsAt,
             timeZone,
@@ -454,7 +462,8 @@ class EventController {
             routeSegments: {
               create: roundConfig.routeSegments.map((segment, position) => ({
                 courseId: segment.courseId,
-                teeId: segment.teeId,
+                menTeeId: segment.menTeeId,
+                womenTeeId: segment.womenTeeId ?? null,
                 position,
               })),
             },
@@ -620,12 +629,14 @@ class EventController {
           const roundConfig = await validateCourseAndTee(
             tx,
             eventData?.courseId,
-            eventData?.teeId,
+            eventData?.menTeeId,
             eventHoles,
             eventData?.startSide,
             eventData?.secondCourseId,
-            eventData?.secondTeeId,
+            eventData?.secondMenTeeId,
             eventData?.repeatFirstNine,
+            usesWomenTees(eventData) ? eventData?.womenTeeId : undefined,
+            usesWomenTees(eventData) ? eventData?.secondWomenTeeId : undefined,
           );
           validateEventHolesForLeague(
             league.holeFormat,
@@ -684,7 +695,8 @@ class EventController {
               leagueId: leagueId,
               status: 'upcoming',
               courseId: Number(e.courseId),
-              teeId: Number(e.teeId),
+              menTeeId: Number(e.menTeeId),
+              womenTeeId: roundConfig.routeSegments[0].womenTeeId ?? null,
               name: String(e.name).trim(),
               startsAt,
               timeZone,
@@ -705,7 +717,8 @@ class EventController {
               routeSegments: {
                 create: roundConfig.routeSegments.map((segment, position) => ({
                   courseId: segment.courseId,
-                  teeId: segment.teeId,
+                  menTeeId: segment.menTeeId,
+                  womenTeeId: segment.womenTeeId ?? null,
                   position,
                 })),
               },
@@ -789,6 +802,7 @@ class EventController {
         res.status(404).send('Event not found');
         return;
       }
+      eventData.scoringMode ??= existingEvent.scoringMode;
 
       const isCompletedEvent =
                 String(existingEvent.status || '').toLowerCase() === 'completed';
@@ -818,12 +832,14 @@ class EventController {
         const roundConfig = await validateCourseAndTee(
           tx,
           eventData?.courseId,
-          eventData?.teeId,
+          eventData?.menTeeId,
           eventHoles,
           eventData?.startSide,
           eventData?.secondCourseId,
-          eventData?.secondTeeId,
+          eventData?.secondMenTeeId,
           eventData?.repeatFirstNine,
+          usesWomenTees(eventData) ? eventData?.womenTeeId : undefined,
+          usesWomenTees(eventData) ? eventData?.secondWomenTeeId : undefined,
         );
         validateEventHolesForLeague(
           eventLeague.holeFormat,
@@ -925,7 +941,8 @@ class EventController {
           where: { id: eventId },
           data: {
             courseId: Number(eventData.courseId),
-            teeId: Number(eventData.teeId),
+            menTeeId: Number(eventData.menTeeId),
+            womenTeeId: roundConfig.routeSegments[0].womenTeeId ?? null,
             name: String(eventData.name).trim(),
             startsAt,
             timeZone,
@@ -950,7 +967,8 @@ class EventController {
           data: roundConfig.routeSegments.map((segment, position) => ({
             eventId,
             courseId: segment.courseId,
-            teeId: segment.teeId,
+            menTeeId: segment.menTeeId,
+            womenTeeId: segment.womenTeeId ?? null,
             position,
           })),
         });
@@ -1123,16 +1141,18 @@ const normalizeEventPointValue = (raw: unknown, label: string) => {
 const validateCourseAndTee = async (
   db: any,
   rawCourseId: unknown,
-  rawTeeId: unknown,
+  rawMenTeeId: unknown,
   rawHoles: unknown,
   rawStartSide: unknown,
   rawSecondCourseId?: unknown,
-  rawSecondTeeId?: unknown,
+  rawSecondMenTeeId?: unknown,
   rawRepeatFirstNine?: unknown,
+  rawWomenTeeId?: unknown,
+  rawSecondWomenTeeId?: unknown,
 ) => {
   const courseId = Number(rawCourseId);
-  const teeId = Number(rawTeeId);
-  if (!Number.isInteger(courseId) || courseId <= 0 || !Number.isInteger(teeId) || teeId <= 0) {
+  const menTeeId = Number(rawMenTeeId);
+  if (!Number.isInteger(courseId) || courseId <= 0 || !Number.isInteger(menTeeId) || menTeeId <= 0) {
     throw new Error('A valid course and tee are required.');
   }
 
@@ -1176,7 +1196,7 @@ const validateCourseAndTee = async (
       },
     },
   });
-  const tee = await loadTee(courseId, teeId);
+  const tee = await loadTee(courseId, menTeeId);
 
   if (!tee) {
     throw new Error('Selected tee does not belong to the selected course.');
@@ -1184,26 +1204,37 @@ const validateCourseAndTee = async (
 
   const selection = selectRoundHoles(tee, tee.course.numHoles, rawHoles, rawStartSide);
   const secondCourseId = Number(rawSecondCourseId);
-  const secondTeeId = Number(rawSecondTeeId);
+  const secondMenTeeId = Number(rawSecondMenTeeId);
   const hasSecondCourse = Number.isInteger(secondCourseId) && secondCourseId > 0;
-  const hasSecondTee = Number.isInteger(secondTeeId) && secondTeeId > 0;
+  const hasSecondTee = Number.isInteger(secondMenTeeId) && secondMenTeeId > 0;
   if (hasSecondCourse !== hasSecondTee) {
     throw new Error('Select both a course and tee for the second nine.');
   }
 
+  const loadWomenTee = async (selectedCourseId: number, rawId: unknown) => {
+    if (rawId == null || rawId === '') return null;
+    const id = Number(rawId);
+    if (!Number.isInteger(id) || id <= 0) throw new Error('Select a valid women’s tee.');
+    const selected = await loadTee(selectedCourseId, id);
+    if (!selected) throw new Error('Women’s tee does not belong to the selected course.');
+    return selected;
+  };
+  const womenTee = await loadWomenTee(courseId, rawWomenTeeId);
   const primarySegment = {
     courseId,
-    teeId,
+    menTeeId,
     position: 0,
+    womenTeeId: womenTee?.id,
+    womenTee,
     course: tee.course,
-    tee,
+    menTee: tee,
   };
   const routeSegments = [primarySegment];
   if (hasSecondCourse && hasSecondTee) {
     if (selection.holesPlayed !== 18 || !selection.isNineHoleCourse) {
       throw new Error('A second course can only be selected for an 18-hole route that starts on a 9-hole course.');
     }
-    const secondTee = await loadTee(secondCourseId, secondTeeId);
+    const secondTee = await loadTee(secondCourseId, secondMenTeeId);
     if (!secondTee) throw new Error('The second tee does not belong to the selected course.');
     if (getCourseHoleCount(secondTee.course.numHoles, secondTee) > 9) {
       throw new Error('The second route segment must be an independently playable 9-hole course.');
@@ -1213,10 +1244,12 @@ const validateCourseAndTee = async (
     }
     routeSegments.push({
       courseId: secondCourseId,
-      teeId: secondTeeId,
+      menTeeId: secondMenTeeId,
       position: 1,
+      womenTeeId: Number(rawSecondWomenTeeId) || undefined,
+      womenTee: await loadWomenTee(secondCourseId, rawSecondWomenTeeId),
       course: secondTee.course,
-      tee: secondTee,
+      menTee: secondTee,
     });
   } else if (selection.holesPlayed === 18 && selection.isNineHoleCourse) {
     if (rawRepeatFirstNine === false) {
@@ -1274,13 +1307,24 @@ const getEventParticipantGenders = (eventData: any, league: any, format: string)
   )];
 };
 
+const usesWomenTees = (eventData: { scoringMode?: unknown; womenTeesEnabled?: unknown }) =>
+  eventData.womenTeesEnabled !== false && getScoringMode(eventData.scoringMode).scoreInput !== 'shared-team-score';
+
 const validateTeeForEventParticipants = (
   roundConfig: Awaited<ReturnType<typeof validateCourseAndTee>>,
   eventData: any,
   league: any,
   format: string,
 ) => {
-  for (const gender of getEventParticipantGenders(eventData, league, format)) {
+  const menOnly = getScoringMode(eventData.scoringMode).scoreInput === 'shared-team-score';
+  const genders = new Set(menOnly ? ['male'] : getEventParticipantGenders(eventData, league, format));
+  if ((!menOnly && eventData.womenTeesEnabled) || roundConfig.routeSegments.some((segment) => segment.womenTee)) {
+    if (roundConfig.routeSegments.some((segment) => !segment.womenTee)) {
+      throw new Error('Select women’s tees for each course, or turn off women’s tees.');
+    }
+    genders.add('female');
+  }
+  for (const gender of genders) {
     modelEventTeeForRound(
       {
         holes: roundConfig.holes,
@@ -1318,8 +1362,9 @@ const getHistoricalEventHandicaps = async (event: { leagueId: number; id: number
 };
 
 const addEventRoundSetup = (event: any, historicalHandicaps = new Map<number, number | null>()) => {
+  const menOnly = getScoringMode(event.scoringMode).scoreInput === 'shared-team-score';
   const maleSelection = selectEventRouteHoles(event, 'male');
-  const womenSelection = selectEventRouteHoles(event, 'female');
+  const womenSelection = menOnly ? maleSelection : selectEventRouteHoles(event, 'female');
   const sharedSnapshotHandicaps = new Map<number, number>();
   for (const teamRound of event.teamRounds || []) {
     const snapshot = teamRound?.handicapSnapshot;
@@ -1354,7 +1399,7 @@ const addEventRoundSetup = (event: any, historicalHandicaps = new Map<number, nu
           sharedSnapshotHandicaps.get(Number(entry.playerId)) ??
           (historicalHandicaps.has(Number(entry.playerId)) ? historicalHandicaps.get(Number(entry.playerId)) : player?.startingHandicap) ?? null;
         const needsFirstRoundHandicap = existingRound ? existingRound.preHandicap == null : handicapIndex == null;
-        const firstRoundTee = needsFirstRoundHandicap ? modelEventTeeForRound(event, player?.gender) : null;
+        const firstRoundTee = needsFirstRoundHandicap && !menOnly ? modelEventTeeForRound(event, player?.gender) : null;
         return {
           ...entry,
           handicapIndex,

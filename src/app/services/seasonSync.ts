@@ -2,7 +2,7 @@ import { lockLeagueCapacity } from './billingLock';
 import { prisma } from '../../prisma';
 import { dateOnlyInTimeZone } from '../utils/time-zone';
 import { calculateRoundDifferential, calculateStrokePops } from '../utils/tee-rating';
-import { modelEventTeeForRound, selectEventRouteHoles } from '../utils/event-route';
+import { getEventTeeId, modelEventTeeForRound, selectEventRouteHoles } from '../utils/event-route';
 import { normalizeEventFormat } from '../utils/event-mode';
 import { calculateLeagueHandicap, type HandicapRound, type HandicapAdjustment } from '../utils/league-handicap';
 import { type HandicapHoleBasis } from '../utils/league-hole-format';
@@ -470,7 +470,7 @@ const recalculateEvent = async ({
       data: {
         opponentId: calculation.opponentId,
         courseId: Number(event.courseId),
-        teeId: Number(event.teeId),
+        teeId: getEventTeeId(event, calculation.tee.gender),
         status: 'completed',
         holesPlayed: Number(event.holes),
         gross: calculation.gross,
@@ -604,11 +604,12 @@ export class SeasonSync {
               orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
               include: {
                 course: true,
-                tee: true,
+                menTee: true,
+                womenTee: true,
                 teamEventPoints: true,
                 routeSegments: {
                   orderBy: { position: 'asc' },
-                  include: { course: true, tee: true },
+                  include: { course: true, menTee: true, womenTee: true },
                 },
                 flights: {
                   where: { deletedAt: null },

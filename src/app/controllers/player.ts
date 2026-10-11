@@ -15,6 +15,7 @@ import {
 } from '../utils/player-intelligence';
 
 const playerStatsRoundInclude = Prisma.validator<Prisma.roundInclude>()({
+  player: { select: { gender: true } },
   event: {
     select: {
       id: true,
@@ -27,9 +28,11 @@ const playerStatsRoundInclude = Prisma.validator<Prisma.roundInclude>()({
         select: {
           position: true,
           courseId: true,
-          teeId: true,
+          menTeeId: true,
+          womenTeeId: true,
           course: { select: { name: true } },
-          tee: { select: { name: true } },
+          menTee: { select: { name: true } },
+          womenTee: { select: { name: true } },
         },
       },
     },
@@ -72,8 +75,8 @@ const toIntelligenceRound = (round: PlayerStatsRound): IntelligenceRound => ({
       net: score.net,
       courseId: route?.courseId ?? round.courseId,
       courseName: route?.course.name ?? round.course.name,
-      teeId: route?.teeId ?? round.teeId,
-      teeName: route?.tee.name ?? round.tee.name,
+      teeId: (round.player.gender === 'female' ? route?.womenTeeId ?? route?.menTeeId : route?.menTeeId) ?? round.teeId,
+      teeName: (round.player.gender === 'female' ? route?.womenTee?.name ?? route?.menTee.name : route?.menTee.name) ?? round.tee.name,
     };
   }),
 });
@@ -181,9 +184,11 @@ export default class PlayerController {
                     select: {
                       position: true,
                       courseId: true,
-                      teeId: true,
+                      menTeeId: true,
+                      womenTeeId: true,
                       course: { select: { id: true, name: true } },
-                      tee: { select: { id: true, name: true } },
+                      menTee: { select: { id: true, name: true } },
+                      womenTee: { select: { id: true, name: true } },
                     },
                   },
                 },

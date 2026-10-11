@@ -169,6 +169,23 @@ describe('Round service', () => {
     });
   });
 
+  it('saves the womenTeeId while allocating the stored handicap without a tee conversion', async () => {
+    db.event.findFirst.mockResolvedValue({
+      ...event, teeId: undefined, tee: undefined, menTeeId: 2, menTee: event.tee,
+      womenTeeId: 3, womenTee: { ...event.tee, id: 3, slopeFrontWomen: 140,
+        ratingFrontWomen: 40, holesWomen: holes.map((hole) => ({ ...hole, hcp: 10 - hole.hcp })),
+      },
+    });
+    db.player.findFirst.mockResolvedValue({ id: 1, handicap: 8, gender: 'female', deletedAt: null });
+    await new Round(99, { playerId: 1, scores }, undefined, db).process();
+    expect(db.round.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      teeId: 3, playingHandicap: 8, courseRating: 40, courseSlope: 140, net: 28,
+    }) });
+    const createdScores = db.score.createMany.mock.calls[0][0].data;
+    expect(createdScores.find((score: { hole: number }) => score.hole === 1).net).toBe(4);
+    expect(createdScores.find((score: { hole: number }) => score.hole === 9).net).toBe(3);
+  });
+
   it('scores both selected nines with the combined route handicap', async () => {
     const northTee = {
       ...event.tee,

@@ -86,7 +86,7 @@ export const resolveEventFlightTeams = async (
     where: {
       id: { in: requestedIds },
       deletedAt: null,
-      OR: [{ leagueId }, { eventId }],
+      OR: [{ leagueId }, { flightTeams: { some: { flight: { eventId } } } }],
     },
     include: {
       players: {

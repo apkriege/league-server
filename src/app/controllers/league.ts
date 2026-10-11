@@ -200,10 +200,11 @@ class LeagueController {
             where: { deletedAt: null },
             include: {
               course: true,
-              tee: true,
+              menTee: true,
+              womenTee: true,
               routeSegments: {
                 orderBy: { position: 'asc' },
-                include: { course: true, tee: true },
+                include: { course: true, menTee: true, womenTee: true },
               },
             },
           },
@@ -360,7 +361,7 @@ class LeagueController {
               course: true,
               routeSegments: {
                 orderBy: { position: 'asc' },
-                include: { course: true, tee: true },
+                include: { course: true, menTee: true, womenTee: true },
               },
               flights: {
                 include: {

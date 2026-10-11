@@ -49,6 +49,7 @@ describe('deployment configuration', () => {
       '20261006000000_link_player_handicap_history',
       '20261006010000_configurable_league_handicap',
       '20261006020000_handicap_multiplier',
+      '20261010000000_gender_specific_event_tees',
     ]);
     for (const migrationDirectory of migrationDirectories) {
       expect(fs.existsSync(path.join(migrationsRoot, migrationDirectory, 'migration.sql'))).toBe(

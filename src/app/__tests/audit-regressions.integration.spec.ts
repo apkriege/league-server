@@ -71,7 +71,7 @@ describe('audit integrity regressions', () => {
 
   it('preserves an administrator handicap correction through repeated season replay and previews', async () => {
     const admin = await signIn();
-    const league = await prisma.league.findFirstOrThrow({ where: { name: 'Seeded Thursday Night League' } });
+    const league = await prisma.league.findFirstOrThrow({ where: { name: 'Integration Thursday League' } });
     const player = await prisma.player.create({
       data: { leagueId: league.id, firstName: 'Audit', lastName: 'Handicap', type: 'substitute', gender: 'male', handicap: 12, startingHandicap: 12, seasonPoints: 0 },
     });
@@ -149,7 +149,7 @@ describe('audit integrity regressions', () => {
     });
     const event = await prisma.event.create({
       data: {
-        leagueId: source.leagueId, courseId: source.courseId, teeId: source.teeId,
+        leagueId: source.leagueId, courseId: source.courseId, menTeeId: source.menTeeId,
         name: 'Audit cancellation race', format: source.format, scoringMode: source.scoringMode,
         type: source.type, holes: source.holes, startSide: source.startSide,
         startsAt: new Date(), timeZone: source.timeZone, interval: source.interval, status: 'active',

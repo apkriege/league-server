@@ -30,7 +30,7 @@ const createFixture = async (basis: 9 | 18, renewal?: { id: number; email: strin
 type Fixture = Awaited<ReturnType<typeof createFixture>>;
 
 const addEvent = (fixture: Fixture, sequence: number, holes: 9 | 18 = 9) =>
-  prisma.event.create({ data: { leagueId: fixture.league.id, courseId: fixture.course.id, teeId: fixture.tee.id,
+  prisma.event.create({ data: { leagueId: fixture.league.id, courseId: fixture.course.id, menTeeId: fixture.tee.id,
     name: `Handicap round ${sequence}`, format: 'individual', type: 'regular', holes, startSide: 'front',
     startsAt: new Date(Date.UTC(2026, 0, sequence, 15)), timeZone: 'UTC', interval: 10, status: 'completed',
     scoringMode: 'stroke-play', strokePoints: [4, 2, 1],
@@ -63,10 +63,104 @@ const logIn = async (fixture: Fixture) => {
 
 describe('configurable handicap replay and API scoring', () => {
   afterAll(() => prisma.$disconnect());
+
+  it.each(['scramble', 'alternate-shot'])('saves only men’s tees for shared-team %s events', async (scoringMode) => {
+    const fixture = await createFixture(9);
+    await prisma.league.update({ where: { id: fixture.league.id }, data: { format: 'team', teamPlayersPerEvent: 2 } });
+    await prisma.player.update({ where: { id: fixture.player.id }, data: { gender: 'female' } });
+    const secondPlayer = await prisma.player.create({ data: { leagueId: fixture.league.id, firstName: 'Second', lastName: 'Player', gender: 'male', handicap: 10, startingHandicap: 10, seasonPoints: 0 } });
+    const team = await prisma.team.create({ data: { leagueId: fixture.league.id, name: 'Mixed team', seasonPoints: 0, players: { connect: [{ id: fixture.player.id }, { id: secondPlayer.id }] } } });
+    const otherPlayers = await Promise.all([1, 2].map((index) => prisma.player.create({ data: {
+      leagueId: fixture.league.id, firstName: `Other ${index}`, lastName: 'Player', gender: 'male',
+      handicap: 10, startingHandicap: 10, seasonPoints: 0,
+    } })));
+    const otherTeam = await prisma.team.create({ data: { leagueId: fixture.league.id, name: 'Other team', seasonPoints: 0, players: { connect: otherPlayers.map((player) => ({ id: player.id })) } } });
+    const agent = await logIn(fixture);
+    const payload = {
+      name: 'Shared team event', type: 'regular', date: '2026-06-01', startTime: '10:00', interval: 10,
+      holes: 9, startSide: 'front', format: 'team', scoringMode, teamPlayersPerEvent: 2,
+      courseId: fixture.course.id, menTeeId: fixture.tee.id,
+      womenTeesEnabled: true, womenTeeId: -1, secondWomenTeeId: -1,
+      scoringConfig: { handicapAllowance: 1, sharedTeamScorecard: 'female' },
+      flights: [[team.id, otherTeam.id]], teamLineups: [
+        { teamId: team.id, playerIds: [fixture.player.id, secondPlayer.id] },
+        { teamId: otherTeam.id, playerIds: otherPlayers.map((player) => player.id) },
+      ],
+      pointsEnabled: false,
+    };
+    const response = await agent.post(`/api/leagues/${fixture.league.id}/event`).send(payload);
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const saved = await prisma.event.findFirstOrThrow({ where: { leagueId: fixture.league.id }, include: { routeSegments: true } });
+    expect(saved.womenTeeId).toBeNull();
+    expect(saved.routeSegments.every((segment) => segment.womenTeeId === null)).toBe(true);
+    expect(saved.scoringConfig).toMatchObject({ sharedTeamScorecard: 'male' });
+    const preview = await agent.get(url(fixture, saved.id));
+    expect(preview.status).toBe(200);
+    expect(preview.body.flights[0].players.every((entry: { firstRoundHandicap: unknown }) => entry.firstRoundHandicap === null)).toBe(true);
+    expect((await agent.put(url(fixture, saved.id)).send(payload)).status).toBe(200);
+    expect((await agent.post(`/api/leagues/${fixture.league.id}/events`).send({ events: [{ ...payload, date: '2026-06-02' }] })).status).toBe(201);
+    const events = await prisma.event.findMany({ where: { leagueId: fixture.league.id }, include: { routeSegments: true } });
+    expect(events).toHaveLength(2);
+    for (const event of events) {
+      expect(event.womenTeeId).toBeNull();
+      expect(event.routeSegments.every((segment) => segment.womenTeeId === null)).toBe(true);
+      expect(event.scoringConfig).toMatchObject({ sharedTeamScorecard: 'male' });
+    }
+  });
+
   const read = (fixture: Fixture) => prisma.player.findUniqueOrThrow({ where: { id: fixture.player.id } });
   const url = (fixture: Fixture, eventId: number) => `/api/leagues/${fixture.league.id}/events/${eventId}`;
   const scores = (extra: number) => Object.fromEntries(Array.from({ length: 9 }, (_, index) => [index + 1, 4 + Math.floor(extra / 9) + (index < extra % 9 ? 1 : 0)]));
   const submission = (fixture: Fixture, flightId: number, extra: number) => ({ flightId, players: [{ playerId: fixture.player.id, scores: scores(extra) }] });
+
+  it('uses menTeeId and womenTeeId for saved rounds, first-round handicaps, and replay', async () => {
+    const fixture = await createFixture(9);
+    await prisma.league_season_entitlement.update({ where: { id: fixture.league.entitlementId }, data: { requiredGolfers: 2, paidGolfers: 2 } });
+    const female = await prisma.player.create({ data: { leagueId: fixture.league.id, firstName: 'Female', lastName: 'Golfer', gender: 'female', handicap: null, startingHandicap: null, seasonPoints: 0 } });
+    const womenTee = await prisma.tee.create({ data: {
+      courseId: fixture.course.id, name: 'Women’s tees', color: 'red', distance: 2500,
+      par: 36, frontPar: 36, backPar: 0, ratingWomen: 38, slopeWomen: 113,
+      holes: fixture.tee.holes, holesWomen: Array.from({ length: 9 }, (_, index) => ({ num: index + 1, par: 4, hcp: 9 - index })),
+    } });
+    const agent = await logIn(fixture);
+    const created = await agent.post(`/api/leagues/${fixture.league.id}/event`).send({
+      name: 'Mixed tee handicap check', type: 'regular', date: '2026-01-01', startTime: '15:00', interval: 10,
+      courseId: fixture.course.id, menTeeId: fixture.tee.id, womenTeesEnabled: true, womenTeeId: womenTee.id,
+      holes: 9, startSide: 'front', format: 'individual', scoringMode: 'stroke-play', pointsEnabled: false,
+      scoringConfig: { handicapAllowance: 1 }, flights: [[fixture.player.id, female.id]],
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const event = await prisma.event.findFirstOrThrow({ where: { leagueId: fixture.league.id }, include: { flights: true, routeSegments: true } });
+    expect(event).toMatchObject({ menTeeId: fixture.tee.id, womenTeeId: womenTee.id });
+    expect(event.routeSegments[0]).toMatchObject({ menTeeId: fixture.tee.id, womenTeeId: womenTee.id });
+    const preview = await agent.get(url(fixture, event.id));
+    expect(preview.status).toBe(200);
+    expect(preview.body.flights[0].players.find((entry: { playerId: number }) => entry.playerId === female.id).firstRoundHandicap).toMatchObject({ rating: 38, slope: 113 });
+    const submitted = { flightId: event.flights[0].id, players: [
+      { playerId: fixture.player.id, scores: scores(9) }, { playerId: female.id, scores: scores(9) },
+    ] };
+    const saved = await agent.post(`${url(fixture, event.id)}/scores`).send(submitted);
+    expect(saved.status, JSON.stringify(saved.body)).toBe(201);
+    const readRound = (playerId: number) => prisma.round.findUniqueOrThrow({ where: { eventId_playerId: { eventId: event.id, playerId } } });
+    expect(await readRound(fixture.player.id)).toMatchObject({ teeId: fixture.tee.id, courseRating: 36, courseSlope: 113, differential: 9, preHandicap: 11, playingHandicap: 11, net: 34, postHandicap: 9 });
+    expect(await readRound(female.id)).toMatchObject({ teeId: womenTee.id, courseRating: 38, courseSlope: 113, differential: 7, preHandicap: null, playingHandicap: 7, net: 38, postHandicap: 7 });
+    await prisma.tee.update({ where: { id: womenTee.id }, data: { ratingWomen: 42, slopeWomen: 140 } });
+    await SeasonSync.recalculateLeague(fixture.league.id);
+    expect(await readRound(female.id)).toMatchObject({ teeId: womenTee.id, courseRating: 38, courseSlope: 113, differential: 7, postHandicap: 7 });
+    const edited = await agent.put(`${url(fixture, event.id)}/scores`).send({ ...submitted, players: [submitted.players[0], { playerId: female.id, scores: scores(6) }] });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    expect(await readRound(female.id)).toMatchObject({ teeId: womenTee.id, courseRating: 38, differential: 4, postHandicap: 4 });
+    expect((await prisma.player.findUniqueOrThrow({ where: { id: female.id } })).handicap).toBe(4);
+  });
+
+  it('uses women’s ratings on menTeeId when womenTeeId is null during handicap replay', async () => {
+    const fixture = await createFixture(9);
+    await prisma.player.update({ where: { id: fixture.player.id }, data: { gender: 'female' } });
+    await prisma.tee.update({ where: { id: fixture.tee.id }, data: { ratingWomen: 38, slopeWomen: 113 } });
+    const round = await addRound(fixture, 1, 9);
+    await SeasonSync.recalculateLeague(fixture.league.id);
+    expect(await prisma.round.findUniqueOrThrow({ where: { id: round.id } })).toMatchObject({ teeId: fixture.tee.id, courseRating: 38, differential: 7, preHandicap: 11, net: 34, postHandicap: 7 });
+  });
 
   it('redeems a free code for one trial league and cannot reuse it for another league', async () => {
     const fixture = await createFixture(9);

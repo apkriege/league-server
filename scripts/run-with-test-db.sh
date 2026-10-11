@@ -29,6 +29,6 @@ docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" up -d --wait
 
 cd "$SERVER_DIR"
 npm run db:migrate:deploy
-npm run seed:demo
+npm run seed:test
 
 "$@"

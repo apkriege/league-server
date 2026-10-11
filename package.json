@@ -15,6 +15,7 @@
     "test:integration": "./scripts/run-with-test-db.sh npx vitest run --config vitest.integration.config.mts",
     "test:e2e": "./scripts/run-with-test-db.sh npm --prefix ../client run test:e2e",
     "seed:demo": "npx ts-node prisma/seed.ts",
+    "seed:test": "npx ts-node prisma/seed-test.ts",
     "db:generate": "npx prisma generate --schema=./prisma/schema.prisma",
     "db:migrate:deploy": "npx prisma migrate deploy --schema=./prisma/schema.prisma",
     "db:provision:super": "node scripts/createUsers.js",

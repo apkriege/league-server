@@ -397,7 +397,7 @@ export async function seedScoringFormatLab({
         data: {
           leagueId: league.id,
           courseId,
-          teeId,
+          menTeeId: teeId,
           name: `[SCORING LAB] ${fixture.label} — ${state}`,
           format: fixture.model,
           type: 'regular',
